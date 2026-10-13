@@ -468,13 +468,40 @@ impl Toolbar {
                     downloads_content.remove(&child);
                 }
 
+                let header = Box::new(Orientation::Horizontal, 8);
+
+                header.set_hexpand(true);
+
                 let title = gtk::Label::new(Some(&rust_i18n::t!("downloads.title")));
 
                 title.add_css_class("title-4");
 
                 title.set_halign(Align::Start);
 
-                downloads_content.append(&title);
+                title.set_hexpand(true);
+
+                header.append(&title);
+
+                // Chromium-style "Clear all" for finished entries.
+                let has_finished = entries.iter().any(|entry| entry.is_finished());
+
+                if has_finished {
+                    let clear = Button::with_label(&rust_i18n::t!("downloads.clear_finished"));
+
+                    clear.add_css_class("flat");
+
+                    {
+                        let manager = manager.clone();
+
+                        clear.connect_clicked(move |_| {
+                            manager.clear_finished();
+                        });
+                    }
+
+                    header.append(&clear);
+                }
+
+                downloads_content.append(&header);
 
                 for entry in entries.iter().rev().take(5) {
                     downloads_content.append(&build_row(entry, &manager));

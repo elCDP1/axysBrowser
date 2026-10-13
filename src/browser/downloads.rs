@@ -26,6 +26,53 @@ pub struct DownloadEntry {
     download: Download,
 }
 
+impl DownloadEntry {
+    pub fn is_finished(&self) -> bool {
+        self.status != DownloadStatus::InProgress
+    }
+
+    /// Current transfer rate in bytes per second, or 0 when unknown.
+    pub fn speed_bps(&self) -> f64 {
+        if self.status != DownloadStatus::InProgress {
+            return 0.0;
+        }
+
+        let elapsed = self.download.elapsed_time();
+
+        if elapsed <= 0.0 {
+            return 0.0;
+        }
+
+        self.download.received_data_length() as f64 / elapsed
+    }
+}
+
+/// Human-readable byte count with universal (untranslated) unit suffixes.
+pub fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+
+    let bytes = bytes as f64;
+
+    if bytes < KB {
+        format!("{} B", bytes as u64)
+    } else if bytes < KB * KB {
+        format!("{:.1} KB", bytes / KB)
+    } else if bytes < KB * KB * KB {
+        format!("{:.1} MB", bytes / (KB * KB))
+    } else {
+        format!("{:.2} GB", bytes / (KB * KB * KB))
+    }
+}
+
+/// Human-readable transfer rate, or an empty string when unknown.
+pub fn format_speed(bps: f64) -> String {
+    if bps <= 0.0 || !bps.is_finite() {
+        return String::new();
+    }
+
+    format!("{}/s", format_bytes(bps as u64))
+}
+
 type DownloadListener = Weak<dyn Fn()>;
 type DownloadListeners = Rc<RefCell<Vec<DownloadListener>>>;
 
@@ -283,5 +330,45 @@ impl DownloadManager {
         }
 
         self.notify();
+    }
+
+    /// Drops every finished entry (completed, cancelled or failed) from the
+    /// list. In-progress downloads are never touched.
+    pub fn clear_finished(&self) {
+        let changed = {
+            let mut entries = self.entries.borrow_mut();
+
+            let before = entries.len();
+
+            entries.retain(|entry| !entry.is_finished());
+
+            entries.len() != before
+        };
+
+        if changed {
+            self.notify();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn formats_byte_counts() {
+        assert_eq!(format_bytes(0), "0 B");
+        assert_eq!(format_bytes(512), "512 B");
+        assert_eq!(format_bytes(1536), "1.5 KB");
+        assert_eq!(format_bytes(2 * 1024 * 1024), "2.0 MB");
+        assert_eq!(format_bytes(3 * 1024 * 1024 * 1024), "3.00 GB");
+    }
+
+    #[test]
+    fn formats_speed_or_empty() {
+        assert_eq!(format_speed(0.0), "");
+        assert_eq!(format_speed(-5.0), "");
+        assert_eq!(format_speed(f64::INFINITY), "");
+        assert_eq!(format_speed(1536.0), "1.5 KB/s");
     }
 }

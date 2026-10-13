@@ -31,9 +31,23 @@ pub fn build_menu_model() -> gio::Menu {
 }
 
 pub fn build_menu() -> MenuButton {
-    MenuButton::builder()
+    let button = MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text(rust_i18n::t!("app.menu").as_ref())
         .menu_model(&build_menu_model())
-        .build()
+        .build();
+
+    // TEMP-DIAG: popover-once investigation.
+    button.connect_clicked(|button| {
+        eprintln!(
+            "DBG menu clicked, active={}",
+            button.is_active()
+        );
+    });
+
+    button.connect_active_notify(|button| {
+        eprintln!("DBG menu active -> {}", button.is_active());
+    });
+
+    button
 }

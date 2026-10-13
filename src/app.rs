@@ -75,5 +75,8 @@ pub fn run() {
         });
     }
 
-    app.run();
+    // Never forward process argv to GApplication: with default flags it would
+    // treat any argument (e.g. a URL from a .desktop launch) as a file to
+    // open and refuse to activate, so no window would appear at all.
+    app.run_with_args::<&str>(&[]);
 }

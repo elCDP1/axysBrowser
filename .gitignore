@@ -1,4 +1,7 @@
 /target
 
+# Local smoke-test harnesses (not part of the product).
+/smoke/
+
 src.backup-beta1/
 Cargo.toml.backup-beta1

@@ -333,7 +333,10 @@ fn build_browser_window(
                 return;
             }
 
-            if !target.starts_with("http://") && !target.starts_with("https://") {
+            if !target.starts_with("http://")
+                && !target.starts_with("https://")
+                && target != "about:blank"
+            {
                 return;
             }
 
@@ -600,6 +603,26 @@ fn build_browser_window(
         })
     };
 
+    // Forwards web notifications (Discord mentions, …) to the desktop.
+    let show_notification: Rc<dyn Fn(String, String)> = {
+        let app = app.clone();
+        let next_id = Rc::new(Cell::new(0u64));
+
+        Rc::new(move |title: String, body: String| {
+            let id = next_id.get();
+
+            next_id.set(id + 1);
+
+            let notification = gio::Notification::new(&title);
+
+            if !body.trim().is_empty() {
+                notification.set_body(Some(&body));
+            }
+
+            app.send_notification(Some(&format!("axys-web-{id}")), &notification);
+        })
+    };
+
     let new_tab: NewTabCallback = {
         let tabs = tabs.clone();
         let next_id = next_id.clone();
@@ -613,6 +636,7 @@ fn build_browser_window(
 
         let navigate_tab = navigate_tab.clone();
         let open_in_new_tab = open_in_new_tab.clone();
+        let show_notification = show_notification.clone();
         let state = state.clone();
         let session = session.clone();
 
@@ -637,7 +661,11 @@ fn build_browser_window(
             web_view.set_valign(gtk::Align::Fill);
 
             BrowserEngine::configure(&web_view, state.settings.borrow().developer_tools);
-            BrowserEngine::wire_view(&web_view, open_in_new_tab.clone());
+            BrowserEngine::wire_view(
+                &web_view,
+                open_in_new_tab.clone(),
+                show_notification.clone(),
+            );
 
             if private_mode
                 && let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view)

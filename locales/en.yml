@@ -62,6 +62,7 @@ downloads:
   save_file: "Save File"
   download_complete: "Download complete"
   see_all: "See all downloads"
+  clear_finished: "Clear finished"
 
 tools:
   title: "Tools"

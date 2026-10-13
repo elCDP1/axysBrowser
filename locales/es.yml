@@ -62,6 +62,7 @@ downloads:
   save_file: "Guardar archivo"
   download_complete: "Descarga completada"
   see_all: "Ver todas las descargas"
+  clear_finished: "Limpiar terminadas"
 
 tools:
   title: "Herramientas"

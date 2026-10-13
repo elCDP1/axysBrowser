@@ -102,6 +102,14 @@ impl AppState {
 
         i18n::set_locale(&settings.language);
 
+        // A hand-edited settings file could contain anything — normalize.
+        let cookie_policy = std::mem::take(&mut settings.cookie_policy);
+
+        settings.cookie_policy = match cookie_policy.as_str() {
+            "always" | "never" => cookie_policy,
+            _ => default_cookie_policy(),
+        };
+
         let mut search = load_config();
 
         if !search.engines.contains_key(&settings.search_engine) {

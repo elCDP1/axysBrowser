@@ -6,7 +6,7 @@ use gtk::{
 use std::rc::Rc;
 
 use crate::app_state::AppState;
-use crate::browser::downloads::{DownloadEntry, DownloadManager, DownloadStatus};
+use crate::browser::downloads::{DownloadEntry, DownloadManager, DownloadStatus, format_speed};
 
 pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 12);
@@ -27,7 +27,14 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
     let status_text = match &entry.status {
         DownloadStatus::InProgress => {
-            format!("{:.0}%", entry.progress * 100.0)
+            let percent = format!("{:.0}%", entry.progress * 100.0);
+            let speed = format_speed(entry.speed_bps());
+
+            if speed.is_empty() {
+                percent
+            } else {
+                format!("{percent} · {speed}")
+            }
         }
 
         DownloadStatus::Completed => rust_i18n::t!("downloads.completed").to_string(),
@@ -174,4 +181,17 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
     page.add_controller(keepalive);
 
     page
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn failed_status_interpolates_message() {
+        // Guards the only interpolated string in the app: if the syntax ever
+        // stops matching rust-i18n, the UI would show a raw "%{message}".
+        let text = rust_i18n::t!("downloads.failed", message = "boom").to_string();
+
+        assert!(text.contains("boom"), "unexpected: {text}");
+        assert!(!text.contains("%{"), "uninterpolated: {text}");
+    }
 }

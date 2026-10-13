@@ -43,6 +43,10 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return input.to_string();
     }
 
+    if input == "about:blank" {
+        return input.to_string();
+    }
+
     if input.starts_with("http://") || input.starts_with("https://") {
         return input.to_string();
     }
@@ -122,6 +126,13 @@ mod tests {
             resolve_input("youtube.com", &config),
             "https://www.youtube.com"
         );
+    }
+
+    #[test]
+    fn resolves_about_blank() {
+        let config = load_config();
+
+        assert_eq!(resolve_input("about:blank", &config), "about:blank");
     }
 
     #[test]

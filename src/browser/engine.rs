@@ -179,14 +179,19 @@ impl BrowserEngine {
     /// tab that looks like a full browser crash.
     ///
     /// `open_in_new_tab` is called (via idle, to avoid re-entrancy) with the
-    /// URL of popups / new-window navigations.
-    pub fn wire_view(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>) {
+    /// URL of popups / new-window navigations. `show_notification` receives
+    /// (title, body) of web notifications to surface as desktop notifications.
+    pub fn wire_view(
+        view: &WebView,
+        open_in_new_tab: Rc<dyn Fn(String)>,
+        show_notification: Rc<dyn Fn(String, String)>,
+    ) {
         Self::wire_policy(view, open_in_new_tab.clone());
         Self::wire_popups(view, open_in_new_tab);
         Self::wire_permissions(view);
         Self::wire_dialogs(view);
         Self::wire_crash_recovery(view);
-        Self::wire_notifications(view);
+        Self::wire_notifications(view, show_notification);
     }
 
     fn wire_policy(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>) {
@@ -472,11 +477,24 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_notifications(view: &WebView) {
-        view.connect_show_notification(|_, _notification| {
-            // Swallow web notifications at the engine level (the portal /
-            // desktop notification path is out of scope); returning true
-            // marks them handled so pages don't queue them unboundedly.
+    fn wire_notifications(view: &WebView, show_notification: Rc<dyn Fn(String, String)>) {
+        view.connect_show_notification(move |_, notification| {
+            let title = notification
+                .title()
+                .map(|title| title.to_string())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "Web notification".to_string());
+
+            let body = notification
+                .body()
+                .map(|body| body.to_string())
+                .unwrap_or_default();
+
+            show_notification(title, body);
+
+            // Dismiss the web-side notification; the desktop one replaces it.
+            notification.close();
+
             true
         });
 
