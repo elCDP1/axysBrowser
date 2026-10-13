@@ -29,6 +29,14 @@ settings:
   privacy_security: "Privacy & Security"
   tracking_prevention: "Tracking prevention"
   tracking_description: "Use WebKit Intelligent Tracking Prevention for normal browsing."
+  cookies: "Cookies"
+  cookies_description: "Third-party cookies are the main cross-site tracking vector."
+  cookies_no_third_party: "Block third-party"
+  cookies_always: "Accept all"
+  cookies_never: "Block all"
+  clear_data: "Clear browsing data"
+  clear_data_description: "History, cookies, favicon cache and disk cache. Bookmarks are kept."
+  clear_data_done: "Browsing data cleared."
   developer_tools: "Developer tools"
   developer_description: "Enable WebKit developer tools. Changes apply immediately."
   language_note: "Changes apply to newly created browser pages."
@@ -60,7 +68,25 @@ tools:
   web_inspector: "Web Inspector"
   browsing_data: "Browsing data"
   clear_browsing_data: "Clear browsing data"
+  cleared: "Browsing data cleared."
+  note: "History, cookies, favicon cache and disk cache. Bookmarks are kept."
   open_downloads: "Downloads"
+
+welcome:
+  title: "Welcome"
+  heading: "Welcome to axysBrowser"
+  subtitle: "A lightweight, privacy-focused browser for Linux."
+  search: "Search engine"
+  search_note: "Brave Search is the default search engine."
+  description: "axysBrowser is designed to be simple, lightweight and privacy-focused, with a native Linux interface and a clean browsing experience."
+  continue: "Continue"
+
+about:
+  title: "About"
+  description: "Linux-first web browser built with Rust, GTK4 and WebKitGTK."
+  author: "Original project by elCDP1"
+  copyright: "Copyright © 2026 elCDP1"
+  notice: "Derivative works may be modified and renamed, but must retain visible attribution to the original axysBrowser project and elCDP1."
 
 privacy:
   title: "Privacy mode"
@@ -81,6 +107,7 @@ history:
 bookmarks:
   add: "Add bookmark"
   edit: "Edit bookmark"
+  more: "More bookmarks"
   name: "Name"
   url: "URL"
   save: "Save"

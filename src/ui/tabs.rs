@@ -1,8 +1,10 @@
 use gtk::prelude::*;
-use gtk::{Box, Button, GestureClick, Orientation, Picture, PropagationPhase};
+use gtk::{Box, Button, GestureClick, Orientation, PropagationPhase};
 use std::rc::Rc;
 
 use crate::browser::tabs::Tab;
+
+use super::logo::build_logo_button;
 
 pub struct TabBar {
     pub root: Box,
@@ -35,33 +37,7 @@ impl TabBar {
 
         logo_space.set_vexpand(false);
 
-        let logo_button = Button::new();
-
-        // The logo is loaded from a relative path so a renamed/missing asset
-        // directory can't break the whole tab bar — fall back to text.
-        if std::path::Path::new("assets/logo/axysBrowser.png").exists() {
-            let logo = Picture::for_filename("assets/logo/axysBrowser.png");
-
-            logo.set_can_shrink(true);
-
-            logo.set_content_fit(gtk::ContentFit::Contain);
-
-            logo.set_width_request(80);
-
-            logo.set_height_request(40);
-
-            logo_button.set_child(Some(&logo));
-        } else {
-            logo_button.set_label("axys");
-        }
-
-        logo_button.add_css_class("flat");
-
-        logo_button.set_tooltip_text(Some("About axysBrowser"));
-
-        logo_button.connect_clicked(move |_| {
-            on_about();
-        });
+        let logo_button = build_logo_button(on_about);
 
         logo_space.append(&logo_button);
 

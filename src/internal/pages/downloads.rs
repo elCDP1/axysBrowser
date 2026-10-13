@@ -30,12 +30,12 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
             format!("{:.0}%", entry.progress * 100.0)
         }
 
-        DownloadStatus::Completed => "Completed".to_string(),
+        DownloadStatus::Completed => rust_i18n::t!("downloads.completed").to_string(),
 
-        DownloadStatus::Cancelled => "Cancelled".to_string(),
+        DownloadStatus::Cancelled => rust_i18n::t!("downloads.cancelled").to_string(),
 
         DownloadStatus::Failed(message) => {
-            format!("Failed: {message}")
+            rust_i18n::t!("downloads.failed", message = message).to_string()
         }
     };
 
@@ -61,7 +61,7 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
     match &entry.status {
         DownloadStatus::InProgress => {
-            let cancel = Button::with_label("Cancel");
+            let cancel = Button::with_label(&rust_i18n::t!("downloads.cancel"));
 
             cancel.add_css_class("flat");
 
@@ -81,7 +81,7 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
             show.add_css_class("flat");
 
-            show.set_tooltip_text(Some("Show in folder"));
+            show.set_tooltip_text(Some(&rust_i18n::t!("downloads.show_in_folder")));
 
             let path = entry.path.clone();
 
@@ -109,7 +109,7 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
     page.set_vexpand(true);
     page.set_hexpand(true);
 
-    let title = Label::new(Some("Downloads"));
+    let title = Label::new(Some(&rust_i18n::t!("downloads.title")));
 
     title.add_css_class("title-1");
 
@@ -142,7 +142,7 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
             let entries = manager.entries();
 
             if entries.is_empty() {
-                let empty = Label::new(Some("No downloads yet."));
+                let empty = Label::new(Some(&rust_i18n::t!("downloads.empty")));
 
                 empty.add_css_class("dim-label");
 

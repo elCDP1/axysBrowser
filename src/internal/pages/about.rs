@@ -1,6 +1,8 @@
 use gtk::prelude::*;
 use gtk::{Box, Label, Orientation};
 
+use crate::ui::logo::build_mark;
+
 pub fn build_about() -> Box {
     let page = Box::new(Orientation::Vertical, 16);
 
@@ -9,25 +11,27 @@ pub fn build_about() -> Box {
     page.set_valign(gtk::Align::Center);
     page.set_halign(gtk::Align::Center);
 
+    let mark = build_mark(72);
+
+    mark.set_halign(gtk::Align::Center);
+
     let title = Label::new(Some("axysBrowser"));
     title.add_css_class("title-1");
 
     let version = Label::new(Some("beta-1.0"));
     version.add_css_class("dim-label");
 
-    let description = Label::new(Some(
-        "Linux-first web browser built with Rust, GTK4 and WebKitGTK.",
-    ));
+    let description = Label::new(Some(&rust_i18n::t!("about.description")));
 
     description.set_wrap(true);
     description.set_max_width_chars(60);
     description.set_justify(gtk::Justification::Center);
 
-    let author = Label::new(Some("Original project by elCDP1"));
+    let author = Label::new(Some(&rust_i18n::t!("about.author")));
 
     author.add_css_class("title-3");
 
-    let copyright = Label::new(Some("Copyright © 2026 elCDP1"));
+    let copyright = Label::new(Some(&rust_i18n::t!("about.copyright")));
 
     copyright.add_css_class("dim-label");
 
@@ -35,14 +39,14 @@ pub fn build_about() -> Box {
 
     license.add_css_class("dim-label");
 
-    let notice = Label::new(Some(
-        "Derivative works may be modified and renamed, but must retain visible attribution to the original axysBrowser project and elCDP1.",
-    ));
+    let notice = Label::new(Some(&rust_i18n::t!("about.notice")));
 
     notice.set_wrap(true);
     notice.set_max_width_chars(60);
     notice.set_justify(gtk::Justification::Center);
     notice.add_css_class("dim-label");
+
+    page.append(&mark);
 
     page.append(&title);
     page.append(&version);

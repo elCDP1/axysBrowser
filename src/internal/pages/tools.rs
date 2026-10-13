@@ -53,15 +53,24 @@ pub fn build_tools(
 
     browsing_data.add_css_class("destructive-action");
 
+    let status = Label::new(None);
+
+    status.add_css_class("dim-label");
+
+    status.set_halign(gtk::Align::Start);
+
     {
         let callback = on_clear_browsing_data.clone();
+        let status = status.clone();
 
         browsing_data.connect_clicked(move |_| {
             callback();
+
+            status.set_text(&rust_i18n::t!("tools.cleared"));
         });
     }
 
-    let note = Label::new(Some("Manage common browser data and utilities."));
+    let note = Label::new(Some(&rust_i18n::t!("tools.note")));
 
     note.add_css_class("dim-label");
 
@@ -74,6 +83,8 @@ pub fn build_tools(
     page.append(&history);
 
     page.append(&browsing_data);
+
+    page.append(&status);
 
     page.append(&note);
 

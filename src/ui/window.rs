@@ -164,6 +164,8 @@ fn build_browser_window(
                     can_go_back || web_view.can_go_back(),
                     can_go_forward || web_view.can_go_forward(),
                 );
+
+                toolbar.refresh_bookmark();
             }
 
             if let Some(tabbar) = tabbar_slot.borrow().as_ref() {
@@ -693,7 +695,7 @@ fn build_browser_window(
                 let state = state.clone();
 
                 Rc::new(move || {
-                    state.history.clear();
+                    state.clear_browsing_data();
                 })
             };
 
@@ -776,7 +778,6 @@ fn build_browser_window(
                 let tabs = tabs.clone();
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
-                let bookmark_bar_slot = bookmark_bar_slot.clone();
 
                 web_view.connect_uri_notify(move |view| {
                     let Some(uri) = view.uri().map(|uri| uri.to_string()) else {
@@ -787,21 +788,15 @@ fn build_browser_window(
                         tab.uri = uri.clone();
                     }
 
+                    // Neither the tab bar (titles only) nor the bookmark bar
+                    // (bookmark list) depend on the URI — just update the
+                    // address and the bookmark star.
                     if active_id.get() == id
                         && let Some(slot) = toolbar_slot.upgrade()
                         && let Some(toolbar) = slot.borrow().as_ref()
                     {
                         toolbar.address.set_text(&uri);
-                    }
-
-                    // The tab bar only shows titles (updated via title_notify),
-                    // so don't rebuild it on every SPA pushState — just refresh
-                    // the bookmark star, which does depend on the URI.
-                    if active_id.get() == id
-                        && let Some(slot) = bookmark_bar_slot.upgrade()
-                        && let Some(bookmark_bar) = slot.borrow().as_ref()
-                    {
-                        bookmark_bar.refresh();
+                        toolbar.refresh_bookmark();
                     }
                 });
             }
@@ -856,7 +851,6 @@ fn build_browser_window(
             {
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
-                let bookmark_bar_slot = bookmark_bar_slot.clone();
                 let state = state.clone();
 
                 web_view.connect_load_changed(move |view, event| {
@@ -883,11 +877,7 @@ fn build_browser_window(
                                     view.can_go_forward(),
                                 );
 
-                                if let Some(slot) = bookmark_bar_slot.upgrade()
-                                    && let Some(bookmark_bar) = slot.borrow().as_ref()
-                                {
-                                    bookmark_bar.refresh();
-                                }
+                                toolbar.refresh_bookmark();
 
                                 if !private_mode
                                     && let Some(uri) = view.uri().map(|uri| uri.to_string())
@@ -1092,7 +1082,7 @@ fn build_browser_window(
                     let state = state.clone();
 
                     Rc::new(move || {
-                        state.history.clear();
+                        state.clear_browsing_data();
                     })
                 };
 

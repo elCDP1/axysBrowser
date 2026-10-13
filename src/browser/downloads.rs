@@ -139,7 +139,7 @@ impl DownloadManager {
                     };
 
                     let dialog = gtk::FileDialog::builder()
-                        .title("Save File")
+                        .title(rust_i18n::t!("downloads.save_file").as_ref())
                         .initial_folder(&gio::File::for_path(Self::downloads_dir()))
                         .initial_name(&default_name)
                         .build();
@@ -239,7 +239,8 @@ impl DownloadManager {
 
                     manager.notify();
 
-                    let notification = gio::Notification::new("Download complete");
+                    let notification =
+                        gio::Notification::new(&rust_i18n::t!("downloads.download_complete"));
 
                     notification.set_body(Some(&filename));
 

@@ -29,7 +29,7 @@ impl BookmarkBar {
 
         let overflow_button = MenuButton::builder()
             .icon_name("view-more-symbolic")
-            .tooltip_text("More bookmarks")
+            .tooltip_text(rust_i18n::t!("bookmarks.more").as_ref())
             .build();
 
         overflow_button.add_css_class("bookmark-overflow");

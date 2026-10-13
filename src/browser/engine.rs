@@ -39,6 +39,34 @@ fn cache_dir() -> PathBuf {
     PathBuf::from("axysbrowser-cache")
 }
 
+/// Directory holding the HTTP disk cache. Only cache files live here —
+/// website data (IndexedDB, local storage, …) lives next to it, so wiping
+/// this directory is safe while the browser runs.
+pub fn web_cache_dir() -> PathBuf {
+    cache_dir().join("web-cache")
+}
+
+/// Normalizes a cookie-policy setting value and applies it to a session.
+/// Unknown values fall back to blocking third-party cookies.
+pub fn apply_cookie_policy(session: &NetworkSession, policy: &str) {
+    use webkit6::CookieAcceptPolicy;
+
+    let normalized = match policy {
+        "always" => "always",
+        "never" => "never",
+        _ => "no-third-party",
+    };
+
+    let accept = match normalized {
+        "always" => CookieAcceptPolicy::Always,
+        "never" => CookieAcceptPolicy::Never,
+        _ => CookieAcceptPolicy::NoThirdParty,
+    };
+
+    if let Some(cookie_manager) = session.cookie_manager() {
+        cookie_manager.set_accept_policy(accept);
+    }
+}
 /// Chrome-like UA so sites that gate on "Chromium-only" (Discord, Meet, Slack…)
 /// serve their standard code instead of a broken fallback that OOMs the
 /// WebProcess. Keeps the real WebKit version visible for diagnostics.
@@ -48,10 +76,9 @@ pub fn chrome_user_agent() -> String {
 
 fn ensure_dirs() -> (String, String) {
     let data = data_dir();
-    let cache = cache_dir();
 
     let website_data = data.join("web-data");
-    let web_cache = cache.join("web-cache");
+    let web_cache = web_cache_dir();
 
     for dir in [&website_data, &web_cache] {
         if let Err(error) = std::fs::create_dir_all(dir) {
@@ -103,6 +130,8 @@ impl BrowserEngine {
 
         session.set_itp_enabled(true);
         session.set_persistent_credential_storage_enabled(false);
+
+        apply_cookie_policy(&session, "no-third-party");
 
         session
     }

@@ -178,6 +178,7 @@ pub struct Toolbar {
     forward: Button,
     extensions: Button,
     bookmark: Button,
+    bookmark_refresh: Action,
     _downloads_refresh: Action,
     _language_refresh: Action,
 }
@@ -560,9 +561,17 @@ impl Toolbar {
             forward,
             extensions,
             bookmark,
+            bookmark_refresh: bookmark_refresh.clone(),
             _downloads_refresh: downloads_refresh,
             _language_refresh: language_refresh,
         }
+    }
+
+    /// Refreshes the bookmark star for the currently shown view. Called on
+    /// navigation since the star depends on the active URI, not just on
+    /// bookmark list changes.
+    pub fn refresh_bookmark(&self) {
+        (self.bookmark_refresh)();
     }
 
     pub fn set_loading(&self, loading: bool) {

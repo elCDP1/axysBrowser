@@ -29,6 +29,14 @@ settings:
   privacy_security: "Privacidad y seguridad"
   tracking_prevention: "Prevención de seguimiento"
   tracking_description: "Usar la prevención inteligente de seguimiento de WebKit para la navegación normal."
+  cookies: "Cookies"
+  cookies_description: "Las cookies de terceros son el principal vector de seguimiento entre sitios."
+  cookies_no_third_party: "Bloquear terceros"
+  cookies_always: "Aceptar todas"
+  cookies_never: "Bloquear todas"
+  clear_data: "Borrar datos de navegación"
+  clear_data_description: "Historial, cookies, caché de faviconos y caché de disco. Los marcadores se conservan."
+  clear_data_done: "Datos de navegación borrados."
   developer_tools: "Herramientas de desarrollo"
   developer_description: "Activar las herramientas de desarrollo de WebKit. Los cambios se aplican inmediatamente."
   language_note: "Los cambios se aplican a las nuevas páginas del navegador."
@@ -60,7 +68,25 @@ tools:
   web_inspector: "Inspector web"
   browsing_data: "Datos de navegación"
   clear_browsing_data: "Borrar datos de navegación"
+  cleared: "Datos de navegación borrados."
+  note: "Historial, cookies, caché de faviconos y caché de disco. Los marcadores se conservan."
   open_downloads: "Descargas"
+
+welcome:
+  title: "Bienvenida"
+  heading: "Te damos la bienvenida a axysBrowser"
+  subtitle: "Un navegador ligero y centrado en la privacidad para Linux."
+  search: "Buscador"
+  search_note: "Brave Search es el buscador predeterminado."
+  description: "axysBrowser apuesta por la sencillez, la ligereza y la privacidad, con una interfaz Linux nativa y una experiencia de navegación limpia."
+  continue: "Continuar"
+
+about:
+  title: "Acerca de"
+  description: "Navegador Linux-first construido con Rust, GTK4 y WebKitGTK."
+  author: "Proyecto original de elCDP1"
+  copyright: "Copyright © 2026 elCDP1"
+  notice: "Las obras derivadas pueden modificarse y renombrarse, pero deben mantener visible la atribución al proyecto original axysBrowser y a elCDP1."
 
 privacy:
   title: "Modo privado"
@@ -81,6 +107,7 @@ history:
 bookmarks:
   add: "Añadir marcador"
   edit: "Editar marcador"
+  more: "Más marcadores"
   name: "Nombre"
   url: "URL"
   save: "Guardar"

@@ -9,23 +9,23 @@ pub fn build_welcome() -> Box {
     page.set_valign(gtk::Align::Center);
     page.set_halign(gtk::Align::Center);
 
-    let title = Label::new(Some("Welcome to axysBrowser"));
+    let title = Label::new(Some(&rust_i18n::t!("welcome.heading")));
     title.add_css_class("title-1");
 
-    let subtitle = Label::new(Some("A lightweight, privacy-focused browser for Linux."));
+    let subtitle = Label::new(Some(&rust_i18n::t!("welcome.subtitle")));
 
     subtitle.add_css_class("dim-label");
 
     let section = Box::new(Orientation::Vertical, 8);
 
-    let search_label = Label::new(Some("Search engine"));
+    let search_label = Label::new(Some(&rust_i18n::t!("welcome.search")));
     search_label.set_halign(gtk::Align::Start);
 
     let search = DropDown::from_strings(&["Brave Search", "DuckDuckGo", "Google", "Bing"]);
 
     search.set_selected(0);
 
-    let notice = Label::new(Some("Brave Search is the default search engine."));
+    let notice = Label::new(Some(&rust_i18n::t!("welcome.search_note")));
 
     notice.add_css_class("dim-label");
     notice.set_wrap(true);
@@ -37,16 +37,13 @@ pub fn build_welcome() -> Box {
 
     let separator = Separator::new(Orientation::Horizontal);
 
-    let description = Label::new(Some(
-        "axysBrowser is designed to be simple, lightweight and privacy-focused,\
-        with a native Linux interface and a clean browsing experience.",
-    ));
+    let description = Label::new(Some(&rust_i18n::t!("welcome.description")));
 
     description.set_wrap(true);
     description.set_max_width_chars(54);
     description.set_justify(gtk::Justification::Center);
 
-    let continue_button = Button::with_label("Continue");
+    let continue_button = Button::with_label(&rust_i18n::t!("welcome.continue"));
     continue_button.add_css_class("suggested-action");
     continue_button.set_halign(gtk::Align::Center);
 

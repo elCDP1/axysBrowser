@@ -1,4 +1,5 @@
 pub mod bookmarks;
+pub mod logo;
 pub mod menu;
 pub mod tabs;
 pub mod toolbar;

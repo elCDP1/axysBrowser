@@ -38,6 +38,76 @@ pub fn stylesheet(dark: bool) -> String {
             color: @axys_fg;
         }}
 
+        /* Plain buttons: subtle but visible in both modes. Class-based
+         * buttons below (.flat, .tab-select, ...) override these. */
+        button {{
+            background-color: alpha(@axys_fg, 0.055);
+            border: 1px solid alpha(@axys_fg, 0.12);
+            border-radius: 9px;
+        }}
+
+        button:hover {{
+            background-color: alpha(@axys_fg, 0.10);
+        }}
+
+        button:active {{
+            background-color: alpha(@axys_fg, 0.15);
+        }}
+
+        button:disabled {{
+            opacity: 0.45;
+        }}
+
+        button.flat {{
+            background-color: transparent;
+            border-color: transparent;
+        }}
+
+        button.suggested-action {{
+            background-color: @axys_accent;
+            border-color: transparent;
+            color: #ffffff;
+        }}
+
+        button.suggested-action:hover {{
+            background-color: alpha(@axys_accent, 0.88);
+        }}
+
+        button.suggested-action:active {{
+            background-color: alpha(@axys_accent, 0.78);
+        }}
+
+        button.destructive-action {{
+            background-color: #c03636;
+            border-color: transparent;
+            color: #ffffff;
+        }}
+
+        button.destructive-action:hover {{
+            background-color: alpha(#c03636, 0.88);
+        }}
+
+        button.destructive-action:active {{
+            background-color: alpha(#c03636, 0.78);
+        }}
+
+        entry {{
+            background-color: alpha(@axys_fg, 0.045);
+            color: @axys_fg;
+            border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+            border-radius: 9px;
+            padding: 5px 10px;
+        }}
+
+        entry:focus {{
+            border-color: alpha(@axys_accent, 0.45);
+        }}
+
+        entry selection {{
+            background-color: alpha(@axys_accent, 0.35);
+            color: @axys_fg;
+        }}
+
         popover,
         popover.background,
         popover > contents,
@@ -190,6 +260,11 @@ pub fn stylesheet(dark: bool) -> String {
             background: alpha(@axys_fg, 0.10);
         }}
 
+        .logo-word {{
+            font-weight: 700;
+            font-size: 1.1em;
+        }}
+
         button.flat {{
             min-width: 30px;
             min-height: 30px;
@@ -278,7 +353,7 @@ const DARK_PALETTE: &str = r#"
 "#;
 
 const LIGHT_PALETTE: &str = r#"
-    @define-color axys_bg #e6e6e6;
-    @define-color axys_fg #000000;
+    @define-color axys_bg #dcdfe5;
+    @define-color axys_fg #262b33;
     @define-color axys_accent #2f6fe4;
 "#;

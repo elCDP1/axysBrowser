@@ -29,6 +29,10 @@ fn default_search_engine() -> String {
     "brave".to_string()
 }
 
+fn default_cookie_policy() -> String {
+    "no-third-party".to_string()
+}
+
 fn default_language() -> String {
     i18n::system_locale().to_string()
 }
@@ -55,6 +59,9 @@ pub struct UserSettings {
     #[serde(default = "default_true")]
     pub tracking_prevention: bool,
 
+    #[serde(default = "default_cookie_policy")]
+    pub cookie_policy: String,
+
     #[serde(default = "default_language")]
     pub language: String,
 }
@@ -67,6 +74,7 @@ impl Default for UserSettings {
             show_extensions: true,
             developer_tools: true,
             tracking_prevention: true,
+            cookie_policy: default_cookie_policy(),
             language: default_language(),
         }
     }
@@ -123,6 +131,8 @@ impl AppState {
 
             cookie_manager.set_persistent_storage(&cookie_path, CookiePersistentStorage::Sqlite);
         }
+
+        crate::browser::engine::apply_cookie_policy(&network_session, &settings.cookie_policy);
 
         let downloads = DownloadManager::new(application.clone());
 
@@ -293,6 +303,70 @@ impl AppState {
         self.network_session.set_itp_enabled(enabled);
 
         self.save();
+    }
+
+    pub fn set_cookie_policy(&self, policy: &str) {
+        let normalized = match policy {
+            "always" | "never" => policy.to_string(),
+            _ => "no-third-party".to_string(),
+        };
+
+        if self.settings.borrow().cookie_policy == normalized {
+            return;
+        }
+
+        self.settings.borrow_mut().cookie_policy = normalized.clone();
+
+        crate::browser::engine::apply_cookie_policy(&self.network_session, &normalized);
+
+        self.save();
+    }
+
+    /// Real "clear browsing data": history, all cookies, favicon cache and
+    /// the HTTP disk cache. Open tabs are left alone (sites log out on next
+    /// reload), and bookmarks are never touched.
+    pub fn clear_browsing_data(&self) {
+        self.history.clear();
+
+        if let Some(cookie_manager) = self.network_session.cookie_manager() {
+            cookie_manager.clone().all_cookies(
+                None::<&webkit6::gio::Cancellable>,
+                move |result| match result {
+                    Ok(cookies) => {
+                        for cookie in cookies {
+                            cookie_manager.delete_cookie(
+                                &cookie,
+                                None::<&webkit6::gio::Cancellable>,
+                                |result| {
+                                    if let Err(error) = result {
+                                        eprintln!("Failed to delete cookie: {error}");
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to list cookies: {error}");
+                    }
+                },
+            );
+        }
+
+        if let Some(data_manager) = self.network_session.website_data_manager()
+            && let Some(favicons) = data_manager.favicon_database()
+        {
+            favicons.clear();
+        }
+
+        let cache = crate::browser::engine::web_cache_dir();
+
+        if cache.exists() {
+            if let Err(error) = fs::remove_dir_all(&cache) {
+                eprintln!("Failed to clear disk cache: {error}");
+            } else if let Err(error) = fs::create_dir_all(&cache) {
+                eprintln!("Failed to recreate cache directory: {error}");
+            }
+        }
     }
 
     pub fn set_language(&self, language: &str) {

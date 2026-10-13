@@ -145,7 +145,10 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
                 return;
             }
 
-            for entry in entries {
+            // Rendering thousands of rows on every keystroke would jank the
+            // main loop; search still scans everything, only the newest 200
+            // rows are shown.
+            for entry in entries.into_iter().take(200) {
                 list.append(&build_entry_row(&entry, &manager, &on_open));
             }
         })

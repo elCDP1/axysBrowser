@@ -198,7 +198,7 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
      * Wider and slightly taller search bar.
      */
     let search = Entry::builder()
-        .placeholder_text("Search or enter URL")
+        .placeholder_text(rust_i18n::t!("app.search_or_enter_url").as_ref())
         .hexpand(false)
         .width_chars(72)
         .max_width_chars(90)

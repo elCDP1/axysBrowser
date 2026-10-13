@@ -165,6 +165,75 @@ pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool
         });
     }
 
+    let cookies_row = row(
+        &rust_i18n::t!("settings.cookies"),
+        &rust_i18n::t!("settings.cookies_description"),
+    );
+
+    let cookies = DropDown::from_strings(&[
+        rust_i18n::t!("settings.cookies_no_third_party").as_ref(),
+        rust_i18n::t!("settings.cookies_always").as_ref(),
+        rust_i18n::t!("settings.cookies_never").as_ref(),
+    ]);
+
+    let selected_cookie = match state.settings.borrow().cookie_policy.as_str() {
+        "always" => 1,
+        "never" => 2,
+        _ => 0,
+    };
+
+    cookies.set_selected(selected_cookie);
+
+    cookies_row.append(&cookies);
+
+    {
+        let state = state.clone();
+
+        cookies.connect_selected_notify(move |dropdown| {
+            let policy = match dropdown.selected() {
+                1 => "always",
+                2 => "never",
+                _ => "no-third-party",
+            };
+
+            state.set_cookie_policy(policy);
+        });
+    }
+
+    let clear_row = row(
+        &rust_i18n::t!("settings.clear_data"),
+        &rust_i18n::t!("settings.clear_data_description"),
+    );
+
+    let clear_box = Box::new(Orientation::Vertical, 4);
+
+    clear_box.set_halign(gtk::Align::End);
+
+    let clear_button = gtk::Button::with_label(&rust_i18n::t!("settings.clear_data"));
+
+    clear_button.add_css_class("destructive-action");
+
+    let clear_status = Label::new(None);
+
+    clear_status.add_css_class("dim-label");
+
+    clear_status.set_halign(gtk::Align::End);
+
+    {
+        let state = state.clone();
+        let clear_status = clear_status.clone();
+
+        clear_button.connect_clicked(move |_| {
+            state.clear_browsing_data();
+
+            clear_status.set_text(&rust_i18n::t!("settings.clear_data_done"));
+        });
+    }
+
+    clear_box.append(&clear_button);
+    clear_box.append(&clear_status);
+    clear_row.append(&clear_box);
+
     let developer_row = row(
         &rust_i18n::t!("settings.developer_tools"),
         &rust_i18n::t!("settings.developer_description"),
@@ -235,6 +304,10 @@ pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool
     page.append(&privacy_title);
 
     page.append(&tracking_row);
+
+    page.append(&cookies_row);
+
+    page.append(&clear_row);
 
     page.append(&developer_row);
 
