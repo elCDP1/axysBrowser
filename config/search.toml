@@ -1,0 +1,7 @@
+default_engine = "brave"
+
+[engines]
+brave = "https://search.brave.com/search?q=%s"
+duckduckgo = "https://duckduckgo.com/?q=%s"
+google = "https://www.google.com/search?q=%s"
+bing = "https://www.bing.com/search?q=%s"

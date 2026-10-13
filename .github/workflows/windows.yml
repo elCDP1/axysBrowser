@@ -1,0 +1,55 @@
+name: Compilar para Windows
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: 
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    
+    env:
+      # Forzamos el uso de Node 24 para cumplir con las nuevas reglas de GitHub
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+    steps:
+      - name: Descargar codigo fuente
+        uses: actions/checkout@v4.2.2 # Versión actualizada
+
+      - name: Instalar Rust Nativo de Windows
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5.3.0 # Versión actualizada
+        with:
+          python-version: '3.11'
+
+      - name: Instalar herramientas de compilación C++
+        uses: ilammy/msvc-dev-cmd@v1.13.0 # Versión actualizada
+
+      - name: Instalar dependencias nativas
+        run: |
+          pip install gvsbuild
+          # Quitamos temporalmente webkit6 para probar si la estructura compila bien.
+          # Webkit6 tarda horas en compilar en CI; si funciona, luego lo agregamos.
+          gvsbuild build gtk4 libsoup
+        shell: pwsh
+
+      - name: Compilar Navegador (Cargo)
+        run: |
+          $env:Path += ";C:\gtk-build\gtk\x64\release\bin"
+          $env:PKG_CONFIG_PATH = "C:\gtk-build\gtk\x64\release\lib\pkgconfig"
+          
+          cargo build --release --target x86_64-pc-windows-msvc
+        shell: pwsh
+
+      - name: Guardar el archivo ejecutable y sus librerías (.dll)
+        uses: actions/upload-artifact@v4.6.0 # Versión actualizada
+        with:
+          name: axysbrowser-windows-build
+          path: |
+            target/x86_64-pc-windows-msvc/release/axysbrowser.exe
+            C:/gtk-build/gtk/x64/release/bin/*.dll

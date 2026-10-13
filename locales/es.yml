@@ -1,0 +1,88 @@
+app:
+  new_tab: "Nueva pestaña"
+  new_window: "Nueva ventana"
+  privacy_window: "Ventana privada"
+  settings: "Ajustes"
+  tools: "Herramientas"
+  downloads: "Descargas"
+  menu: "Menú"
+  back: "Atrás"
+  forward: "Adelante"
+  reload: "Recargar"
+  extensions: "Extensiones"
+  enter_url: "Introducir URL"
+  search_or_enter_url: "Buscar o introducir URL"
+
+settings:
+  title: "Ajustes"
+  appearance: "Apariencia"
+  theme: "Tema"
+  dark: "Oscuro"
+  light: "Claro"
+  language: "Idioma"
+  english: "Inglés"
+  spanish: "Español"
+  extensions: "Mostrar extensiones"
+  extensions_description: "Mostrar el área de extensiones en la barra del navegador."
+  search: "Búsqueda"
+  search_note: "Los cambios se aplican inmediatamente. Brave Search es el buscador predeterminado."
+  privacy_security: "Privacidad y seguridad"
+  tracking_prevention: "Prevención de seguimiento"
+  tracking_description: "Usar la prevención inteligente de seguimiento de WebKit para la navegación normal."
+  developer_tools: "Herramientas de desarrollo"
+  developer_description: "Activar las herramientas de desarrollo de WebKit. Los cambios se aplican inmediatamente."
+  language_note: "Los cambios se aplican a las nuevas páginas del navegador."
+
+error:
+  crashed_title: "Esta página ha fallado"
+  crashed_detail: "El proceso web terminó de forma inesperada. Tus otras pestañas no se han visto afectadas — recarga para continuar."
+  memory_title: "Esta página se quedó sin memoria"
+  memory_detail: "El proceso web superó su límite de memoria (habitual en aplicaciones pesadas como Discord). Cierra otras pestañas y recarga para continuar."
+  load_title: "No se pudo cargar esta página"
+  tls_title: "Conexión no segura"
+  tls_detail: "El sitio presentó un certificado TLS no válido, así que la conexión se bloqueó."
+  hint: "Pulsa Ctrl+R o el botón de recargar para intentarlo de nuevo."
+
+downloads:
+  title: "Descargas"
+  empty: "Todavía no hay descargas."
+  completed: "Completada"
+  cancelled: "Cancelada"
+  cancel: "Cancelar"
+  failed: "Error: %{message}"
+  show_in_folder: "Mostrar en carpeta"
+  save_file: "Guardar archivo"
+  download_complete: "Descarga completada"
+  see_all: "Ver todas las descargas"
+
+tools:
+  title: "Herramientas"
+  web_inspector: "Inspector web"
+  browsing_data: "Datos de navegación"
+  clear_browsing_data: "Borrar datos de navegación"
+  open_downloads: "Descargas"
+
+privacy:
+  title: "Modo privado"
+  description: "Datos web temporales y una sesión de navegación aislada."
+  search: "Brave Search"
+
+menu:
+  navigation: "Navegación"
+
+history:
+  title: "Historial"
+  search: "Buscar en el historial"
+  clear: "Borrar historial"
+  empty: "Todavía no hay historial."
+  open: "Abrir"
+  delete: "Eliminar"
+
+bookmarks:
+  add: "Añadir marcador"
+  edit: "Editar marcador"
+  name: "Nombre"
+  url: "URL"
+  save: "Guardar"
+  cancel: "Cancelar"
+  remove: "Eliminar"

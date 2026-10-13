@@ -1,0 +1,88 @@
+app:
+  new_tab: "New tab"
+  new_window: "New window"
+  privacy_window: "Privacy window"
+  settings: "Settings"
+  tools: "Tools"
+  downloads: "Downloads"
+  menu: "Menu"
+  back: "Back"
+  forward: "Forward"
+  reload: "Reload"
+  extensions: "Extensions"
+  enter_url: "Enter URL"
+  search_or_enter_url: "Search or enter URL"
+
+settings:
+  title: "Settings"
+  appearance: "Appearance"
+  theme: "Theme"
+  dark: "Dark"
+  light: "Light"
+  language: "Language"
+  english: "English"
+  spanish: "Spanish"
+  extensions: "Show extensions"
+  extensions_description: "Show the extensions area in the browser toolbar."
+  search: "Search"
+  search_note: "Changes apply immediately. Brave Search is the default."
+  privacy_security: "Privacy & Security"
+  tracking_prevention: "Tracking prevention"
+  tracking_description: "Use WebKit Intelligent Tracking Prevention for normal browsing."
+  developer_tools: "Developer tools"
+  developer_description: "Enable WebKit developer tools. Changes apply immediately."
+  language_note: "Changes apply to newly created browser pages."
+
+error:
+  crashed_title: "This page crashed"
+  crashed_detail: "The web process terminated unexpectedly. Your other tabs are unaffected — reload to continue."
+  memory_title: "This page ran out of memory"
+  memory_detail: "The web process exceeded its memory limit (common on heavy apps like Discord). Close other tabs and reload to continue."
+  load_title: "Couldn't load this page"
+  tls_title: "Insecure connection"
+  tls_detail: "The site presented an invalid TLS certificate, so the connection was blocked."
+  hint: "Press Ctrl+R or the reload button to try again."
+
+downloads:
+  title: "Downloads"
+  empty: "No downloads yet."
+  completed: "Completed"
+  cancelled: "Cancelled"
+  cancel: "Cancel"
+  failed: "Failed: %{message}"
+  show_in_folder: "Show in folder"
+  save_file: "Save File"
+  download_complete: "Download complete"
+  see_all: "See all downloads"
+
+tools:
+  title: "Tools"
+  web_inspector: "Web Inspector"
+  browsing_data: "Browsing data"
+  clear_browsing_data: "Clear browsing data"
+  open_downloads: "Downloads"
+
+privacy:
+  title: "Privacy mode"
+  description: "Temporary website data and an isolated browsing session."
+  search: "Brave Search"
+
+menu:
+  navigation: "Navigation"
+
+history:
+  title: "History"
+  search: "Search history"
+  clear: "Clear history"
+  empty: "No history yet."
+  open: "Open"
+  delete: "Delete"
+
+bookmarks:
+  add: "Add bookmark"
+  edit: "Edit bookmark"
+  name: "Name"
+  url: "URL"
+  save: "Save"
+  cancel: "Cancel"
+  remove: "Remove"

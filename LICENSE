@@ -1,0 +1,81 @@
+AXYS ATTRIBUTION LICENSE 1.0
+
+Copyright (c) 2026 elCDP1
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated source code (the "Software"), to use,
+copy, modify, merge, publish, distribute, sublicense, and sell copies of
+the Software, and to permit persons to whom the Software is provided to do
+so, subject to the following conditions:
+
+1. Attribution
+
+   The original author and project attribution must remain clearly credited
+   in all distributed copies and derivative works.
+
+2. Repository attribution
+
+   Any public source repository containing a derivative work must retain a
+   visible attribution to the original project and original author.
+
+   The attribution must identify the original project as:
+
+       axysBrowser
+
+   and must identify the original author using the copyright notice above,
+   or an equivalent clearly visible attribution.
+
+3. Application attribution
+
+   Any distributed executable application, browser, or derivative product
+   based substantially on this Software must retain a clearly visible
+   attribution to the original project and original author inside the
+   application.
+
+   The attribution must be accessible from a normal user interface location,
+   such as an About, Credits, Licenses, or similar page.
+
+4. Modification notice
+
+   Derivative works must clearly state that they are modified versions of
+   the original axysBrowser project.
+
+5. Renaming
+
+   You may change the name, branding, logo, appearance, user interface,
+   functionality, and other identifying characteristics of derivative
+   works.
+
+   Renaming or rebranding a derivative work does not remove the attribution
+   obligations in sections 1–4.
+
+6. Source and binary distribution
+
+   These conditions apply whether the Software or a derivative work is
+   distributed in source code, binary, packaged, or other executable form.
+
+7. License notice
+
+   A copy of this license must accompany the Software or derivative work.
+
+8. No warranty
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+   CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+   SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+9. Trademark
+
+   This license does not grant permission to use the original project's
+   trademarks, logos, or branding except as necessary to comply with the
+   attribution requirements of this license.
+
+10. Contributions
+
+    Unless otherwise agreed in writing, contributions submitted directly
+    to the original axysBrowser project are accepted under the terms of
+    this license.

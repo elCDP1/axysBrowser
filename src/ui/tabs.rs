@@ -1,0 +1,177 @@
+use gtk::prelude::*;
+use gtk::{Box, Button, GestureClick, Orientation, Picture, PropagationPhase};
+use std::rc::Rc;
+
+use crate::browser::tabs::Tab;
+
+pub struct TabBar {
+    pub root: Box,
+    tabs_box: Box,
+    on_select: Rc<dyn Fn(usize)>,
+    on_close: Rc<dyn Fn(usize)>,
+}
+
+impl TabBar {
+    pub fn new(
+        on_new: Rc<dyn Fn()>,
+        on_select: Rc<dyn Fn(usize)>,
+        on_close: Rc<dyn Fn(usize)>,
+        on_about: Rc<dyn Fn()>,
+    ) -> Self {
+        let root = Box::new(Orientation::Horizontal, 5);
+
+        root.set_margin_top(5);
+        root.set_margin_bottom(3);
+        root.set_margin_start(8);
+        root.set_margin_end(8);
+
+        let logo_space = Box::new(Orientation::Horizontal, 0);
+
+        logo_space.set_width_request(80);
+
+        logo_space.set_height_request(40);
+
+        logo_space.set_hexpand(false);
+
+        logo_space.set_vexpand(false);
+
+        let logo_button = Button::new();
+
+        // The logo is loaded from a relative path so a renamed/missing asset
+        // directory can't break the whole tab bar — fall back to text.
+        if std::path::Path::new("assets/logo/axysBrowser.png").exists() {
+            let logo = Picture::for_filename("assets/logo/axysBrowser.png");
+
+            logo.set_can_shrink(true);
+
+            logo.set_content_fit(gtk::ContentFit::Contain);
+
+            logo.set_width_request(80);
+
+            logo.set_height_request(40);
+
+            logo_button.set_child(Some(&logo));
+        } else {
+            logo_button.set_label("axys");
+        }
+
+        logo_button.add_css_class("flat");
+
+        logo_button.set_tooltip_text(Some("About axysBrowser"));
+
+        logo_button.connect_clicked(move |_| {
+            on_about();
+        });
+
+        logo_space.append(&logo_button);
+
+        let tabs_box = Box::new(Orientation::Horizontal, 5);
+
+        tabs_box.set_hexpand(true);
+
+        let new_button = Button::builder()
+            .icon_name("list-add-symbolic")
+            .tooltip_text("New tab")
+            .build();
+
+        new_button.add_css_class("flat");
+
+        new_button.connect_clicked(move |_| {
+            on_new();
+        });
+
+        root.append(&logo_space);
+
+        root.append(&tabs_box);
+
+        root.append(&new_button);
+
+        Self {
+            root,
+            tabs_box,
+            on_select,
+            on_close,
+        }
+    }
+
+    pub fn refresh(&self, tabs: &[Tab], active_id: usize) {
+        while let Some(child) = self.tabs_box.first_child() {
+            self.tabs_box.remove(&child);
+        }
+
+        for tab_data in tabs {
+            let tab = Box::new(Orientation::Horizontal, 2);
+
+            tab.set_hexpand(true);
+
+            tab.set_halign(gtk::Align::Fill);
+
+            tab.add_css_class("tab");
+
+            if tab_data.id == active_id {
+                tab.add_css_class("active");
+            }
+
+            let title = if tab_data.title.is_empty() {
+                "New Tab"
+            } else {
+                &tab_data.title
+            };
+
+            let select = Button::with_label(title);
+
+            select.set_hexpand(true);
+
+            select.set_halign(gtk::Align::Fill);
+
+            select.add_css_class("tab-select");
+
+            let close = Button::builder()
+                .icon_name("window-close-symbolic")
+                .tooltip_text("Close tab")
+                .build();
+
+            close.add_css_class("tab-close");
+
+            close.add_css_class("flat");
+
+            let id = tab_data.id;
+
+            let on_select = self.on_select.clone();
+
+            select.connect_clicked(move |_| {
+                on_select(id);
+            });
+
+            let id = tab_data.id;
+
+            let on_close = self.on_close.clone();
+
+            close.connect_clicked(move |_| {
+                on_close(id);
+            });
+
+            let id = tab_data.id;
+
+            let on_close = self.on_close.clone();
+
+            let middle_click = GestureClick::new();
+
+            middle_click.set_button(2);
+
+            middle_click.set_propagation_phase(PropagationPhase::Capture);
+
+            middle_click.connect_pressed(move |_, _, _, _| {
+                on_close(id);
+            });
+
+            tab.add_controller(middle_click);
+
+            tab.append(&select);
+
+            tab.append(&close);
+
+            self.tabs_box.append(&tab);
+        }
+    }
+}
