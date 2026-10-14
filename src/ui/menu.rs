@@ -13,6 +13,11 @@ pub fn build_menu_model() -> gio::Menu {
         Some("win.new-window"),
     );
 
+    navigation.append(
+        Some(&rust_i18n::t!("app.reopen_tab")),
+        Some("win.reopen-tab"),
+    );
+
     let menu = gio::Menu::new();
 
     menu.append_submenu(Some(&rust_i18n::t!("menu.navigation")), &navigation);

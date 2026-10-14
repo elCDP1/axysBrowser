@@ -125,6 +125,12 @@ fn build_browser_window(
     let active_id = Rc::new(Cell::new(usize::MAX));
     let next_id = Rc::new(Cell::new(0usize));
 
+    /// URIs (plus titles) of recently closed tabs, for Ctrl+Shift+T reopen.
+    /// Per window, so private restores stay inside the private window.
+    const MAX_CLOSED_TABS: usize = 25;
+
+    let closed_tabs = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+
     let top_stack = Stack::new();
 
     top_stack.set_hexpand(true);
@@ -207,6 +213,7 @@ fn build_browser_window(
         let current_web_view = current_web_view.clone();
         let select_tab = select_tab.clone();
         let bookmark_bar_slot = bookmark_bar_slot.clone();
+        let closed_tabs = closed_tabs.clone();
 
         Rc::new(move |id| {
             if tabs.borrow().len() == 1 {
@@ -276,6 +283,17 @@ fn build_browser_window(
             top_stack.remove(&removed.content);
 
             removed.web_view.stop_loading();
+
+            // Remember for Ctrl+Shift+T reopen (skip blank new tabs).
+            if removed.uri != "axys://newtab" {
+                let mut closed = closed_tabs.borrow_mut();
+
+                closed.push((removed.uri.clone(), removed.title.clone()));
+
+                if closed.len() > MAX_CLOSED_TABS {
+                    closed.remove(0);
+                }
+            }
 
             if was_active {
                 let new_id = tabs.borrow().last().map(|tab| tab.id);
@@ -952,6 +970,25 @@ fn build_browser_window(
 
     *new_tab_slot.borrow_mut() = Some(new_tab.clone());
 
+    let reopen_closed_tab: Rc<dyn Fn()> = {
+        let closed_tabs = closed_tabs.clone();
+        let new_tab = new_tab.clone();
+        let navigate_tab = navigate_tab.clone();
+
+        Rc::new(move || {
+            let Some((uri, _title)) = closed_tabs.borrow_mut().pop() else {
+                return;
+            };
+
+            // Created with the URI so internal pages render; navigate again
+            // so real web pages actually load (no duplicate history: the tab
+            // already points at this URI).
+            let id = new_tab(Some(&uri));
+
+            navigate_tab(id, uri);
+        })
+    };
+
     let tabbar = TabBar::new(
         {
             let new_tab = new_tab.clone();
@@ -1235,6 +1272,7 @@ fn build_browser_window(
     {
         let new_tab = new_tab.clone();
         let close_tab = close_tab.clone();
+        let reopen_closed_tab = reopen_closed_tab.clone();
         let select_tab = select_tab.clone();
         let tabs = tabs.clone();
         let active_id = active_id.clone();
@@ -1269,7 +1307,13 @@ fn build_browser_window(
                         }
 
                         't' => {
-                            new_tab(None);
+                            // Chromium parity: Ctrl+Shift+T reopens the last
+                            // closed tab instead of opening a blank one.
+                            if shift {
+                                reopen_closed_tab();
+                            } else {
+                                new_tab(None);
+                            }
 
                             return Propagation::Stop;
                         }
@@ -1516,6 +1560,18 @@ fn build_browser_window(
 
         action.connect_activate(move |_, _| {
             build_window(&app, state.clone());
+        });
+
+        window.add_action(&action);
+    }
+
+    {
+        let reopen_closed_tab = reopen_closed_tab.clone();
+
+        let action = gio::SimpleAction::new("reopen-tab", None);
+
+        action.connect_activate(move |_, _| {
+            reopen_closed_tab();
         });
 
         window.add_action(&action);

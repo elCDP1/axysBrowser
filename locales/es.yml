@@ -1,6 +1,7 @@
 app:
   new_tab: "Nueva pestaña"
   new_window: "Nueva ventana"
+  reopen_tab: "Reabrir pestaña cerrada"
   privacy_window: "Ventana privada"
   settings: "Ajustes"
   tools: "Herramientas"

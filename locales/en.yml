@@ -1,6 +1,7 @@
 app:
   new_tab: "New tab"
   new_window: "New window"
+  reopen_tab: "Reopen closed tab"
   privacy_window: "Privacy window"
   settings: "Settings"
   tools: "Tools"
