@@ -3,13 +3,7 @@ use gtk::{Box, Button, DropDown, Label, Orientation, Separator};
 use std::rc::Rc;
 
 use crate::app_state::AppState;
-
-const ENGINES: [(&str, &str); 4] = [
-    ("brave", "Brave Search"),
-    ("duckduckgo", "DuckDuckGo"),
-    ("google", "Google"),
-    ("bing", "Bing"),
-];
+use crate::browser::address::KNOWN_ENGINES;
 
 pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Box {
     let page = Box::new(Orientation::Vertical, 18);
@@ -31,14 +25,14 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
     let search_label = Label::new(Some(&rust_i18n::t!("welcome.search")));
     search_label.set_halign(gtk::Align::Start);
 
-    let names: Vec<&str> = ENGINES.iter().map(|(_, name)| *name).collect();
+    let names: Vec<&str> = KNOWN_ENGINES.iter().map(|(_, name)| *name).collect();
 
     let search = DropDown::from_strings(&names);
 
     let current = state.settings.borrow().search_engine.clone();
 
     search.set_selected(
-        ENGINES
+        KNOWN_ENGINES
             .iter()
             .position(|(id, _)| *id == current)
             .unwrap_or(0) as u32,
@@ -48,7 +42,7 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
         let state = state.clone();
 
         search.connect_selected_notify(move |dropdown| {
-            if let Some((id, _)) = ENGINES.get(dropdown.selected() as usize) {
+            if let Some((id, _)) = KNOWN_ENGINES.get(dropdown.selected() as usize) {
                 state.set_search_engine(id);
             }
         });

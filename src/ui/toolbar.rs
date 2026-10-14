@@ -395,6 +395,15 @@ impl Toolbar {
         downloads.add_css_class("flat");
         downloads.set_visible(false);
 
+        // Same stuck-toggle insurance as the main menu (see ui::menu).
+        {
+            let back = downloads.clone();
+
+            downloads_popover.connect_closed(move |_| {
+                back.set_active(false);
+            });
+        }
+
         let menu = build_menu();
         menu.add_css_class("flat");
 

@@ -1,4 +1,7 @@
+use gtk::prelude::*;
 use gtk::{MenuButton, gio};
+use std::cell::Cell;
+use std::rc::Rc;
 
 pub fn build_menu_model() -> gio::Menu {
     let navigation = gio::Menu::new();
@@ -37,5 +40,32 @@ pub fn build_menu() -> MenuButton {
         .menu_model(&build_menu_model())
         .build();
 
+    track_menu_button(&button);
+
     button
+}
+
+/// Insurance against stuck toggle state: if a popover is dismissed without
+/// the button resetting (observed on some Wayland/WSLg links, where the
+/// menu then refuses to reopen), force it back to inactive on close.
+fn track_menu_button(button: &MenuButton) {
+    let hooked = Rc::new(Cell::new(false));
+
+    // Note: MenuButton is not a Button subclass, so there is no `clicked`
+    // signal — active-notify covers both open and close transitions.
+    button.connect_active_notify(move |button| {
+        if hooked.get() {
+            return;
+        }
+
+        if let Some(popover) = button.popover() {
+            let back = button.clone();
+
+            popover.connect_closed(move |_| {
+                back.set_active(false);
+            });
+
+            hooked.set(true);
+        }
+    });
 }

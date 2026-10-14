@@ -12,6 +12,19 @@ const DEFAULT_CONFIG: &str = include_str!("../../config/search.toml");
 
 const FALLBACK_ENGINE: &str = "https://search.brave.com/search?q=%s";
 
+/// Known search engines as (id, display label) pairs.
+/// Order defines the dropdown order in Settings and Welcome.
+pub const KNOWN_ENGINES: &[(&str, &str)] = &[
+    ("brave", "Brave Search"),
+    ("duckduckgo", "DuckDuckGo"),
+    ("google", "Google"),
+    ("bing", "Bing"),
+    ("yahoo", "Yahoo"),
+    ("startpage", "Startpage"),
+    ("ecosia", "Ecosia"),
+    ("qwant", "Qwant"),
+];
+
 fn default_config() -> SearchConfig {
     toml::from_str(DEFAULT_CONFIG).unwrap_or_else(|_| SearchConfig {
         default_engine: "brave".to_string(),
@@ -162,6 +175,15 @@ mod tests {
         let config = super::default_config();
 
         assert!(config.engines.contains_key("brave"));
+    }
+
+    #[test]
+    fn default_config_has_all_known_engines() {
+        let config = super::default_config();
+
+        for (id, _) in super::KNOWN_ENGINES {
+            assert!(config.engines.contains_key(*id), "missing engine {id}");
+        }
     }
 
     #[test]

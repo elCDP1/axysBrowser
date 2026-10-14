@@ -49,6 +49,15 @@ impl BookmarkBar {
 
         overflow_button.set_popover(Some(&overflow_popover));
 
+        // Same stuck-toggle insurance as the main menu (see ui::menu).
+        {
+            let back = overflow_button.clone();
+
+            overflow_popover.connect_closed(move |_| {
+                back.set_active(false);
+            });
+        }
+
         root.append(&items);
 
         root.append(&overflow_button);

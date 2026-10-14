@@ -1,4 +1,5 @@
 pub mod about;
+pub mod background;
 pub mod downloads;
 pub mod history;
 pub mod newtab;

@@ -81,14 +81,17 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     search_title.set_halign(gtk::Align::Start);
 
-    let search = DropDown::from_strings(&["Brave Search", "DuckDuckGo", "Google", "Bing"]);
+    let engine_names: Vec<&str> = crate::browser::address::KNOWN_ENGINES
+        .iter()
+        .map(|(_, name)| *name)
+        .collect();
 
-    let selected = match state.settings.borrow().search_engine.as_str() {
-        "duckduckgo" => 1,
-        "google" => 2,
-        "bing" => 3,
-        _ => 0,
-    };
+    let search = DropDown::from_strings(&engine_names);
+
+    let selected = crate::browser::address::KNOWN_ENGINES
+        .iter()
+        .position(|(id, _)| *id == state.settings.borrow().search_engine)
+        .unwrap_or(0) as u32;
 
     search.set_selected(selected);
 
@@ -98,14 +101,11 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
         let state = state.clone();
 
         search.connect_selected_notify(move |dropdown| {
-            let engine = match dropdown.selected() {
-                1 => "duckduckgo",
-                2 => "google",
-                3 => "bing",
-                _ => "brave",
-            };
-
-            state.set_search_engine(engine);
+            if let Some((id, _)) =
+                crate::browser::address::KNOWN_ENGINES.get(dropdown.selected() as usize)
+            {
+                state.set_search_engine(id);
+            }
         });
     }
 

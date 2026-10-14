@@ -86,19 +86,36 @@ fn build_browser_window(
     root.set_vexpand(true);
 
     if private_mode {
-        let banner = gtk::Label::new(Some(&format!(
-            "{} · {} · {}",
-            rust_i18n::t!("privacy.title"),
-            rust_i18n::t!("privacy.temporary_data"),
-            rust_i18n::t!("privacy.search"),
-        )));
+        // Short banner with an explicit exit: private windows previously had
+        // no visible way back to normal browsing without restarting.
+        let banner = Box::new(Orientation::Horizontal, 8);
 
         banner.add_css_class("private-banner");
 
+        banner.set_halign(gtk::Align::Center);
         banner.set_margin_top(3);
         banner.set_margin_bottom(2);
         banner.set_margin_start(8);
         banner.set_margin_end(8);
+
+        let label = gtk::Label::new(Some(&rust_i18n::t!("privacy.title")));
+        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        label.set_halign(gtk::Align::Center);
+
+        let exit = gtk::Button::with_label(&rust_i18n::t!("privacy.exit"));
+        exit.add_css_class("flat");
+
+        {
+            let app = app.clone();
+            let state = state.clone();
+
+            exit.connect_clicked(move |_| {
+                build_window(&app, state.clone());
+            });
+        }
+
+        banner.append(&label);
+        banner.append(&exit);
 
         root.append(&banner);
     }

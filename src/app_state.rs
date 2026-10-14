@@ -33,7 +33,10 @@ fn default_cookie_policy() -> String {
 }
 
 fn default_language() -> String {
-    i18n::system_locale().to_string()
+    // Default to English; the user can switch to Spanish in Settings.
+    // (Using the system locale here made fresh profiles start in Spanish
+    // on es systems, which testers did not want as default.)
+    "en".to_string()
 }
 
 type LanguageListener = Weak<dyn Fn()>;
