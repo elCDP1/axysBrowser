@@ -56,9 +56,15 @@ pub fn route(
 
         "axys://settings" => Some(build_settings(state).upcast()),
 
-        "axys://tools" => {
-            Some(build_tools(on_downloads, on_history, on_clear_browsing_data).upcast())
-        }
+        "axys://tools" => Some(
+            build_tools(
+                on_downloads,
+                on_history,
+                on_clear_browsing_data,
+                state.history.clone(),
+            )
+            .upcast(),
+        ),
 
         "axys://downloads" => Some(build_downloads(state).upcast()),
 

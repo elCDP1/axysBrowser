@@ -3,7 +3,7 @@ use gtk::{MenuButton, gio};
 use std::cell::Cell;
 use std::rc::Rc;
 
-pub fn build_menu_model() -> gio::Menu {
+pub fn build_menu_model(private_mode: bool) -> gio::Menu {
     let navigation = gio::Menu::new();
 
     navigation.append(Some(&rust_i18n::t!("app.new_tab")), Some("win.new-tab"));
@@ -26,10 +26,15 @@ pub fn build_menu_model() -> gio::Menu {
 
     menu.append(Some(&rust_i18n::t!("app.downloads")), Some("win.downloads"));
 
-    menu.append(
-        Some(&rust_i18n::t!("app.privacy_window")),
-        Some("win.privacy"),
-    );
+    // Toggle: inside a private window this item exits back to normal mode.
+    if private_mode {
+        menu.append(Some(&rust_i18n::t!("privacy.exit")), Some("win.privacy"));
+    } else {
+        menu.append(
+            Some(&rust_i18n::t!("app.privacy_window")),
+            Some("win.privacy"),
+        );
+    }
 
     menu.append(Some(&rust_i18n::t!("app.tools")), Some("win.tools"));
 
@@ -38,11 +43,11 @@ pub fn build_menu_model() -> gio::Menu {
     menu
 }
 
-pub fn build_menu() -> MenuButton {
+pub fn build_menu(private_mode: bool) -> MenuButton {
     let button = MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text(rust_i18n::t!("app.menu").as_ref())
-        .menu_model(&build_menu_model())
+        .menu_model(&build_menu_model(private_mode))
         .build();
 
     track_menu_button(&button);

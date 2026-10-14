@@ -2,10 +2,13 @@ use gtk::prelude::*;
 use gtk::{Box, Button, Label, Orientation};
 use std::rc::Rc;
 
+use crate::browser::history::HistoryManager;
+
 pub fn build_tools(
     on_downloads: Rc<dyn Fn()>,
     on_history: Rc<dyn Fn()>,
     on_clear_browsing_data: Rc<dyn Fn()>,
+    history: HistoryManager,
 ) -> Box {
     let page = Box::new(Orientation::Vertical, 14);
 
@@ -35,14 +38,14 @@ pub fn build_tools(
         });
     }
 
-    let history = Button::with_label(&rust_i18n::t!("history.title"));
+    let history_button = Button::with_label(&rust_i18n::t!("history.title"));
 
-    history.set_halign(gtk::Align::Start);
+    history_button.set_halign(gtk::Align::Start);
 
     {
         let callback = on_history.clone();
 
-        history.connect_clicked(move |_| {
+        history_button.connect_clicked(move |_| {
             callback();
         });
     }
@@ -70,6 +73,39 @@ pub fn build_tools(
         });
     }
 
+    // Manual age-based history cleanup (the manager also caps the total at
+    // MAX_HISTORY_ENTRIES, oldest first).
+    let purge_title = Label::new(Some(&rust_i18n::t!("history.purge_title")));
+
+    purge_title.add_css_class("title-3");
+
+    purge_title.set_halign(gtk::Align::Start);
+
+    let purge_row = Box::new(Orientation::Horizontal, 8);
+
+    for (label_key, max_age_secs) in [
+        ("history.older_day", 86_400u64),
+        ("history.older_week", 604_800u64),
+        ("history.older_month", 2_592_000u64),
+    ] {
+        let purge = Button::with_label(&rust_i18n::t!(label_key));
+
+        purge.set_halign(gtk::Align::Start);
+
+        {
+            let history = history.clone();
+            let status = status.clone();
+
+            purge.connect_clicked(move |_| {
+                let removed = history.remove_older_than(max_age_secs);
+
+                status.set_text(&rust_i18n::t!("tools.purged", count = removed));
+            });
+        }
+
+        purge_row.append(&purge);
+    }
+
     let note = Label::new(Some(&rust_i18n::t!("tools.note")));
 
     note.add_css_class("dim-label");
@@ -80,11 +116,15 @@ pub fn build_tools(
 
     page.append(&downloads);
 
-    page.append(&history);
+    page.append(&history_button);
 
     page.append(&browsing_data);
 
     page.append(&status);
+
+    page.append(&purge_title);
+
+    page.append(&purge_row);
 
     page.append(&note);
 

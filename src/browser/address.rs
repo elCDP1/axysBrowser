@@ -32,6 +32,15 @@ fn default_config() -> SearchConfig {
     })
 }
 
+/// Display label for an engine id (falls back to the id itself).
+pub fn engine_display_name(id: &str) -> &str {
+    KNOWN_ENGINES
+        .iter()
+        .find(|(known, _)| *known == id)
+        .map(|(_, name)| *name)
+        .unwrap_or(id)
+}
+
 pub fn load_config() -> SearchConfig {
     // The engine list is embedded at build time. (Reading it from a path
     // relative to the working directory made behaviour depend on where the

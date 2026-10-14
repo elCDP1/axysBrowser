@@ -10,7 +10,7 @@ app:
   back: "Back"
   forward: "Forward"
   reload: "Reload"
-  enter_url: "Enter URL"
+  enter_url: "Search using %{engine} or type a URL"
   search_or_enter_url: "Search or enter URL"
   close_tab: "Close tab"
 
@@ -49,6 +49,7 @@ error:
   tls_title: "Insecure connection"
   tls_detail: "The site presented an invalid TLS certificate, so the connection was blocked."
   hint: "Press Ctrl+R or the reload button to try again."
+  timeout_detail: "The page took too long to respond. Check your connection and reload to try again."
 
 downloads:
   title: "Downloads"
@@ -70,6 +71,7 @@ tools:
   browsing_data: "Browsing data"
   clear_browsing_data: "Clear browsing data"
   cleared: "Browsing data cleared."
+  purged: "Deleted %{count} entries."
   note: "History, cookies, favicon cache and disk cache. Bookmarks are kept."
   open_downloads: "Downloads"
 
@@ -111,6 +113,10 @@ history:
   empty: "No history yet."
   open: "Open"
   delete: "Delete"
+  purge_title: "Delete older than"
+  older_day: "24 hours"
+  older_week: "7 days"
+  older_month: "30 days"
 
 bookmarks:
   add: "Add bookmark"
@@ -121,3 +127,9 @@ bookmarks:
   save: "Save"
   cancel: "Cancel"
   remove: "Remove"
+
+find:
+  title: "Find in page"
+  previous: "Previous match"
+  next: "Next match"
+  close: "Close find bar"

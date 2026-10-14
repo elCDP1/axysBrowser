@@ -374,6 +374,15 @@ impl BrowserEngine {
         )
     }
 
+    /// Shows the generic load-failure page for a locally detected timeout
+    /// (used by the navigation watchdog; WebKit itself has no load timeout).
+    pub fn show_timeout_page(view: &WebView, uri: &str) {
+        let title = rust_i18n::t!("error.load_title").to_string();
+        let detail = rust_i18n::t!("error.timeout_detail").to_string();
+
+        view.load_alternate_html(&Self::error_page(&title, &detail, uri), uri, None);
+    }
+
     fn wire_crash_recovery(view: &WebView) {
         view.connect_web_process_terminated(|view, reason| {
             let uri = view.uri().map(|u| u.to_string()).unwrap_or_default();

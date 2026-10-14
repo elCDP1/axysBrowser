@@ -16,8 +16,9 @@ use crate::browser::tabs::Tab;
 use crate::internal::router;
 
 use super::bookmarks::BookmarkBar;
+use super::findbar::FindBar;
 use super::tabs::TabBar;
-use super::toolbar::Toolbar;
+use super::toolbar::{Toolbar, ToolbarOptions};
 
 fn maximize_window(window: &ApplicationWindow) {
     window.maximize();
@@ -85,40 +86,8 @@ fn build_browser_window(
     root.set_hexpand(true);
     root.set_vexpand(true);
 
-    if private_mode {
-        // Short banner with an explicit exit: private windows previously had
-        // no visible way back to normal browsing without restarting.
-        let banner = Box::new(Orientation::Horizontal, 8);
-
-        banner.add_css_class("private-banner");
-
-        banner.set_halign(gtk::Align::Center);
-        banner.set_margin_top(3);
-        banner.set_margin_bottom(2);
-        banner.set_margin_start(8);
-        banner.set_margin_end(8);
-
-        let label = gtk::Label::new(Some(&rust_i18n::t!("privacy.title")));
-        label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        label.set_halign(gtk::Align::Center);
-
-        let exit = gtk::Button::with_label(&rust_i18n::t!("privacy.exit"));
-        exit.add_css_class("flat");
-
-        {
-            let app = app.clone();
-            let state = state.clone();
-
-            exit.connect_clicked(move |_| {
-                build_window(&app, state.clone());
-            });
-        }
-
-        banner.append(&label);
-        banner.append(&exit);
-
-        root.append(&banner);
-    }
+    // Note: private mode is a window mode toggled from the menu — there is
+    // deliberately no top banner (it wasted space and clipped its text).
 
     let tabs = Rc::new(RefCell::new(Vec::<Tab>::new()));
 
@@ -128,6 +97,9 @@ fn build_browser_window(
     /// URIs (plus titles) of recently closed tabs, for Ctrl+Shift+T reopen.
     /// Per window, so private restores stay inside the private window.
     const MAX_CLOSED_TABS: usize = 25;
+
+    /// Seconds without finishing a load before the watchdog stops it.
+    const LOAD_TIMEOUT_SECS: u64 = 60;
 
     let closed_tabs = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
 
@@ -147,6 +119,8 @@ fn build_browser_window(
 
     let bookmark_bar_slot: Rc<RefCell<Option<BookmarkBar>>> = Rc::new(RefCell::new(None));
 
+    let findbar_slot: Rc<RefCell<Option<FindBar>>> = Rc::new(RefCell::new(None));
+
     let select_tab: Rc<dyn Fn(usize)> = {
         let tabs = tabs.clone();
         let active_id = active_id.clone();
@@ -155,6 +129,7 @@ fn build_browser_window(
         let toolbar_slot = toolbar_slot.clone();
         let tabbar_slot = tabbar_slot.clone();
         let bookmark_bar_slot = bookmark_bar_slot.clone();
+        let findbar_slot = findbar_slot.clone();
 
         Rc::new(move |id| {
             let tab = {
@@ -180,6 +155,11 @@ fn build_browser_window(
             top_stack.set_visible_child(&content);
 
             *current_web_view.borrow_mut() = Some(web_view.clone());
+
+            // Keep an open findbar searching in the newly shown tab.
+            if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                findbar.research_in(&web_view);
+            }
 
             if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                 toolbar.address.set_text(&uri);
@@ -379,6 +359,7 @@ fn build_browser_window(
 
             if !target.starts_with("http://")
                 && !target.starts_with("https://")
+                && !target.starts_with("file://")
                 && target != "about:blank"
             {
                 return;
@@ -427,6 +408,39 @@ fn build_browser_window(
             }
 
             BrowserEngine::load(&web_view, &target);
+
+            // Hang watchdog: if the page still hasn't finished after
+            // LOAD_TIMEOUT, stop it and show the error page instead of
+            // spinning forever. Guarded by tab + URI so a later
+            // navigation in the same tab is never killed by mistake.
+            {
+                let weak = web_view.downgrade();
+                let tabs = tabs.clone();
+                let target = target.clone();
+
+                gtk::glib::timeout_add_local_once(
+                    std::time::Duration::from_secs(LOAD_TIMEOUT_SECS),
+                    move || {
+                        let Some(view) = weak.upgrade() else {
+                            return;
+                        };
+
+                        let waiting = tabs
+                            .borrow()
+                            .iter()
+                            .find(|tab| tab.id == id)
+                            .is_some_and(|tab| tab.uri == target);
+
+                        if waiting && view.is_loading() {
+                            eprintln!("Load timed out: {target}");
+
+                            view.stop_loading();
+
+                            BrowserEngine::show_timeout_page(&view, &target);
+                        }
+                    },
+                );
+            }
         })
     };
 
@@ -783,13 +797,11 @@ fn build_browser_window(
                 }
             }
 
-            let first_uri = starting_uri.map(|uri| uri.to_string()).unwrap_or_else(|| {
-                if private_mode {
-                    "axys://privacy".to_string()
-                } else {
-                    "axys://newtab".to_string()
-                }
-            });
+            // Private windows open a normal new tab too; private mode is
+            // indicated by the window title and menu, not a landing page.
+            let first_uri = starting_uri
+                .map(|uri| uri.to_string())
+                .unwrap_or_else(|| "axys://newtab".to_string());
 
             let first_page = router::page_name(&first_uri).unwrap_or("newtab");
 
@@ -1055,7 +1067,11 @@ fn build_browser_window(
         },
         go_back.clone(),
         go_forward.clone(),
-        state.clone(),
+        ToolbarOptions {
+            state: state.clone(),
+            search: search.clone(),
+            private_mode,
+        },
     );
 
     *toolbar_slot.borrow_mut() = Some(toolbar);
@@ -1085,7 +1101,20 @@ fn build_browser_window(
 
     root.append(&top_stack);
 
-    window.set_child(Some(&root));
+    // Floating findbar lives in an overlay above the whole window content.
+    let findbar = FindBar::new(current_web_view.clone());
+
+    *findbar_slot.borrow_mut() = Some(findbar);
+
+    let overlay = gtk::Overlay::new();
+
+    overlay.set_child(Some(&root));
+
+    if let Some(findbar) = findbar_slot.borrow().as_ref() {
+        overlay.add_overlay(&findbar.container);
+    }
+
+    window.set_child(Some(&overlay));
 
     let window_weak = window.downgrade();
 
@@ -1098,6 +1127,7 @@ fn build_browser_window(
         let bookmark_bar_slot = bookmark_bar_slot.clone();
         let navigate_tab = navigate_tab.clone();
         let state = state.clone();
+        let window_weak = window_weak.clone();
 
         Rc::new(move || {
             let tab_data = {
@@ -1280,8 +1310,11 @@ fn build_browser_window(
         let current_web_view = current_web_view.clone();
         let go_back = go_back.clone();
         let go_forward = go_forward.clone();
+        let navigate_tab = navigate_tab.clone();
         let app_for_shortcuts = app.clone();
         let state_for_shortcuts = state.clone();
+        let window_weak = window_weak.clone();
+        let findbar_slot = findbar_slot.clone();
 
         keyboard.connect_key_pressed(move |_, key, _, modifiers| {
             let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
@@ -1325,14 +1358,10 @@ fn build_browser_window(
                         }
 
                         'l' => {
+                            // Focus the address without deleting anything;
+                            // the focus handler selects everything.
                             if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                                 toolbar.address.grab_focus();
-
-                                if toolbar.address.text().starts_with("axys://") {
-                                    toolbar.address.set_text("");
-                                }
-
-                                toolbar.address.select_region(0, -1);
                             }
 
                             return Propagation::Stop;
@@ -1389,6 +1418,40 @@ fn build_browser_window(
                         'd' if !shift => {
                             if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                                 toolbar.activate_bookmark();
+                            }
+
+                            return Propagation::Stop;
+                        }
+
+                        // Ctrl+F opens the find-in-page bar.
+                        'f' => {
+                            if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                                findbar.show();
+                            }
+
+                            return Propagation::Stop;
+                        }
+
+                        // Ctrl+O opens a local file in the active tab.
+                        'o' => {
+                            if let Some(parent) = app_for_shortcuts.active_window() {
+                                let dialog = gtk::FileDialog::new();
+
+                                let navigate_tab = navigate_tab.clone();
+                                let active_id = active_id.clone();
+
+                                dialog.open(
+                                    Some(&parent),
+                                    None::<&gio::Cancellable>,
+                                    move |result| {
+                                        if let Ok(file) = result {
+                                            navigate_tab(
+                                                active_id.get(),
+                                                file.uri().to_string(),
+                                            );
+                                        }
+                                    },
+                                );
                             }
 
                             return Propagation::Stop;
@@ -1525,13 +1588,44 @@ fn build_browser_window(
                 return Propagation::Stop;
             }
 
-            if key == gdk::Key::Escape
-                && let Some(view) = current_web_view.borrow().as_ref()
-                && view.is_loading()
-            {
-                view.stop_loading();
+            // F6 focuses the address bar (Chromium parity with Ctrl+L).
+            if key == gdk::Key::F6 {
+                if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                    toolbar.address.grab_focus();
+                }
 
                 return Propagation::Stop;
+            }
+
+            if key == gdk::Key::F11 {
+                if let Some(win) = window_weak.upgrade() {
+                    if win.is_fullscreen() {
+                        win.unfullscreen();
+                    } else {
+                        win.fullscreen();
+                    }
+                }
+
+                return Propagation::Stop;
+            }
+
+            // Esc first closes the findbar, otherwise stops loading.
+            if key == gdk::Key::Escape {
+                if let Some(findbar) = findbar_slot.borrow().as_ref()
+                    && findbar.is_visible()
+                {
+                    findbar.hide();
+
+                    return Propagation::Stop;
+                }
+
+                if let Some(view) = current_web_view.borrow().as_ref()
+                    && view.is_loading()
+                {
+                    view.stop_loading();
+
+                    return Propagation::Stop;
+                }
             }
 
             Propagation::Proceed
@@ -1581,10 +1675,15 @@ fn build_browser_window(
         let app = app.clone();
         let state = state.clone();
 
+        // Toggle: from a private window this opens a normal window instead.
         let action = gio::SimpleAction::new("privacy", None);
 
         action.connect_activate(move |_, _| {
-            build_private_window(&app, state.clone());
+            if private_mode {
+                build_window(&app, state.clone());
+            } else {
+                build_private_window(&app, state.clone());
+            }
         });
 
         window.add_action(&action);

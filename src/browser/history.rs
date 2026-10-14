@@ -157,6 +157,30 @@ impl HistoryManager {
         }
     }
 
+    /// Deletes every entry older than `max_age_secs`. Returns how many were
+    /// removed. Used by the manual "delete older than …" tools.
+    pub fn remove_older_than(&self, max_age_secs: u64) -> usize {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
+
+        let removed = {
+            let mut entries = self.entries.borrow_mut();
+
+            let before = entries.len();
+
+            entries.retain(|entry| now.saturating_sub(entry.visited_at) <= max_age_secs);
+
+            before - entries.len()
+        };
+
+        if removed > 0 {
+            self.persist_and_notify();
+        }
+
+        removed
+    }
+
     pub fn subscribe(&self, callback: &Rc<dyn Fn()>) {
         self.listeners.borrow_mut().push(Rc::downgrade(callback));
     }
@@ -213,5 +237,59 @@ fn sanitize_title(title: String, url: &str) -> String {
         url.to_string()
     } else {
         title.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_manager(name: &str) -> HistoryManager {
+        HistoryManager {
+            entries: Rc::new(RefCell::new(Vec::new())),
+            path: std::env::temp_dir().join(format!("axys-history-test-{name}.toml")),
+            listeners: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn entry_at(url: &str, visited_at: u64) -> HistoryEntry {
+        HistoryEntry {
+            title: url.to_string(),
+            url: url.to_string(),
+            visited_at,
+        }
+    }
+
+    #[test]
+    fn remove_older_than_keeps_recent_entries() {
+        let manager = test_manager("purge");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+
+        manager.entries.borrow_mut().push(entry_at("https://old.example", now - 100_000));
+        manager.entries.borrow_mut().push(entry_at("https://new.example", now - 10));
+
+        let removed = manager.remove_older_than(3_600);
+
+        assert_eq!(removed, 1);
+
+        let remaining = manager.entries();
+
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].url, "https://new.example");
+    }
+
+    #[test]
+    fn clear_empties_everything() {
+        let manager = test_manager("clear");
+
+        manager.entries.borrow_mut().push(entry_at("https://a.example", 1));
+        manager.entries.borrow_mut().push(entry_at("https://b.example", 2));
+
+        manager.clear();
+
+        assert!(manager.entries().is_empty());
     }
 }

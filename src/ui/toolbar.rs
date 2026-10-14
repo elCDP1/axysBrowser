@@ -10,11 +10,20 @@ use webkit6::{WebView, prelude::WebViewExt};
 use super::menu::{build_menu, build_menu_model};
 
 use crate::app_state::AppState;
+use crate::browser::address::{SearchConfig, engine_display_name};
 use crate::browser::bookmarks::Bookmark;
 use crate::browser::downloads::DownloadStatus;
 use crate::internal::pages::downloads::build_row;
 
 type Action = Rc<dyn Fn()>;
+
+/// Refreshes the address placeholder with the current default engine name.
+fn update_placeholder(address: &Entry, search: &Rc<RefCell<SearchConfig>>) {
+    let engine = search.borrow().default_engine.clone();
+    let label = engine_display_name(&engine);
+
+    address.set_placeholder_text(Some(&rust_i18n::t!("app.enter_url", engine = label)));
+}
 
 fn bookmark_dialog(
     parent: &gtk::Widget,
@@ -180,6 +189,15 @@ pub struct Toolbar {
     bookmark_refresh: Action,
     _downloads_refresh: Action,
     _language_refresh: Action,
+    _placeholder_refresh: Action,
+}
+
+/// Window-scoped dependencies for [`Toolbar::new`], kept together so the
+/// constructor stays readable as options grow.
+pub struct ToolbarOptions {
+    pub state: Rc<AppState>,
+    pub search: Rc<RefCell<SearchConfig>>,
+    pub private_mode: bool,
 }
 
 impl Toolbar {
@@ -189,8 +207,13 @@ impl Toolbar {
         on_reload: Action,
         on_back: Action,
         on_forward: Action,
-        state: Rc<AppState>,
+        options: ToolbarOptions,
     ) -> Self {
+        let ToolbarOptions {
+            state,
+            search,
+            private_mode,
+        } = options;
         let toolbar = CenterBox::new();
 
         toolbar.set_margin_top(3);
@@ -251,12 +274,11 @@ impl Toolbar {
         navigation.append(&forward);
         navigation.append(&reload);
 
-        let address = Entry::builder()
-            .placeholder_text(rust_i18n::t!("app.enter_url").as_ref())
-            .hexpand(true)
-            .build();
+        let address = Entry::builder().hexpand(true).build();
 
         address.add_css_class("address-top");
+
+        update_placeholder(&address, &search);
 
         {
             let on_navigate = on_navigate.clone();
@@ -266,19 +288,22 @@ impl Toolbar {
             });
         }
 
+        // Chromium-style address selection: focusing selects everything
+        // (deferred to an idle so the focusing click places its cursor
+        // first), but the text is never deleted. Typing replaces the
+        // selection; a second click while focused just places the cursor
+        // (GTK default, no focus event involved).
         let focus_controller = gtk::EventControllerFocus::new();
 
         {
             let address = address.clone();
 
             focus_controller.connect_enter(move |_| {
-                let text = address.text().to_string();
+                let address = address.clone();
 
-                if text.starts_with("axys://") {
-                    address.set_text("");
-                }
-
-                address.select_region(0, -1);
+                gtk::glib::idle_add_local_once(move || {
+                    address.select_region(0, -1);
+                });
             });
         }
 
@@ -404,7 +429,7 @@ impl Toolbar {
             });
         }
 
-        let menu = build_menu();
+        let menu = build_menu(private_mode);
         menu.add_css_class("flat");
 
         right.append(&bookmark);
@@ -532,6 +557,8 @@ impl Toolbar {
 
             let bookmark_refresh = bookmark_refresh.clone();
 
+            let search = search.clone();
+
             Rc::new(move || {
                 back.set_tooltip_text(Some(rust_i18n::t!("app.back").as_ref()));
 
@@ -539,7 +566,7 @@ impl Toolbar {
 
                 reload.set_tooltip_text(Some(rust_i18n::t!("app.reload").as_ref()));
 
-                address.set_placeholder_text(Some(rust_i18n::t!("app.enter_url").as_ref()));
+                update_placeholder(&address, &search);
 
                 downloads.set_tooltip_text(Some(rust_i18n::t!("app.downloads").as_ref()));
 
@@ -547,13 +574,25 @@ impl Toolbar {
 
                 menu.set_tooltip_text(Some(rust_i18n::t!("app.menu").as_ref()));
 
-                menu.set_menu_model(Some(&build_menu_model()));
+                menu.set_menu_model(Some(&build_menu_model(private_mode)));
 
                 downloads_refresh();
             })
         };
 
         state.subscribe_language(&language_refresh);
+
+        // Engine changes (Settings/Welcome) update the placeholder live.
+        let placeholder_refresh: Action = {
+            let address = address.clone();
+            let search = search.clone();
+
+            Rc::new(move || {
+                update_placeholder(&address, &search);
+            })
+        };
+
+        state.subscribe_settings(&placeholder_refresh);
 
         Self {
             root: toolbar,
@@ -566,6 +605,7 @@ impl Toolbar {
             bookmark_refresh: bookmark_refresh.clone(),
             _downloads_refresh: downloads_refresh,
             _language_refresh: language_refresh,
+            _placeholder_refresh: placeholder_refresh,
         }
     }
 

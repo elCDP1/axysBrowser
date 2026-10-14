@@ -290,6 +290,15 @@ pub fn stylesheet(dark: bool) -> String {
             color: @axys_fg;
         }}
 
+        .findbar {{
+            padding: 6px 10px;
+            border-radius: 12px;
+            background-color: @axys_bg;
+            color: @axys_fg;
+            border: 1px solid alpha(@axys_fg, {border_alpha});
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+        }}
+
         .bookmark-bar {{
             padding: 4px 8px;
             margin: 0;

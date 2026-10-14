@@ -10,7 +10,7 @@ app:
   back: "Atrás"
   forward: "Adelante"
   reload: "Recargar"
-  enter_url: "Introducir URL"
+  enter_url: "Buscar en %{engine} o escribir una URL"
   search_or_enter_url: "Buscar o introducir URL"
   close_tab: "Cerrar pestaña"
 
@@ -49,6 +49,7 @@ error:
   tls_title: "Conexión no segura"
   tls_detail: "El sitio presentó un certificado TLS no válido, así que la conexión se bloqueó."
   hint: "Pulsa Ctrl+R o el botón de recargar para intentarlo de nuevo."
+  timeout_detail: "La página tardó demasiado en responder. Revisa tu conexión y recarga para intentarlo de nuevo."
 
 downloads:
   title: "Descargas"
@@ -70,6 +71,7 @@ tools:
   browsing_data: "Datos de navegación"
   clear_browsing_data: "Borrar datos de navegación"
   cleared: "Datos de navegación borrados."
+  purged: "%{count} entradas eliminadas."
   note: "Historial, cookies, caché de faviconos y caché de disco. Los marcadores se conservan."
   open_downloads: "Descargas"
 
@@ -111,6 +113,10 @@ history:
   empty: "Todavía no hay historial."
   open: "Abrir"
   delete: "Eliminar"
+  purge_title: "Borrar anteriores a"
+  older_day: "24 horas"
+  older_week: "7 días"
+  older_month: "30 días"
 
 bookmarks:
   add: "Añadir marcador"
@@ -121,3 +127,9 @@ bookmarks:
   save: "Guardar"
   cancel: "Cancelar"
   remove: "Eliminar"
+
+find:
+  title: "Buscar en la página"
+  previous: "Anterior coincidencia"
+  next: "Siguiente coincidencia"
+  close: "Cerrar búsqueda"
