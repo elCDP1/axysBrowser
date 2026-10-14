@@ -94,12 +94,7 @@ about:
 
 privacy:
   title: "Modo privado"
-  description: "Datos web temporales y una sesión de navegación aislada."
-  search: "Brave Search"
   subtitle: "Una sesión de navegación temporal"
-  temporary_data: "datos web temporales"
-  details: "Esta ventana usa una sesión de navegación efímera y aislada. Los datos de los sitios no se conservan al cerrar la ventana de privacidad. En este modo siempre se usa Brave Search."
-  note: "El modo privado no ofrece anonimato de red. Tu conexión sigue gestionándose con normalidad."
   continue: "Seguir navegando"
   exit: "Salir"
 

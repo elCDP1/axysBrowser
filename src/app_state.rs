@@ -266,6 +266,9 @@ impl AppState {
         self.settings.borrow_mut().search_engine = engine.to_string();
 
         self.save();
+
+        // Live-update subscribers (e.g. the address placeholder).
+        self.notify_settings_changed();
     }
 
     pub fn set_dark_mode(&self, dark: bool) {

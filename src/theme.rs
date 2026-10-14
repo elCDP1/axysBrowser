@@ -283,13 +283,6 @@ pub fn stylesheet(dark: bool) -> String {
             background: alpha(@axys_fg, 0.12);
         }}
 
-        .private-banner {{
-            padding: 6px 12px;
-            border-radius: 12px;
-            background: alpha(@axys_accent, 0.10);
-            color: @axys_fg;
-        }}
-
         .findbar {{
             padding: 6px 10px;
             border-radius: 12px;

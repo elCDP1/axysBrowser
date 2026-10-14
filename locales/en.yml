@@ -94,12 +94,7 @@ about:
 
 privacy:
   title: "Privacy mode"
-  description: "Temporary website data and an isolated browsing session."
-  search: "Brave Search"
   subtitle: "A temporary browsing session"
-  temporary_data: "temporary website data"
-  details: "This window uses a separate ephemeral browsing session. Website data is not persisted when the privacy window closes. Brave Search is always used for searches in this mode."
-  note: "Privacy mode does not provide network anonymity. Your network connection is still handled normally."
   continue: "Continue browsing"
   exit: "Exit"
 
