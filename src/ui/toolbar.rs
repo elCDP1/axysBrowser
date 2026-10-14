@@ -1,6 +1,6 @@
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, CenterBox, Entry, Image, Orientation, Spinner, Stack,
+    Align, Box, Button, CenterBox, Entry, Image, Orientation, Stack,
     Window,
 };
 use std::cell::RefCell;
@@ -8,6 +8,7 @@ use std::rc::Rc;
 use webkit6::{WebView, prelude::WebViewExt};
 
 use super::menu::MenuPanel;
+use super::spinner::LoadingSpinner;
 
 use crate::app_state::AppState;
 use crate::browser::address::{SearchConfig, engine_display_name};
@@ -182,7 +183,7 @@ pub struct Toolbar {
     pub root: CenterBox,
     pub address: Entry,
     reload_stack: Stack,
-    spinner: Spinner,
+    spinner: LoadingSpinner,
     back: Button,
     forward: Button,
     bookmark: Button,
@@ -269,11 +270,10 @@ impl Toolbar {
             .tooltip_text(rust_i18n::t!("app.reload").as_ref())
             .build();
 
-        let spinner = Spinner::new();
-        spinner.set_size_request(16, 16);
+        let spinner = LoadingSpinner::new();
 
         reload_stack.add_named(&reload_image, Some("reload"));
-        reload_stack.add_named(&spinner, Some("loading"));
+        reload_stack.add_named(spinner.widget(), Some("loading"));
         reload_stack.set_visible_child_name("reload");
 
         reload.set_child(Some(&reload_stack));
