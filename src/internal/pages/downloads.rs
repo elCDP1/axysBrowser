@@ -23,6 +23,8 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
     name.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
 
+    name.set_max_width_chars(32);
+
     info.append(&name);
 
     let status_text = match &entry.status {
@@ -51,6 +53,10 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
     status.add_css_class("dim-label");
 
     status.set_halign(Align::Start);
+
+    status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+    status.set_max_width_chars(32);
 
     info.append(&status);
 

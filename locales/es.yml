@@ -98,7 +98,7 @@ privacy:
   details: "Esta ventana usa una sesión de navegación efímera y aislada. Los datos de los sitios no se conservan al cerrar la ventana de privacidad. En este modo siempre se usa Brave Search."
   note: "El modo privado no ofrece anonimato de red. Tu conexión sigue gestionándose con normalidad."
   continue: "Seguir navegando"
-  exit: "Salir del modo privado"
+  exit: "Salir"
 
 menu:
   navigation: "Navegación"

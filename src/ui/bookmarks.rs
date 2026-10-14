@@ -40,6 +40,10 @@ impl BookmarkBar {
 
         let overflow_list = Box::new(Orientation::Vertical, 4);
 
+        // Fixed width (like the downloads popover) so long titles ellipsize
+        // instead of stretching/clipping the popup.
+        overflow_list.set_size_request(280, -1);
+
         overflow_list.set_margin_top(8);
         overflow_list.set_margin_bottom(8);
         overflow_list.set_margin_start(8);
@@ -170,7 +174,7 @@ impl BookmarkBar {
                             row.append(&icon);
                         }
 
-                        let overflow_item = Button::with_label(&title);
+                        let overflow_item = Button::new();
 
                         overflow_item.add_css_class("bookmark-overflow-item");
 
@@ -179,6 +183,22 @@ impl BookmarkBar {
                         overflow_item.set_hexpand(true);
 
                         overflow_item.set_tooltip_text(Some(&url));
+
+                        // Custom label (instead of with_label) so long titles
+                        // ellipsize instead of being clipped by the popover.
+                        {
+                            let item_label = Label::new(Some(&title));
+
+                            item_label.set_halign(Align::Start);
+
+                            item_label.set_hexpand(true);
+
+                            item_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+
+                            item_label.set_max_width_chars(30);
+
+                            overflow_item.set_child(Some(&item_label));
+                        }
 
                         row.append(&overflow_item);
 

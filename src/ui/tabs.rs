@@ -115,6 +115,10 @@ impl TabBar {
                 .tooltip_text(rust_i18n::t!("app.close_tab").as_ref())
                 .build();
 
+            // Fixed small box, vertically centered in the tab row, so the
+            // icon cannot drift when the row height changes.
+            close.set_valign(gtk::Align::Center);
+
             close.add_css_class("tab-close");
 
             close.add_css_class("flat");

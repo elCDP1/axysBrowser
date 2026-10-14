@@ -231,9 +231,11 @@ pub fn stylesheet(dark: bool) -> String {
 
         .tab-close {{
             opacity: 0;
-            min-width: 20px;
-            min-height: 20px;
+            min-width: 24px;
+            min-height: 24px;
             padding: 0;
+            margin: 0;
+            border: none;
             border-radius: 6px;
         }}
 
