@@ -190,6 +190,15 @@ pub fn stylesheet(dark: bool) -> String {
             background: alpha(@axys_fg, 0.07);
         }}
 
+        .private-window .address-top,
+        .private-window .address-top:focus {{
+            border-color: rgba(155, 107, 255, 0.85);
+        }}
+
+        .private-window .tab.active {{
+            box-shadow: inset 0 -2px 0 rgba(155, 107, 255, 0.95);
+        }}
+
         .search-main {{
             min-height: 34px;
             padding: 10px 16px;

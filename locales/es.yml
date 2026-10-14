@@ -128,3 +128,7 @@ find:
   previous: "Anterior coincidencia"
   next: "Siguiente coincidencia"
   close: "Cerrar búsqueda"
+
+dialog:
+  ok: "Aceptar"
+  cancel: "Cancelar"

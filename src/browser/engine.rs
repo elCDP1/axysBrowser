@@ -313,16 +313,58 @@ impl BrowserEngine {
     }
 
     fn wire_dialogs(view: &WebView) {
-        view.connect_script_dialog(|_, dialog| {
-            // Auto-handle alert()/confirm()/prompt()/beforeunload so a page
-            // can never trap the tab in a modal loop that looks like a hang.
+        view.connect_script_dialog(|view, dialog| {
+            // alert()/confirm() get a real, non-blocking dialog attached to
+            // the window (the old auto-answer made every "Are you sure?"
+            // fail). prompt()/beforeunload stay auto-handled so a page can
+            // never trap the tab in a modal loop that looks like a hang.
             match dialog.dialog_type() {
-                ScriptDialogType::Alert => {
-                    dialog.close();
-                }
-                ScriptDialogType::Confirm => {
-                    dialog.confirm_set_confirmed(false);
-                    dialog.close();
+                ScriptDialogType::Alert | ScriptDialogType::Confirm => {
+                    let is_confirm = dialog.dialog_type() == ScriptDialogType::Confirm;
+
+                    let Some(parent) = view.root().and_downcast::<gtk::Window>() else {
+                        // No window to attach to: fall back to the old behaviour.
+                        dialog.confirm_set_confirmed(false);
+                        dialog.close();
+
+                        return true;
+                    };
+
+                    let host = view
+                        .uri()
+                        .and_then(|uri| gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok())
+                        .and_then(|uri| uri.host().map(|host| host.to_string()))
+                        .unwrap_or_default();
+
+                    let buttons: Vec<String> = if is_confirm {
+                        vec![
+                            rust_i18n::t!("dialog.cancel").to_string(),
+                            rust_i18n::t!("dialog.ok").to_string(),
+                        ]
+                    } else {
+                        vec![rust_i18n::t!("dialog.ok").to_string()]
+                    };
+
+                    let ok_index = (buttons.len() - 1) as i32;
+
+                    let alert = gtk::AlertDialog::builder()
+                        .modal(true)
+                        .message(dialog.message().map(|m| m.to_string()).unwrap_or_default())
+                        .detail(host)
+                        .buttons(buttons)
+                        .default_button(ok_index)
+                        .cancel_button(if is_confirm { 0 } else { ok_index })
+                        .build();
+
+                    let dialog = dialog.clone();
+
+                    alert.choose(Some(&parent), None::<&gtk::gio::Cancellable>, move |result| {
+                        if is_confirm {
+                            dialog.confirm_set_confirmed(matches!(result, Ok(index) if index == ok_index));
+                        }
+
+                        dialog.close();
+                    });
                 }
                 ScriptDialogType::Prompt => {
                     let fallback = dialog

@@ -128,3 +128,7 @@ find:
   previous: "Previous match"
   next: "Next match"
   close: "Close find bar"
+
+dialog:
+  ok: "OK"
+  cancel: "Cancel"

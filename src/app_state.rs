@@ -191,14 +191,12 @@ impl AppState {
     pub fn save(&self) {
         let path = Self::config_path();
 
-        if let Some(parent) = path.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-
         let settings = self.settings.borrow();
 
-        if let Ok(text) = toml::to_string_pretty(&*settings) {
-            let _ = fs::write(path, text);
+        if let Ok(text) = toml::to_string_pretty(&*settings)
+            && let Err(error) = crate::paths::atomic_write(&path, &text)
+        {
+            eprintln!("Failed to save settings: {error}");
         }
     }
 

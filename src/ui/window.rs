@@ -69,6 +69,12 @@ fn build_browser_window(
         .default_height(720)
         .build();
 
+    // Private windows have no banner; this class drives a visible (purple)
+    // accent so they can never be mistaken for a normal window.
+    if private_mode {
+        window.add_css_class("private-window");
+    }
+
     if !state.css_installed.get()
         && let Some(display) = gdk::Display::default()
     {
@@ -153,6 +159,13 @@ fn build_browser_window(
             active_id.set(id);
 
             top_stack.set_visible_child(&content);
+
+            // Clear the previous tab's find highlights before switching.
+            if let Some(findbar) = findbar_slot.borrow().as_ref()
+                && let Some(previous) = current_web_view.borrow().as_ref()
+            {
+                findbar.stop_in(previous);
+            }
 
             *current_web_view.borrow_mut() = Some(web_view.clone());
 
@@ -407,12 +420,28 @@ fn build_browser_window(
                 }
             }
 
+            // Mark a fresh navigation (see Tab::nav_serial / committed).
+            let serial = {
+                let mut tabs = tabs.borrow_mut();
+
+                tabs.iter_mut()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| {
+                        tab.nav_serial += 1;
+                        tab.committed = false;
+
+                        tab.nav_serial
+                    })
+                    .unwrap_or(0)
+            };
+
             BrowserEngine::load(&web_view, &target);
 
-            // Hang watchdog: if the page still hasn't finished after
-            // LOAD_TIMEOUT, stop it and show the error page instead of
-            // spinning forever. Guarded by tab + URI so a later
-            // navigation in the same tab is never killed by mistake.
+            // Hang watchdog: if nothing was committed after LOAD_TIMEOUT_SECS
+            // (DNS/connect/TLS stuck), stop the load and show the error
+            // page instead of spinning forever. A page that already
+            // committed is never replaced (slow subresources are normal), and
+            // a later navigation in the same tab is never killed by mistake.
             {
                 let weak = web_view.downgrade();
                 let tabs = tabs.clone();
@@ -425,13 +454,13 @@ fn build_browser_window(
                             return;
                         };
 
-                        let waiting = tabs
+                        let stuck = tabs
                             .borrow()
                             .iter()
                             .find(|tab| tab.id == id)
-                            .is_some_and(|tab| tab.uri == target);
+                            .is_some_and(|tab| tab.nav_serial == serial && !tab.committed);
 
-                        if waiting && view.is_loading() {
+                        if stuck && view.is_loading() {
                             eprintln!("Load timed out: {target}");
 
                             view.stop_loading();
@@ -915,6 +944,19 @@ fn build_browser_window(
                         && let Some(toolbar) = slot.borrow().as_ref()
                     {
                         toolbar.set_loading(view.is_loading());
+                    }
+                });
+            }
+
+            {
+                let tabs = tabs.clone();
+
+                web_view.connect_load_changed(move |_, event| {
+                    if event == LoadEvent::Committed
+                        && let Ok(mut tabs) = tabs.try_borrow_mut()
+                        && let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id)
+                    {
+                        tab.committed = true;
                     }
                 });
             }
@@ -1681,6 +1723,12 @@ fn build_browser_window(
         action.connect_activate(move |_, _| {
             if private_mode {
                 build_window(&app, state.clone());
+
+                // "Exit private mode" really leaves it: close this window so
+                // no private session is left open behind the new one.
+                if let Some(window) = window_weak.upgrade() {
+                    window.close();
+                }
             } else {
                 build_private_window(&app, state.clone());
             }

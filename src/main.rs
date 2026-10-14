@@ -31,5 +31,7 @@ mod theme;
 mod ui;
 
 fn main() {
+    paths::secure_dirs();
+
     app::run();
 }

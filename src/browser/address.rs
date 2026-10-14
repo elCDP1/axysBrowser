@@ -63,7 +63,10 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return input.to_string();
     }
 
-    if input.starts_with("http://") || input.starts_with("https://") {
+    if input.starts_with("http://")
+        || input.starts_with("https://")
+        || input.starts_with("file://")
+    {
         return input.to_string();
     }
 
@@ -147,6 +150,16 @@ mod tests {
         assert_eq!(
             resolve_input("youtube.com", &config),
             "https://www.youtube.com"
+        );
+    }
+
+    #[test]
+    fn keeps_file_urls_untouched() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("file:///home/user/page.html", &config),
+            "file:///home/user/page.html"
         );
     }
 

@@ -2,7 +2,8 @@
 
 use std::env;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str) -> PathBuf {
@@ -40,8 +41,25 @@ pub fn cache_dir() -> PathBuf {
     xdg_dir("XDG_CACHE_HOME", &[".cache"], "axysbrowser-cache")
 }
 
+/// Creates the browser's config, data and cache directories owner-only
+/// (0700) and tightens them if an older version created them world-readable.
+/// Cookies, history and bookmarks live below these, so keeping the top-level
+/// directories private protects every file inside.
+pub fn secure_dirs() {
+    for dir in [config_dir(), data_dir(), cache_dir()] {
+        if let Err(error) = fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .and_then(|()| fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)))
+        {
+            eprintln!("Failed to secure {}: {error}", dir.display());
+        }
+    }
+}
+
 /// Writes through a temporary file + rename so a crash never leaves a
-/// half-written file behind.
+/// half-written file behind. Files are created owner-only (0600).
 pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
     let Some(parent) = path.parent() else {
         return Err(io::Error::new(
@@ -50,10 +68,23 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
         ));
     };
 
-    fs::create_dir_all(parent)?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
 
     let temporary = path.with_extension("tmp");
 
-    fs::write(&temporary, contents)?;
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&temporary)?;
+
+        file.write_all(contents.as_bytes())?;
+    }
+
     fs::rename(temporary, path)
 }

@@ -19,26 +19,24 @@ pub struct FindBar {
     entry: Entry,
     count: Label,
     current_web_view: Rc<RefCell<Option<WebView>>>,
-    hooked: Rc<RefCell<Option<FindController>>>,
+    hooked: Rc<RefCell<Vec<FindController>>>,
 }
 
 /// Hooks match-count feedback for `view`'s controller, at most once per
 /// controller (each tab owns its own).
 fn ensure_hooked(
-    hooked: &Rc<RefCell<Option<FindController>>>,
+    hooked: &Rc<RefCell<Vec<FindController>>>,
     view: &WebView,
     count: &Label,
     entry: &Entry,
 ) -> Option<FindController> {
     let find = view.find_controller()?;
 
-    let same = hooked
-        .borrow()
-        .as_ref()
-        .map(|known| known == &find)
-        .unwrap_or(false);
+    // Each tab owns its controller; remember every one already wired so
+    // switching tabs back and forth never stacks duplicate handlers.
+    let known = hooked.borrow().iter().any(|known| known == &find);
 
-    if !same {
+    if !known {
         let count_ok = count.clone();
         let entry_ok = entry.clone();
 
@@ -55,7 +53,7 @@ fn ensure_hooked(
             entry_fail.add_css_class("error");
         });
 
-        *hooked.borrow_mut() = Some(find.clone());
+        hooked.borrow_mut().push(find.clone());
     }
 
     Some(find)
@@ -127,7 +125,7 @@ impl FindBar {
             entry,
             count,
             current_web_view,
-            hooked: Rc::new(RefCell::new(None)),
+            hooked: Rc::new(RefCell::new(Vec::new())),
         };
 
         {
@@ -207,6 +205,15 @@ impl FindBar {
         self.container.set_visible(false);
 
         if let Some(view) = self.current_web_view.borrow().as_ref()
+            && let Some(find) = view.find_controller()
+        {
+            find.search_finish();
+        }
+    }
+
+    /// Clears the highlights left in `view` (the tab being switched away).
+    pub fn stop_in(&self, view: &WebView) {
+        if self.is_visible()
             && let Some(find) = view.find_controller()
         {
             find.search_finish();

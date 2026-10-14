@@ -9,6 +9,11 @@ pub struct Tab {
     pub web_view: WebView,
     pub history: Vec<String>,
     pub history_index: usize,
+    /// Incremented on every web navigation started from the UI; lets the
+    /// load watchdog tell whether it still refers to the current load.
+    pub nav_serial: u64,
+    /// True once the current load has committed (the page is being shown).
+    pub committed: bool,
 }
 
 impl Tab {
@@ -21,6 +26,8 @@ impl Tab {
             web_view,
             history: vec!["axys://newtab".to_string()],
             history_index: 0,
+            nav_serial: 0,
+            committed: false,
         }
     }
 
