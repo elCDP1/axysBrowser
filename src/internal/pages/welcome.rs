@@ -1,9 +1,10 @@
 use gtk::prelude::*;
-use gtk::{Box, Button, DropDown, Label, Orientation, Separator};
+use gtk::{Box, Button, Label, Orientation, Separator};
 use std::rc::Rc;
 
 use crate::app_state::AppState;
 use crate::browser::address::KNOWN_ENGINES;
+use crate::ui::menu::build_inline_picker;
 
 pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Box {
     let page = Box::new(Orientation::Vertical, 18);
@@ -25,28 +26,31 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
     let search_label = Label::new(Some(&rust_i18n::t!("welcome.search")));
     search_label.set_halign(gtk::Align::Start);
 
-    let names: Vec<&str> = KNOWN_ENGINES.iter().map(|(_, name)| *name).collect();
-
-    let search = DropDown::from_strings(&names);
+    let names: Vec<String> = KNOWN_ENGINES
+        .iter()
+        .map(|(_, name)| name.to_string())
+        .collect();
 
     let current = state.settings.borrow().search_engine.clone();
 
-    search.set_selected(
-        KNOWN_ENGINES
-            .iter()
-            .position(|(id, _)| *id == current)
-            .unwrap_or(0) as u32,
+    let selected = KNOWN_ENGINES
+        .iter()
+        .position(|(id, _)| *id == current)
+        .unwrap_or(0);
+
+    let (search, search_options) = build_inline_picker(
+        names,
+        selected,
+        {
+            let state = state.clone();
+
+            Rc::new(move |picked| {
+                if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
+                    state.set_search_engine(id);
+                }
+            })
+        },
     );
-
-    {
-        let state = state.clone();
-
-        search.connect_selected_notify(move |dropdown| {
-            if let Some((id, _)) = KNOWN_ENGINES.get(dropdown.selected() as usize) {
-                state.set_search_engine(id);
-            }
-        });
-    }
 
     let notice = Label::new(Some(&rust_i18n::t!("welcome.search_note")));
 
@@ -56,6 +60,10 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
 
     section.append(&search_label);
     section.append(&search);
+    // Centered column: keep toggle and list centered together.
+    search.set_halign(gtk::Align::Center);
+    search_options.set_halign(gtk::Align::Center);
+    section.append(&search_options);
     section.append(&notice);
 
     let separator = Separator::new(Orientation::Horizontal);

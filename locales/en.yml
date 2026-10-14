@@ -87,8 +87,8 @@ welcome:
 about:
   title: "About"
   description: "Linux-first web browser built with Rust, GTK4 and WebKitGTK."
-  author: "Original project by elCDP1"
-  copyright: "Copyright © 2026 elCDP1"
+  author: "Original project by CDP"
+  copyright: "Copyright © 2026 CDP"
   notice: "Derivative works may be modified and renamed, but must retain visible attribution to the original axysBrowser project and elCDP1."
   tooltip: "About axysBrowser"
 
@@ -97,9 +97,6 @@ privacy:
   subtitle: "A temporary browsing session"
   continue: "Continue browsing"
   exit: "Exit"
-
-menu:
-  navigation: "Navigation"
 
 history:
   title: "History"

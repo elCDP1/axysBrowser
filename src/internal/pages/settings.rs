@@ -1,8 +1,9 @@
 use gtk::prelude::*;
-use gtk::{Box, DropDown, Label, Orientation, ScrolledWindow, Switch};
+use gtk::{Box, Label, Orientation, ScrolledWindow, Switch};
 use std::rc::Rc;
 
 use crate::app_state::AppState;
+use crate::ui::menu::build_inline_picker;
 
 fn row(title: &str, description: &str) -> Box {
     let row = Box::new(Orientation::Horizontal, 12);
@@ -56,24 +57,24 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     appearance_title.set_halign(gtk::Align::Start);
 
-    let appearance = DropDown::from_strings(&[
-        &rust_i18n::t!("settings.dark"),
-        &rust_i18n::t!("settings.light"),
-    ]);
-
     let dark = state.settings.borrow().dark_mode;
 
-    appearance.set_selected(if dark { 0 } else { 1 });
+    let (appearance, appearance_options) = build_inline_picker(
+        vec![
+            rust_i18n::t!("settings.dark").to_string(),
+            rust_i18n::t!("settings.light").to_string(),
+        ],
+        if dark { 0 } else { 1 },
+        {
+            let state = state.clone();
+
+            Rc::new(move |selected| {
+                state.set_dark_mode(selected == 0);
+            })
+        },
+    );
 
     appearance.set_halign(gtk::Align::Start);
-
-    {
-        let state = state.clone();
-
-        appearance.connect_selected_notify(move |dropdown| {
-            state.set_dark_mode(dropdown.selected() == 0);
-        });
-    }
 
     let search_title = Label::new(Some(&rust_i18n::t!("settings.search")));
 
@@ -81,33 +82,31 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     search_title.set_halign(gtk::Align::Start);
 
-    let engine_names: Vec<&str> = crate::browser::address::KNOWN_ENGINES
+    let engine_names: Vec<String> = crate::browser::address::KNOWN_ENGINES
         .iter()
-        .map(|(_, name)| *name)
+        .map(|(_, name)| name.to_string())
         .collect();
-
-    let search = DropDown::from_strings(&engine_names);
 
     let selected = crate::browser::address::KNOWN_ENGINES
         .iter()
         .position(|(id, _)| *id == state.settings.borrow().search_engine)
-        .unwrap_or(0) as u32;
+        .unwrap_or(0);
 
-    search.set_selected(selected);
+    let (search, search_options) = build_inline_picker(
+        engine_names,
+        selected,
+        {
+            let state = state.clone();
+
+            Rc::new(move |picked| {
+                if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
+                    state.set_search_engine(id);
+                }
+            })
+        },
+    );
 
     search.set_halign(gtk::Align::Start);
-
-    {
-        let state = state.clone();
-
-        search.connect_selected_notify(move |dropdown| {
-            if let Some((id, _)) =
-                crate::browser::address::KNOWN_ENGINES.get(dropdown.selected() as usize)
-            {
-                state.set_search_engine(id);
-            }
-        });
-    }
 
     let search_note = Label::new(Some(&rust_i18n::t!("settings.search_note")));
 
@@ -130,6 +129,9 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     tracking_switch.set_active(state.settings.borrow().tracking_prevention);
 
+    // Fixed height: in tall rows the switch would otherwise stretch.
+    tracking_switch.set_valign(gtk::Align::Center);
+
     tracking_row.append(&tracking_switch);
 
     {
@@ -145,35 +147,35 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
         &rust_i18n::t!("settings.cookies_description"),
     );
 
-    let cookies = DropDown::from_strings(&[
-        rust_i18n::t!("settings.cookies_no_third_party").as_ref(),
-        rust_i18n::t!("settings.cookies_always").as_ref(),
-        rust_i18n::t!("settings.cookies_never").as_ref(),
-    ]);
-
     let selected_cookie = match state.settings.borrow().cookie_policy.as_str() {
         "always" => 1,
         "never" => 2,
         _ => 0,
     };
 
-    cookies.set_selected(selected_cookie);
+    let (cookies, cookies_options) = build_inline_picker(
+        vec![
+            rust_i18n::t!("settings.cookies_no_third_party").to_string(),
+            rust_i18n::t!("settings.cookies_always").to_string(),
+            rust_i18n::t!("settings.cookies_never").to_string(),
+        ],
+        selected_cookie,
+        {
+            let state = state.clone();
+
+            Rc::new(move |picked| {
+                let policy = match picked {
+                    1 => "always",
+                    2 => "never",
+                    _ => "no-third-party",
+                };
+
+                state.set_cookie_policy(policy);
+            })
+        },
+    );
 
     cookies_row.append(&cookies);
-
-    {
-        let state = state.clone();
-
-        cookies.connect_selected_notify(move |dropdown| {
-            let policy = match dropdown.selected() {
-                1 => "always",
-                2 => "never",
-                _ => "no-third-party",
-            };
-
-            state.set_cookie_policy(policy);
-        });
-    }
 
     let clear_row = row(
         &rust_i18n::t!("settings.clear_data"),
@@ -218,6 +220,8 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     developer_switch.set_active(state.settings.borrow().developer_tools);
 
+    developer_switch.set_valign(gtk::Align::Center);
+
     developer_row.append(&developer_switch);
 
     {
@@ -234,43 +238,39 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
     language_title.set_halign(gtk::Align::Start);
 
-    let english_label = rust_i18n::t!("settings.english");
-
-    let spanish_label = rust_i18n::t!("settings.spanish");
-
-    let language = DropDown::from_strings(&[english_label.as_ref(), spanish_label.as_ref()]);
-
     let selected_language = match state.settings.borrow().language.as_str() {
         "es" => 1,
         _ => 0,
     };
 
-    language.set_selected(selected_language);
+    let (language, language_options) = build_inline_picker(
+        vec![
+            rust_i18n::t!("settings.english").to_string(),
+            rust_i18n::t!("settings.spanish").to_string(),
+        ],
+        selected_language,
+        {
+            let state = state.clone();
+
+            Rc::new(move |picked| {
+                state.set_language(if picked == 1 { "es" } else { "en" });
+            })
+        },
+    );
 
     language.set_halign(gtk::Align::Start);
-
-    {
-        let state = state.clone();
-
-        language.connect_selected_notify(move |dropdown| {
-            let locale = match dropdown.selected() {
-                1 => "es",
-                _ => "en",
-            };
-
-            state.set_language(locale);
-        });
-    }
 
     page.append(&title);
 
     page.append(&appearance_title);
 
     page.append(&appearance);
+    page.append(&appearance_options);
 
     page.append(&search_title);
 
     page.append(&search);
+    page.append(&search_options);
 
     page.append(&search_note);
 
@@ -279,6 +279,10 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     page.append(&tracking_row);
 
     page.append(&cookies_row);
+    // The toggle lives at the row's right end, so the list opens aligned
+    // to the right under it instead of at the page's left edge.
+    cookies_options.set_halign(gtk::Align::End);
+    page.append(&cookies_options);
 
     page.append(&clear_row);
 
@@ -287,7 +291,7 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     page.append(&language_title);
 
     page.append(&language);
-
+    page.append(&language_options);
     let scroller = ScrolledWindow::new();
 
     scroller.set_hexpand(true);

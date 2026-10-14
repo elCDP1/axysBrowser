@@ -87,8 +87,8 @@ welcome:
 about:
   title: "Acerca de"
   description: "Navegador Linux-first construido con Rust, GTK4 y WebKitGTK."
-  author: "Proyecto original de elCDP1"
-  copyright: "Copyright © 2026 elCDP1"
+  author: "Proyecto original de CDP"
+  copyright: "Copyright © 2026 CDP"
   notice: "Las obras derivadas pueden modificarse y renombrarse, pero deben mantener visible la atribución al proyecto original axysBrowser y a elCDP1."
   tooltip: "Acerca de axysBrowser"
 
@@ -97,9 +97,6 @@ privacy:
   subtitle: "Una sesión de navegación temporal"
   continue: "Seguir navegando"
   exit: "Salir"
-
-menu:
-  navigation: "Navegación"
 
 history:
   title: "Historial"

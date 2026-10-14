@@ -104,6 +104,7 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
     let footer = Box::new(Orientation::Vertical, 6);
 
     footer.set_halign(gtk::Align::Center);
+    footer.set_valign(gtk::Align::End);
 
     footer.set_margin_top(12);
     footer.set_margin_bottom(12);
@@ -113,7 +114,7 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
     separator.set_opacity(0.25);
 
     let copyright = Label::new(Some(&format!(
-        "{} · {}",
+        "{} · axysBrowser {}",
         rust_i18n::t!("about.copyright"),
         env!("CARGO_PKG_VERSION")
     )));
@@ -149,7 +150,10 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
     footer.append(&links);
 
     page.append(&overlay);
-    page.append(&footer);
+
+    // The footer lives inside the overlay (above the waves) so it shares
+    // the page background instead of showing a mismatched theme strip.
+    overlay.add_overlay(&footer);
 
     page
 }

@@ -50,6 +50,13 @@ Settings, bookmarks and history live in `$XDG_CONFIG_HOME/axysbrowser`
 (`~/.config/axysbrowser`); website data in `~/.local/share/axysbrowser`;
 caches in `~/.cache/axysbrowser`.
 
+## Troubleshooting (WSL)
+
+Fractional Windows display scaling (125 %, 150 %) can clip 1–2 px rows of
+text and misplace popup menus through the WSLg link. If that happens,
+either switch Windows to 100 % scaling or live with it — the browser
+cannot work around the compositor from inside.
+
 ## License
 
 AXYS Attribution License 1.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

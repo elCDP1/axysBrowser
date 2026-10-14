@@ -8,7 +8,14 @@ use std::rc::Rc;
 use crate::app_state::AppState;
 use crate::browser::downloads::{DownloadEntry, DownloadManager, DownloadStatus, format_speed};
 
-pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
+/// A download row. When shown inside the toolbar popup, `on_interact` closes
+/// the popup after a row button is used (clicking a popup button always
+/// dismisses it); the full page passes `None`.
+pub fn build_row(
+    entry: &DownloadEntry,
+    manager: &DownloadManager,
+    on_interact: Option<Rc<dyn Fn()>>,
+) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 12);
 
     row.set_hexpand(true);
@@ -82,8 +89,14 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
             let id = entry.id;
 
+            let on_interact = on_interact.clone();
+
             cancel.connect_clicked(move |_| {
                 manager.cancel(id);
+
+                if let Some(close) = on_interact.as_ref() {
+                    close();
+                }
             });
 
             row.append(&cancel);
@@ -98,8 +111,14 @@ pub fn build_row(entry: &DownloadEntry, manager: &DownloadManager) -> GtkBox {
 
             let path = entry.path.clone();
 
+            let on_interact = on_interact.clone();
+
             show.connect_clicked(move |_| {
                 DownloadManager::open_containing_folder(&path);
+
+                if let Some(close) = on_interact.as_ref() {
+                    close();
+                }
             });
 
             row.append(&show);
@@ -167,7 +186,7 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
             }
 
             for entry in entries.iter().rev() {
-                list.append(&build_row(entry, &manager));
+                list.append(&build_row(entry, &manager, None));
             }
         })
     };

@@ -1,13 +1,13 @@
 use gtk::prelude::*;
 use gtk::{
-    Align, Box, Button, CenterBox, Entry, Image, MenuButton, Orientation, Popover, Spinner, Stack,
+    Align, Box, Button, CenterBox, Entry, Image, Orientation, Spinner, Stack,
     Window,
 };
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::{WebView, prelude::WebViewExt};
 
-use super::menu::{build_menu, build_menu_model};
+use super::menu::MenuPanel;
 
 use crate::app_state::AppState;
 use crate::browser::address::{SearchConfig, engine_display_name};
@@ -187,6 +187,11 @@ pub struct Toolbar {
     forward: Button,
     bookmark: Button,
     bookmark_refresh: Action,
+    /// Overlay panels owned here but parented by the window (see ui::menu
+    /// for why popups are in-window widgets, not surfaces).
+    pub menu_panel: MenuPanel,
+    pub downloads_panel: Box,
+    on_panel_toggled: Action,
     _downloads_refresh: Action,
     _language_refresh: Action,
     _placeholder_refresh: Action,
@@ -198,6 +203,9 @@ pub struct ToolbarOptions {
     pub state: Rc<AppState>,
     pub search: Rc<RefCell<SearchConfig>>,
     pub private_mode: bool,
+    /// Called after any panel toggles so the window can sync its
+    /// click-catcher (visible while any panel is open).
+    pub on_panel_toggled: Rc<dyn Fn()>,
 }
 
 impl Toolbar {
@@ -213,6 +221,7 @@ impl Toolbar {
             state,
             search,
             private_mode,
+            on_panel_toggled,
         } = options;
         let toolbar = CenterBox::new();
 
@@ -222,6 +231,23 @@ impl Toolbar {
         toolbar.set_margin_end(8);
 
         let navigation = Box::new(Orientation::Horizontal, 2);
+
+        // In-window private indicator (there is no banner anymore): a small
+        // purple dot with the mode as tooltip, always visible in private.
+        if private_mode {
+            let dot = Box::new(Orientation::Horizontal, 0);
+
+            dot.add_css_class("private-dot");
+
+            dot.set_valign(gtk::Align::Center);
+
+            dot.set_tooltip_text(Some(rust_i18n::t!("privacy.title").as_ref()));
+
+            dot.set_margin_start(2);
+            dot.set_margin_end(4);
+
+            navigation.append(&dot);
+        }
 
         let back = Button::builder()
             .icon_name("go-previous-symbolic")
@@ -399,7 +425,13 @@ impl Toolbar {
             });
         }
 
-        let downloads_popover = Popover::new();
+        // Downloads panel: plain in-window box (see ui::menu). Content is
+        // rebuilt by downloads_refresh; the container persists.
+        let downloads_panel = Box::new(Orientation::Vertical, 0);
+
+        downloads_panel.add_css_class("menu-panel");
+
+        downloads_panel.set_visible(false);
 
         let downloads_content = Box::new(Orientation::Vertical, 8);
 
@@ -409,43 +441,82 @@ impl Toolbar {
         downloads_content.set_margin_end(10);
         downloads_content.set_size_request(280, -1);
 
-        downloads_popover.set_child(Some(&downloads_content));
+        downloads_panel.append(&downloads_content);
 
-        let downloads = MenuButton::builder()
+        let downloads = Button::builder()
             .icon_name("folder-download-symbolic")
             .tooltip_text(rust_i18n::t!("app.downloads").as_ref())
-            .popover(&downloads_popover)
             .build();
 
         downloads.add_css_class("flat");
         downloads.set_visible(false);
 
-        // Same stuck-toggle insurance as the main menu (see ui::menu).
-        {
-            let back = downloads.clone();
+        // Hamburger panel (rows built by ui::menu).
+        let menu_panel = MenuPanel::new(
+            private_mode,
+            on_panel_toggled.clone(),
+        );
 
-            downloads_popover.connect_closed(move |_| {
-                back.set_active(false);
+        {
+            let menu_panel = menu_panel.clone();
+            let downloads_panel = downloads_panel.clone();
+            let on_panel_toggled = on_panel_toggled.clone();
+
+            downloads.connect_clicked(move |_| {
+                menu_panel.hide();
+                downloads_panel
+                    .set_visible(!downloads_panel.is_visible());
+                on_panel_toggled();
             });
         }
 
-        let menu = build_menu(private_mode);
-        menu.add_css_class("flat");
+        let menu_button = Button::builder()
+            .icon_name("view-more-symbolic")
+            .tooltip_text(rust_i18n::t!("app.menu").as_ref())
+            .build();
+
+        menu_button.add_css_class("flat");
+
+        {
+            let menu_panel = menu_panel.clone();
+            let downloads_panel = downloads_panel.clone();
+            let on_panel_toggled = on_panel_toggled.clone();
+
+            menu_button.connect_clicked(move |_| {
+                downloads_panel.set_visible(false);
+                menu_panel.toggle();
+                on_panel_toggled();
+            });
+        }
 
         right.append(&bookmark);
         right.append(&downloads);
-        right.append(&menu);
+        right.append(&menu_button);
 
         toolbar.set_start_widget(Some(&navigation));
         toolbar.set_center_widget(Some(&address));
         toolbar.set_end_widget(Some(&right));
+
+        // Closes both panels and syncs the window catcher. Used by every
+        // in-panel button (clicking a panel button always dismisses it).
+        let close_panels: Action = {
+            let menu_panel = menu_panel.clone();
+            let downloads_panel = downloads_panel.clone();
+            let on_panel_toggled = on_panel_toggled.clone();
+
+            Rc::new(move || {
+                menu_panel.hide();
+                downloads_panel.set_visible(false);
+                on_panel_toggled();
+            })
+        };
 
         let downloads_refresh: Action = {
             let downloads_button = downloads.clone();
 
             let downloads_content = downloads_content.clone();
 
-            let downloads_popover = downloads_popover.clone();
+            let close_panels = close_panels.clone();
 
             let manager = state.downloads.clone();
 
@@ -497,9 +568,12 @@ impl Toolbar {
 
                     {
                         let manager = manager.clone();
+                        let close_panels = close_panels.clone();
 
                         clear.connect_clicked(move |_| {
                             manager.clear_finished();
+
+                            close_panels();
                         });
                     }
 
@@ -509,7 +583,11 @@ impl Toolbar {
                 downloads_content.append(&header);
 
                 for entry in entries.iter().rev().take(5) {
-                    downloads_content.append(&build_row(entry, &manager));
+                    downloads_content.append(&build_row(
+                        entry,
+                        &manager,
+                        Some(close_panels.clone()),
+                    ));
                 }
 
                 let see_all = Button::with_label(&rust_i18n::t!("downloads.see_all"));
@@ -521,10 +599,10 @@ impl Toolbar {
                 {
                     let on_navigate = on_navigate.clone();
 
-                    let downloads_popover = downloads_popover.clone();
+                    let close_panels = close_panels.clone();
 
                     see_all.connect_clicked(move |_| {
-                        downloads_popover.popdown();
+                        close_panels();
 
                         on_navigate("axys://downloads".to_string());
                     });
@@ -551,7 +629,7 @@ impl Toolbar {
 
             let downloads = downloads.clone();
 
-            let menu = menu.clone();
+            let menu_panel = menu_panel.clone();
 
             let downloads_refresh = downloads_refresh.clone();
 
@@ -572,9 +650,9 @@ impl Toolbar {
 
                 bookmark_refresh();
 
-                menu.set_tooltip_text(Some(rust_i18n::t!("app.menu").as_ref()));
+                menu_button.set_tooltip_text(Some(rust_i18n::t!("app.menu").as_ref()));
 
-                menu.set_menu_model(Some(&build_menu_model(private_mode)));
+                menu_panel.rebuild_rows();
 
                 downloads_refresh();
             })
@@ -603,10 +681,21 @@ impl Toolbar {
             forward,
             bookmark,
             bookmark_refresh: bookmark_refresh.clone(),
+            menu_panel,
+            downloads_panel,
+            on_panel_toggled,
             _downloads_refresh: downloads_refresh,
             _language_refresh: language_refresh,
             _placeholder_refresh: placeholder_refresh,
         }
+    }
+
+    /// Hides both panels and syncs the window catcher. Called on tab
+    /// switch, Escape and anywhere a panel must go away.
+    pub fn close_panels(&self) {
+        self.menu_panel.hide();
+        self.downloads_panel.set_visible(false);
+        (self.on_panel_toggled)();
     }
 
     /// Refreshes the bookmark star for the currently shown view. Called on

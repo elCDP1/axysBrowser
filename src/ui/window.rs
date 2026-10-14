@@ -24,6 +24,70 @@ fn maximize_window(window: &ApplicationWindow) {
     window.maximize();
 }
 
+/// Address bar text for a tab URI: the new tab and privacy pages show an
+/// empty bar like Chromium's NTP; every other page keeps its URL.
+fn address_text_for(uri: &str) -> &str {
+    match router::page_name(uri) {
+        Some("newtab") | Some("privacy") => "",
+        _ => uri,
+    }
+}
+
+/// Seconds without committing a load before the watchdog gives up on it.
+const LOAD_TIMEOUT_SECS: u64 = 60;
+
+/// Marks a fresh web load on `id` and arms the hang watchdog: if nothing
+/// has committed after [`LOAD_TIMEOUT_SECS`] (DNS/connect/TLS stuck), the
+/// load is stopped and the error page is shown instead of spinning
+/// forever. A page that already committed is never replaced (slow
+/// subresources are normal), and a watchdog from an older navigation
+/// (different serial or URI) never kills a newer load.
+fn begin_web_load(
+    tabs: &Rc<RefCell<Vec<Tab>>>,
+    id: usize,
+    web_view: &WebView,
+    target: &str,
+) {
+    let serial = {
+        let mut tabs = tabs.borrow_mut();
+
+        tabs.iter_mut()
+            .find(|tab| tab.id == id)
+            .map(|tab| {
+                tab.nav_serial += 1;
+                tab.committed = false;
+
+                tab.nav_serial
+            })
+            .unwrap_or(0)
+    };
+
+    let weak = web_view.downgrade();
+    let tabs = tabs.clone();
+    let target = target.to_string();
+
+    gtk::glib::timeout_add_local_once(
+        std::time::Duration::from_secs(LOAD_TIMEOUT_SECS),
+        move || {
+            let Some(view) = weak.upgrade() else {
+                return;
+            };
+
+            let stuck = tabs.borrow().iter().find(|tab| tab.id == id).is_some_and(
+                |tab| tab.nav_serial == serial && !tab.committed && tab.uri == target,
+            );
+
+            if stuck && view.is_loading() {
+                eprintln!("Load timed out: {target}");
+
+                view.stop_loading();
+
+                BrowserEngine::show_timeout_page(&view, &target);
+            }
+        },
+    );
+}
+
 pub fn build_window(app: &Application, state: Rc<AppState>) {
     let session = state.network_session.clone();
     let search = state.search.clone();
@@ -104,9 +168,6 @@ fn build_browser_window(
     /// Per window, so private restores stay inside the private window.
     const MAX_CLOSED_TABS: usize = 25;
 
-    /// Seconds without finishing a load before the watchdog stops it.
-    const LOAD_TIMEOUT_SECS: u64 = 60;
-
     let closed_tabs = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
 
     let top_stack = Stack::new();
@@ -126,6 +187,33 @@ fn build_browser_window(
     let bookmark_bar_slot: Rc<RefCell<Option<BookmarkBar>>> = Rc::new(RefCell::new(None));
 
     let findbar_slot: Rc<RefCell<Option<FindBar>>> = Rc::new(RefCell::new(None));
+
+    // Invisible full-size click-catcher for the menu panels (see ui::menu):
+    // visible while any panel is open, so any click outside a panel closes
+    // everything instead of leaving it hidden under the UI.
+    let catcher = gtk::Button::new();
+
+    catcher.set_hexpand(true);
+    catcher.set_vexpand(true);
+    catcher.set_opacity(0.0);
+    catcher.set_can_focus(false);
+    catcher.set_visible(false);
+
+    let sync_panels: Rc<dyn Fn()> = {
+        let toolbar_slot = toolbar_slot.clone();
+        let bookmark_bar_slot = bookmark_bar_slot.clone();
+        let catcher = catcher.clone();
+
+        Rc::new(move || {
+            let any_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
+                toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
+            }) || bookmark_bar_slot.borrow().as_ref().is_some_and(|bar| {
+                bar.overflow_panel.is_visible()
+            });
+
+            catcher.set_visible(any_open);
+        })
+    };
 
     let select_tab: Rc<dyn Fn(usize)> = {
         let tabs = tabs.clone();
@@ -167,6 +255,15 @@ fn build_browser_window(
                 findbar.stop_in(previous);
             }
 
+            // Switching tabs always dismisses menu panels.
+            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                toolbar.close_panels();
+            }
+
+            if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+                bar.close_panels();
+            }
+
             *current_web_view.borrow_mut() = Some(web_view.clone());
 
             // Keep an open findbar searching in the newly shown tab.
@@ -175,7 +272,7 @@ fn build_browser_window(
             }
 
             if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                toolbar.address.set_text(&uri);
+                toolbar.address.set_text(address_text_for(&uri));
 
                 toolbar.set_loading(web_view.is_loading());
 
@@ -207,6 +304,7 @@ fn build_browser_window(
         let select_tab = select_tab.clone();
         let bookmark_bar_slot = bookmark_bar_slot.clone();
         let closed_tabs = closed_tabs.clone();
+        let findbar_slot = findbar_slot.clone();
 
         Rc::new(move |id| {
             if tabs.borrow().len() == 1 {
@@ -276,6 +374,12 @@ fn build_browser_window(
             top_stack.remove(&removed.content);
 
             removed.web_view.stop_loading();
+
+            // Drop find hooks so the closed tab's controller (and view)
+            // can be freed; they re-hook lazily on the next search.
+            if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                findbar.forget_hooks();
+            }
 
             // Remember for Ctrl+Shift+T reopen (skip blank new tabs).
             if removed.uri != "axys://newtab" {
@@ -355,7 +459,7 @@ fn build_browser_window(
                     top_stack.set_visible_child(&content);
 
                     if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                        toolbar.address.set_text(&target);
+                        toolbar.address.set_text(address_text_for(&target));
 
                         toolbar.set_loading(false);
 
@@ -405,7 +509,7 @@ fn build_browser_window(
                 top_stack.set_visible_child(&content);
 
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                    toolbar.address.set_text(&target);
+                    toolbar.address.set_text(address_text_for(&target));
 
                     toolbar.set_loading(true);
 
@@ -420,56 +524,9 @@ fn build_browser_window(
                 }
             }
 
-            // Mark a fresh navigation (see Tab::nav_serial / committed).
-            let serial = {
-                let mut tabs = tabs.borrow_mut();
-
-                tabs.iter_mut()
-                    .find(|tab| tab.id == id)
-                    .map(|tab| {
-                        tab.nav_serial += 1;
-                        tab.committed = false;
-
-                        tab.nav_serial
-                    })
-                    .unwrap_or(0)
-            };
-
             BrowserEngine::load(&web_view, &target);
 
-            // Hang watchdog: if nothing was committed after LOAD_TIMEOUT_SECS
-            // (DNS/connect/TLS stuck), stop the load and show the error
-            // page instead of spinning forever. A page that already
-            // committed is never replaced (slow subresources are normal), and
-            // a later navigation in the same tab is never killed by mistake.
-            {
-                let weak = web_view.downgrade();
-                let tabs = tabs.clone();
-                let target = target.clone();
-
-                gtk::glib::timeout_add_local_once(
-                    std::time::Duration::from_secs(LOAD_TIMEOUT_SECS),
-                    move || {
-                        let Some(view) = weak.upgrade() else {
-                            return;
-                        };
-
-                        let stuck = tabs
-                            .borrow()
-                            .iter()
-                            .find(|tab| tab.id == id)
-                            .is_some_and(|tab| tab.nav_serial == serial && !tab.committed);
-
-                        if stuck && view.is_loading() {
-                            eprintln!("Load timed out: {target}");
-
-                            view.stop_loading();
-
-                            BrowserEngine::show_timeout_page(&view, &target);
-                        }
-                    },
-                );
-            }
+            begin_web_load(&tabs, id, &web_view, &target);
         })
     };
 
@@ -553,7 +610,7 @@ fn build_browser_window(
                 content.set_visible_child_name(page);
 
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                    toolbar.address.set_text(&target);
+                    toolbar.address.set_text(address_text_for(&target));
 
                     toolbar.set_loading(false);
 
@@ -571,6 +628,8 @@ fn build_browser_window(
                 top_stack.set_visible_child(&content);
             } else {
                 BrowserEngine::load(&web_view, &target);
+
+                begin_web_load(&tabs, id, &web_view, &target);
             }
         })
     };
@@ -646,7 +705,7 @@ fn build_browser_window(
                 content.set_visible_child_name(page);
 
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                    toolbar.address.set_text(&target);
+                    toolbar.address.set_text(address_text_for(&target));
 
                     toolbar.set_loading(false);
 
@@ -664,6 +723,8 @@ fn build_browser_window(
                 top_stack.set_visible_child(&content);
             } else {
                 BrowserEngine::load(&web_view, &target);
+
+                begin_web_load(&tabs, id, &web_view, &target);
             }
         })
     };
@@ -861,7 +922,7 @@ fn build_browser_window(
             if let Some(slot) = toolbar_slot.upgrade()
                 && let Some(toolbar) = slot.borrow().as_ref()
             {
-                toolbar.address.set_text(&first_uri);
+                toolbar.address.set_text(address_text_for(&first_uri));
 
                 toolbar.set_loading(false);
 
@@ -895,7 +956,7 @@ fn build_browser_window(
                         && let Some(slot) = toolbar_slot.upgrade()
                         && let Some(toolbar) = slot.borrow().as_ref()
                     {
-                        toolbar.address.set_text(&uri);
+                        toolbar.address.set_text(address_text_for(&uri));
                         toolbar.refresh_bookmark();
                     }
                 });
@@ -1102,6 +1163,11 @@ fn build_browser_window(
                     if view.is_loading() {
                         view.stop_loading();
                     } else {
+                        // A reload is a fresh load for watchdog purposes.
+                        if let Some(uri) = view.uri().map(|uri| uri.to_string()) {
+                            begin_web_load(&tabs, id, view, &uri);
+                        }
+
                         BrowserEngine::reload(view);
                     }
                 }
@@ -1113,19 +1179,24 @@ fn build_browser_window(
             state: state.clone(),
             search: search.clone(),
             private_mode,
+            on_panel_toggled: sync_panels.clone(),
         },
     );
 
     *toolbar_slot.borrow_mut() = Some(toolbar);
 
-    let bookmark_bar = BookmarkBar::new(state.clone(), {
-        let navigate_tab = navigate_tab.clone();
-        let active_id = active_id.clone();
+    let bookmark_bar = BookmarkBar::new(
+        state.clone(),
+        {
+            let navigate_tab = navigate_tab.clone();
+            let active_id = active_id.clone();
 
-        Rc::new(move |url: String| {
-            navigate_tab(active_id.get(), url);
-        })
-    });
+            Rc::new(move |url: String| {
+                navigate_tab(active_id.get(), url);
+            })
+        },
+        sync_panels.clone(),
+    );
 
     *bookmark_bar_slot.borrow_mut() = Some(bookmark_bar);
 
@@ -1141,7 +1212,57 @@ fn build_browser_window(
         root.append(&bookmark_bar.root);
     }
 
-    root.append(&top_stack);
+    // Menu panels live in an overlay above the page content: they paint as
+    // normal widgets (immune to popup-surface bugs) and reflow with the
+    // window, so they can never end up misplaced or hidden behind the UI.
+    // (top_stack moves from root into the overlay here.)
+    let content_overlay = gtk::Overlay::new();
+
+    content_overlay.set_child(Some(&top_stack));
+
+    content_overlay.add_overlay(&catcher);
+
+    if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+        for panel in [
+            &toolbar.menu_panel.container,
+            &toolbar.downloads_panel,
+        ] {
+            panel.set_halign(gtk::Align::End);
+            panel.set_valign(gtk::Align::Start);
+            panel.set_margin_top(4);
+            panel.set_margin_end(8);
+
+            content_overlay.add_overlay(panel);
+        }
+    }
+
+    if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+        let panel = &bar.overflow_panel;
+
+        panel.set_halign(gtk::Align::End);
+        panel.set_valign(gtk::Align::Start);
+        panel.set_margin_top(4);
+        panel.set_margin_end(8);
+
+        content_overlay.add_overlay(panel);
+    }
+
+    {
+        let toolbar_slot = toolbar_slot.clone();
+        let bookmark_bar_slot = bookmark_bar_slot.clone();
+
+        catcher.connect_clicked(move |_| {
+            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                toolbar.close_panels();
+            }
+
+            if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+                bar.close_panels();
+            }
+        });
+    }
+
+    root.append(&content_overlay);
 
     // Floating findbar lives in an overlay above the whole window content.
     let findbar = FindBar::new(current_web_view.clone());
@@ -1278,7 +1399,7 @@ fn build_browser_window(
                 top_stack.set_visible_child(&tab.content);
 
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                    toolbar.address.set_text(&tab.uri);
+                    toolbar.address.set_text(address_text_for(&tab.uri));
                 }
             }
 
@@ -1357,6 +1478,7 @@ fn build_browser_window(
         let state_for_shortcuts = state.clone();
         let window_weak = window_weak.clone();
         let findbar_slot = findbar_slot.clone();
+        let bookmark_bar_slot = bookmark_bar_slot.clone();
 
         keyboard.connect_key_pressed(move |_, key, _, modifiers| {
             let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
@@ -1370,10 +1492,23 @@ fn build_browser_window(
                     match ch.to_ascii_lowercase() {
                         'n' => {
                             if shift {
-                                build_private_window(
-                                    &app_for_shortcuts,
-                                    state_for_shortcuts.clone(),
-                                );
+                                // Same toggle as the menu item: entering
+                                // private mode, or leaving it when active.
+                                if private_mode {
+                                    build_window(
+                                        &app_for_shortcuts,
+                                        state_for_shortcuts.clone(),
+                                    );
+
+                                    if let Some(window) = window_weak.upgrade() {
+                                        window.close();
+                                    }
+                                } else {
+                                    build_private_window(
+                                        &app_for_shortcuts,
+                                        state_for_shortcuts.clone(),
+                                    );
+                                }
                             } else {
                                 build_window(&app_for_shortcuts, state_for_shortcuts.clone());
                             }
@@ -1651,8 +1786,27 @@ fn build_browser_window(
                 return Propagation::Stop;
             }
 
-            // Esc first closes the findbar, otherwise stops loading.
+            // Esc closes menu panels first, then the findbar, otherwise
+            // stops loading.
             if key == gdk::Key::Escape {
+                let panels_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
+                    toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
+                }) || bookmark_bar_slot.borrow().as_ref().is_some_and(|bar| {
+                    bar.overflow_panel.is_visible()
+                });
+
+                if panels_open {
+                    if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                        toolbar.close_panels();
+                    }
+
+                    if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+                        bar.close_panels();
+                    }
+
+                    return Propagation::Stop;
+                }
+
                 if let Some(findbar) = findbar_slot.borrow().as_ref()
                     && findbar.is_visible()
                 {

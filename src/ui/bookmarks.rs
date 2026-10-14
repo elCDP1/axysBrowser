@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Align, Box, Button, Image, Label, MenuButton, Orientation, Popover};
+use gtk::{Align, Box, Button, Image, Label, Orientation};
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -10,11 +10,18 @@ use crate::browser::bookmarks::Bookmark;
 
 pub struct BookmarkBar {
     pub root: Box,
+    /// Overflow panel owned here but parented by the window overlay.
+    pub overflow_panel: Box,
+    on_panel_toggled: Rc<dyn Fn()>,
     refresh: Rc<dyn Fn()>,
 }
 
 impl BookmarkBar {
-    pub fn new(state: Rc<AppState>, on_open: Rc<dyn Fn(String)>) -> Self {
+    pub fn new(
+        state: Rc<AppState>,
+        on_open: Rc<dyn Fn(String)>,
+        on_panel_toggled: Rc<dyn Fn()>,
+    ) -> Self {
         let root = Box::new(Orientation::Horizontal, 2);
 
         root.set_hexpand(true);
@@ -27,7 +34,7 @@ impl BookmarkBar {
         items.set_hexpand(true);
         items.set_vexpand(false);
 
-        let overflow_button = MenuButton::builder()
+        let overflow_button = Button::builder()
             .icon_name("view-more-symbolic")
             .tooltip_text(rust_i18n::t!("bookmarks.more").as_ref())
             .build();
@@ -36,29 +43,31 @@ impl BookmarkBar {
 
         overflow_button.set_visible(false);
 
-        let overflow_popover = Popover::new();
+        // Overflow panel: plain in-window box (see ui::menu).
+        let overflow_panel = Box::new(Orientation::Vertical, 0);
+
+        overflow_panel.add_css_class("menu-panel");
+
+        overflow_panel.set_visible(false);
 
         let overflow_list = Box::new(Orientation::Vertical, 4);
-
-        // Fixed width (like the downloads popover) so long titles ellipsize
-        // instead of stretching/clipping the popup.
-        overflow_list.set_size_request(280, -1);
 
         overflow_list.set_margin_top(8);
         overflow_list.set_margin_bottom(8);
         overflow_list.set_margin_start(8);
         overflow_list.set_margin_end(8);
+        overflow_list.set_size_request(280, -1);
 
-        overflow_popover.set_child(Some(&overflow_list));
+        overflow_panel.append(&overflow_list);
 
-        overflow_button.set_popover(Some(&overflow_popover));
-
-        // Same stuck-toggle insurance as the main menu (see ui::menu).
         {
-            let back = overflow_button.clone();
+            let overflow_panel = overflow_panel.clone();
+            let on_panel_toggled = on_panel_toggled.clone();
 
-            overflow_popover.connect_closed(move |_| {
-                back.set_active(false);
+            overflow_button.connect_clicked(move |_| {
+                overflow_panel
+                    .set_visible(!overflow_panel.is_visible());
+                on_panel_toggled();
             });
         }
 
@@ -75,7 +84,9 @@ impl BookmarkBar {
 
             let overflow_list = overflow_list.clone();
 
-            let overflow_popover = overflow_popover.clone();
+            let overflow_panel = overflow_panel.clone();
+
+            let on_panel_toggled = on_panel_toggled.clone();
 
             let reflow_scheduled = reflow_scheduled.clone();
 
@@ -92,7 +103,9 @@ impl BookmarkBar {
 
                 let overflow_list = overflow_list.clone();
 
-                let overflow_popover = overflow_popover.clone();
+                let overflow_panel = overflow_panel.clone();
+
+                let on_panel_toggled = on_panel_toggled.clone();
 
                 let reflow_scheduled = reflow_scheduled.clone();
 
@@ -202,12 +215,15 @@ impl BookmarkBar {
 
                         row.append(&overflow_item);
 
-                        let popover = overflow_popover.clone();
+                        let overflow_panel = overflow_panel.clone();
+
+                        let on_panel_toggled = on_panel_toggled.clone();
 
                         let on_open = on_open.clone();
 
                         overflow_item.connect_clicked(move |_| {
-                            popover.popdown();
+                            overflow_panel.set_visible(false);
+                            on_panel_toggled();
 
                             on_open(url.clone());
                         });
@@ -318,11 +334,22 @@ impl BookmarkBar {
 
         refresh();
 
-        Self { root, refresh }
+        Self {
+            root,
+            overflow_panel,
+            on_panel_toggled,
+            refresh,
+        }
     }
 
     pub fn refresh(&self) {
         (self.refresh)();
+    }
+
+    /// Hides the overflow panel and syncs the window catcher.
+    pub fn close_panels(&self) {
+        self.overflow_panel.set_visible(false);
+        (self.on_panel_toggled)();
     }
 }
 

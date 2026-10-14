@@ -3,9 +3,9 @@ pub fn stylesheet(dark: bool) -> String {
 
     let dim_alpha = if dark { "0.62" } else { "0.92" };
 
-    let border_alpha = if dark { "0.10" } else { "0.15" };
+    let border_alpha = if dark { "0.10" } else { "0.20" };
 
-    let subtle_border_alpha = if dark { "0.08" } else { "0.13" };
+    let subtle_border_alpha = if dark { "0.08" } else { "0.17" };
 
     format!(
         r#"
@@ -17,6 +17,21 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         label {{
+            color: @axys_fg;
+        }}
+
+        /* Hover tooltips must follow the theme too: the global `label`
+         * rule above would otherwise paint dark text on the default dark
+         * tooltip background in light mode (unreadable). */
+        tooltip,
+        tooltip.background {{
+            background-color: @axys_bg;
+            color: @axys_fg;
+            border: 1px solid alpha(@axys_fg, {border_alpha});
+            border-radius: 8px;
+        }}
+
+        tooltip label {{
             color: @axys_fg;
         }}
 
@@ -139,6 +154,26 @@ pub fn stylesheet(dark: bool) -> String {
             color: @axys_fg;
         }}
 
+        /* Compact menu rows so popups fit short windows instead of
+         * spilling off-screen. */
+        popover modelbutton,
+        popover button.model {{
+            min-height: 28px;
+            padding-top: 3px;
+            padding-bottom: 3px;
+        }}
+
+        switch {{
+            min-height: 24px;
+        }}
+
+        .private-dot {{
+            min-width: 10px;
+            min-height: 10px;
+            border-radius: 50%;
+            background-color: #9b6bff;
+        }}
+
         popover modelbutton:hover,
         popover button.model:hover,
         popover row:hover,
@@ -175,7 +210,7 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         .address-top {{
-            min-height: 18px;
+            min-height: 28px;
             padding: 5px 12px;
             border-radius: 16px;
             border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
@@ -200,7 +235,7 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         .search-main {{
-            min-height: 34px;
+            min-height: 44px;
             padding: 10px 16px;
             border-radius: 18px;
             border: 1px solid alpha(@axys_fg, {border_alpha});
@@ -301,6 +336,39 @@ pub fn stylesheet(dark: bool) -> String {
             box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
         }}
 
+        .findbar entry {{
+            min-height: 30px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+        }}
+
+        /* In-window menu panels (see ui::menu): plain widgets floating
+         * above the page, so they can never end up behind it. */
+        .menu-panel {{
+            background-color: @axys_bg;
+            color: @axys_fg;
+            border: 1px solid alpha(@axys_fg, {border_alpha});
+            border-radius: 12px;
+            padding: 6px;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+        }}
+
+        .menu-row {{
+            padding: 6px 12px;
+            border-radius: 8px;
+            min-height: 30px;
+        }}
+
+        .menu-row:hover {{
+            background-color: alpha(@axys_fg, 0.08);
+        }}
+
+        .option-picker {{
+            border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+            border-radius: 10px;
+            padding: 4px;
+        }}
+
         .bookmark-bar {{
             padding: 4px 8px;
             margin: 0;
@@ -366,7 +434,7 @@ const DARK_PALETTE: &str = r#"
 "#;
 
 const LIGHT_PALETTE: &str = r#"
-    @define-color axys_bg #dcdfe5;
-    @define-color axys_fg #262b33;
+    @define-color axys_bg #e6e9ee;
+    @define-color axys_fg #161a20;
     @define-color axys_accent #2f6fe4;
 "#;

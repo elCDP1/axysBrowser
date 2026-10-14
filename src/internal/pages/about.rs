@@ -18,7 +18,7 @@ pub fn build_about() -> Box {
     let title = Label::new(Some("axysBrowser"));
     title.add_css_class("title-1");
 
-    let version = Label::new(Some(env!("CARGO_PKG_VERSION")));
+    let version = Label::new(Some(&format!("axysBrowser {}", env!("CARGO_PKG_VERSION"))));
     version.add_css_class("dim-label");
 
     let description = Label::new(Some(&rust_i18n::t!("about.description")));

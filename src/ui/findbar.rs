@@ -225,6 +225,13 @@ impl FindBar {
         self.container.is_visible()
     }
 
+    /// Forgets every hooked controller. Call when a tab closes: controllers
+    /// hold their views alive, so keeping dead ones would leak whole tabs.
+    /// They are re-hooked lazily on the next search.
+    pub fn forget_hooks(&self) {
+        self.hooked.borrow_mut().clear();
+    }
+
     /// Re-runs the current query in `view` (call on tab switch while open).
     pub fn research_in(&self, view: &WebView) {
         if !self.is_visible() {
