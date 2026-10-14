@@ -128,11 +128,13 @@ impl DownloadManager {
     }
 
     pub fn downloads_dir() -> PathBuf {
-        let dir = if let Ok(home) = std::env::var("HOME") {
-            PathBuf::from(home).join("Downloads")
-        } else {
-            PathBuf::from(".")
-        };
+        let dir = gtk::glib::user_special_dir(gtk::glib::UserDirectory::Downloads)
+            .or_else(|| {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|home| PathBuf::from(home).join("Downloads"))
+            })
+            .unwrap_or_else(|| PathBuf::from("."));
 
         let _ = std::fs::create_dir_all(&dir);
 
@@ -269,22 +271,30 @@ impl DownloadManager {
                 let manager = manager.clone();
 
                 download.connect_finished(move |_download| {
-                    let filename = {
+                    // `finished` also fires after `failed` / cancellation, so
+                    // only announce downloads that really completed.
+                    let (filename, completed) = {
                         let mut entries = manager.entries.borrow_mut();
 
                         let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
                             return;
                         };
 
-                        if entry.status == DownloadStatus::InProgress {
+                        let completed = entry.status == DownloadStatus::InProgress;
+
+                        if completed {
                             entry.status = DownloadStatus::Completed;
                             entry.progress = 1.0;
                         }
 
-                        entry.filename.clone()
+                        (entry.filename.clone(), completed)
                     };
 
                     manager.notify();
+
+                    if !completed {
+                        return;
+                    }
 
                     let notification =
                         gio::Notification::new(&rust_i18n::t!("downloads.download_complete"));
@@ -305,7 +315,11 @@ impl DownloadManager {
                         manager.entries.borrow_mut().iter_mut().find(|e| e.id == id)
                         && entry.status != DownloadStatus::Cancelled
                     {
-                        entry.status = DownloadStatus::Failed(error.to_string());
+                        entry.status = if error.matches(webkit6::DownloadError::CancelledByUser) {
+                            DownloadStatus::Cancelled
+                        } else {
+                            DownloadStatus::Failed(error.to_string())
+                        };
                     }
 
                     manager.notify();

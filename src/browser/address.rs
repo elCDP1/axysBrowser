@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use std::{collections::HashMap, fs};
+use std::collections::HashMap;
 use url::form_urlencoded;
 
 #[derive(Clone, Debug, Deserialize)]
@@ -20,16 +20,10 @@ fn default_config() -> SearchConfig {
 }
 
 pub fn load_config() -> SearchConfig {
-    // Never panic on a user-edited config: fall back to the embedded default,
-    // and if even that is broken, to a hardcoded Brave entry.
-    let text =
-        fs::read_to_string("config/search.toml").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
-
-    toml::from_str(&text).unwrap_or_else(|error| {
-        eprintln!("Invalid search configuration, using defaults: {error}");
-
-        default_config()
-    })
+    // The engine list is embedded at build time. (Reading it from a path
+    // relative to the working directory made behaviour depend on where the
+    // browser was launched from.)
+    default_config()
 }
 
 pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
@@ -49,6 +43,12 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
 
     if input.starts_with("http://") || input.starts_with("https://") {
         return input.to_string();
+    }
+
+    let lower = input.to_ascii_lowercase();
+
+    if !input.contains(' ') && (lower == "localhost" || lower.starts_with("localhost:") || lower.starts_with("localhost/")) {
+        return format!("http://{input}");
     }
 
     if input.contains('.') && !input.contains(' ') {
@@ -125,6 +125,16 @@ mod tests {
         assert_eq!(
             resolve_input("youtube.com", &config),
             "https://www.youtube.com"
+        );
+    }
+
+    #[test]
+    fn resolves_localhost_over_http() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("localhost:3000", &config),
+            "http://localhost:3000"
         );
     }
 

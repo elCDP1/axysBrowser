@@ -72,7 +72,7 @@ pub fn build_logo_button(on_about: Rc<dyn Fn()>) -> Button {
 
     button.add_css_class("flat");
 
-    button.set_tooltip_text(Some("About axysBrowser"));
+    button.set_tooltip_text(Some(&rust_i18n::t!("about.tooltip")));
 
     button.connect_clicked(move |_| {
         on_about();

@@ -37,17 +37,5 @@ pub fn build_menu() -> MenuButton {
         .menu_model(&build_menu_model())
         .build();
 
-    // TEMP-DIAG: popover-once investigation.
-    button.connect_clicked(|button| {
-        eprintln!(
-            "DBG menu clicked, active={}",
-            button.is_active()
-        );
-    });
-
-    button.connect_active_notify(|button| {
-        eprintln!("DBG menu active -> {}", button.is_active());
-    });
-
     button
 }

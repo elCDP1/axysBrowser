@@ -179,7 +179,7 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
 
     logo.set_halign(gtk::Align::Center);
 
-    logo.set_tooltip_text(Some("About axysBrowser"));
+    logo.set_tooltip_text(Some(&rust_i18n::t!("about.tooltip")));
 
     /*
      * Bigger gap between logo and search bar.
@@ -228,6 +228,10 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
 
     overlay.add_overlay(&content);
 
+    // Make the overlay request enough height for the logo + search field,
+    // otherwise the footer is drawn on top of them in small windows.
+    overlay.set_measure_overlay(&content, true);
+
     /*
      * Bottom information.
      */
@@ -242,13 +246,35 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
 
     separator.set_opacity(0.25);
 
-    let copyright = Label::new(Some("© 2026 axysBrowser contributors · beta-1.0"));
+    let copyright = Label::new(Some(&format!(
+        "{} · {}",
+        rust_i18n::t!("about.copyright"),
+        env!("CARGO_PKG_VERSION")
+    )));
 
     copyright.add_css_class("dim-label");
 
-    let links = Label::new(Some("About · Privacy · Settings"));
+    let links = Box::new(Orientation::Horizontal, 4);
 
-    links.add_css_class("dim-label");
+    links.set_halign(gtk::Align::Center);
+
+    for (label_key, target) in [
+        ("about.title", "axys://about"),
+        ("privacy.title", "axys://privacy"),
+        ("settings.title", "axys://settings"),
+    ] {
+        let link = Button::with_label(&rust_i18n::t!(label_key));
+
+        link.add_css_class("flat");
+
+        let on_search = on_search.clone();
+
+        link.connect_clicked(move |_| {
+            on_search(target.to_string());
+        });
+
+        links.append(&link);
+    }
 
     footer.append(&separator);
 

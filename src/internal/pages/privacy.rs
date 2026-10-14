@@ -1,53 +1,45 @@
 use gtk::prelude::*;
-use gtk::{Box, Label, Orientation};
+use gtk::{Box, Button, Label, Orientation};
+use std::rc::Rc;
 
-pub fn build_privacy() -> Box {
-    let page = Box::new(Orientation::Vertical, 16);
+pub fn build_privacy(on_continue: Rc<dyn Fn(String)>) -> Box {
+    let page = Box::new(Orientation::Vertical, 18);
 
     page.set_vexpand(true);
     page.set_hexpand(true);
     page.set_valign(gtk::Align::Center);
     page.set_halign(gtk::Align::Center);
 
-    let title = Label::new(Some("Privacy mode"));
-
+    let title = Label::new(Some(&rust_i18n::t!("privacy.title")));
     title.add_css_class("title-1");
 
-    let subtitle = Label::new(Some("A temporary browsing session"));
+    let subtitle = Label::new(Some(&rust_i18n::t!("privacy.subtitle")));
+    subtitle.add_css_class("dim-label");
 
-    subtitle.add_css_class("title-3");
-
-    let description = Label::new(Some(
-        "This window uses a separate ephemeral browsing session.\n\n\
-                 Website data is not persisted when the privacy window closes.\n\n\
-                 Brave Search is always used for searches in this mode.",
-    ));
-
+    let description = Label::new(Some(&rust_i18n::t!("privacy.details")));
     description.set_wrap(true);
-
+    description.set_max_width_chars(54);
     description.set_justify(gtk::Justification::Center);
 
-    description.set_max_width_chars(62);
-
-    let note = Label::new(Some(
-        "Privacy mode does not provide network anonymity. Your network connection is still handled normally.",
-    ));
-
+    let note = Label::new(Some(&rust_i18n::t!("privacy.note")));
     note.add_css_class("dim-label");
-
     note.set_wrap(true);
-
+    note.set_max_width_chars(52);
     note.set_justify(gtk::Justification::Center);
 
-    note.set_max_width_chars(62);
+    let continue_button = Button::with_label(&rust_i18n::t!("privacy.continue"));
+    continue_button.add_css_class("suggested-action");
+    continue_button.set_halign(gtk::Align::Center);
+
+    continue_button.connect_clicked(move |_| {
+        on_continue("axys://newtab".to_string());
+    });
 
     page.append(&title);
-
     page.append(&subtitle);
-
     page.append(&description);
-
     page.append(&note);
+    page.append(&continue_button);
 
     page
 }

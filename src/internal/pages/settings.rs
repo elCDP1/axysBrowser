@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{Box, DropDown, Label, Orientation, Switch};
+use gtk::{Box, DropDown, Label, Orientation, ScrolledWindow, Switch};
 use std::rc::Rc;
 
 use crate::app_state::AppState;
@@ -32,7 +32,7 @@ fn row(title: &str, description: &str) -> Box {
     row
 }
 
-pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool)>) -> Box {
+pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     let page = Box::new(Orientation::Vertical, 18);
 
     page.set_margin_top(28);
@@ -72,31 +72,6 @@ pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool
 
         appearance.connect_selected_notify(move |dropdown| {
             state.set_dark_mode(dropdown.selected() == 0);
-        });
-    }
-
-    let extensions_row = row(
-        &rust_i18n::t!("settings.extensions"),
-        &rust_i18n::t!("settings.extensions_description"),
-    );
-
-    let extensions_switch = Switch::new();
-
-    extensions_switch.set_active(state.settings.borrow().show_extensions);
-
-    extensions_row.append(&extensions_switch);
-
-    {
-        let state = state.clone();
-
-        let callback = on_extensions_changed.clone();
-
-        extensions_switch.connect_active_notify(move |switch| {
-            let visible = switch.is_active();
-
-            state.set_extensions_visible(visible);
-
-            callback(visible);
         });
     }
 
@@ -293,8 +268,6 @@ pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool
 
     page.append(&appearance);
 
-    page.append(&extensions_row);
-
     page.append(&search_title);
 
     page.append(&search);
@@ -315,5 +288,11 @@ pub fn build_settings(state: Rc<AppState>, on_extensions_changed: Rc<dyn Fn(bool
 
     page.append(&language);
 
-    page
+    let scroller = ScrolledWindow::new();
+
+    scroller.set_hexpand(true);
+    scroller.set_vexpand(true);
+    scroller.set_child(Some(&page));
+
+    scroller
 }

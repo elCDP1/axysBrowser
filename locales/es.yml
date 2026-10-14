@@ -9,9 +9,9 @@ app:
   back: "Atrás"
   forward: "Adelante"
   reload: "Recargar"
-  extensions: "Extensiones"
   enter_url: "Introducir URL"
   search_or_enter_url: "Buscar o introducir URL"
+  close_tab: "Cerrar pestaña"
 
 settings:
   title: "Ajustes"
@@ -22,8 +22,6 @@ settings:
   language: "Idioma"
   english: "Inglés"
   spanish: "Español"
-  extensions: "Mostrar extensiones"
-  extensions_description: "Mostrar el área de extensiones en la barra del navegador."
   search: "Búsqueda"
   search_note: "Los cambios se aplican inmediatamente. Brave Search es el buscador predeterminado."
   privacy_security: "Privacidad y seguridad"
@@ -63,6 +61,7 @@ downloads:
   download_complete: "Descarga completada"
   see_all: "Ver todas las descargas"
   clear_finished: "Limpiar terminadas"
+  active_tooltip: "Descargas (%{count} activas)"
 
 tools:
   title: "Herramientas"
@@ -88,11 +87,17 @@ about:
   author: "Proyecto original de elCDP1"
   copyright: "Copyright © 2026 elCDP1"
   notice: "Las obras derivadas pueden modificarse y renombrarse, pero deben mantener visible la atribución al proyecto original axysBrowser y a elCDP1."
+  tooltip: "Acerca de axysBrowser"
 
 privacy:
   title: "Modo privado"
   description: "Datos web temporales y una sesión de navegación aislada."
   search: "Brave Search"
+  subtitle: "Una sesión de navegación temporal"
+  temporary_data: "datos web temporales"
+  details: "Esta ventana usa una sesión de navegación efímera y aislada. Los datos de los sitios no se conservan al cerrar la ventana de privacidad. En este modo siempre se usa Brave Search."
+  note: "El modo privado no ofrece anonimato de red. Tu conexión sigue gestionándose con normalidad."
+  continue: "Seguir navegando"
 
 menu:
   navigation: "Navegación"

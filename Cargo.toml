@@ -2,6 +2,9 @@
 name = "axysbrowser"
 version = "1.0.0-beta.1"
 edition = "2024"
+rust-version = "1.92"
+description = "A lightweight, privacy-focused Linux web browser built with Rust, GTK4 and WebKitGTK"
+license-file = "LICENSE"
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }

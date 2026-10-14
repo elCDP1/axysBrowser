@@ -1,10 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::env;
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use gtk::glib;
@@ -218,11 +217,11 @@ impl BookmarkManager {
     }
 
     fn storage_path() -> PathBuf {
-        config_directory().join("bookmarks.toml")
+        crate::paths::config_dir().join("bookmarks.toml")
     }
 
     fn favicon_directory() -> PathBuf {
-        cache_directory().join("favicons")
+        crate::paths::cache_dir().join("favicons")
     }
 
     fn favicon_path_for(url: &str) -> PathBuf {
@@ -257,7 +256,7 @@ impl BookmarkManager {
 
         let contents = toml::to_string_pretty(&store).map_err(io::Error::other)?;
 
-        atomic_write(&self.path, &contents)
+        crate::paths::atomic_write(&self.path, &contents)
     }
 }
 
@@ -269,44 +268,4 @@ fn sanitize_title(title: String, url: &str) -> String {
     } else {
         title.to_string()
     }
-}
-
-fn config_directory() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(xdg).join("axysbrowser");
-    }
-
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".config").join("axysbrowser");
-    }
-
-    PathBuf::from("axysbrowser")
-}
-
-fn cache_directory() -> PathBuf {
-    if let Ok(xdg) = env::var("XDG_CACHE_HOME") {
-        return PathBuf::from(xdg).join("axysbrowser");
-    }
-
-    if let Ok(home) = env::var("HOME") {
-        return PathBuf::from(home).join(".cache").join("axysbrowser");
-    }
-
-    PathBuf::from("axysbrowser-cache")
-}
-
-fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
-    let Some(parent) = path.parent() else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "bookmarks path has no parent",
-        ));
-    };
-
-    fs::create_dir_all(parent)?;
-
-    let temporary = path.with_extension("tmp");
-
-    fs::write(&temporary, contents)?;
-    fs::rename(temporary, path)
 }

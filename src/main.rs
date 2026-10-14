@@ -5,6 +5,7 @@ mod app_state;
 mod browser;
 mod i18n;
 mod internal;
+mod paths;
 mod theme;
 mod ui;
 

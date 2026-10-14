@@ -5,3 +5,9 @@
 
 src.backup-beta1/
 Cargo.toml.backup-beta1
+
+# Editor / local backups
+*.backup*
+*.swp
+.vscode/
+.idea/

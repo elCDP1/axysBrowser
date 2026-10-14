@@ -12,38 +12,11 @@ use webkit6::{
 
 pub struct BrowserEngine;
 
-fn data_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("axysbrowser");
-    }
-
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home)
-            .join(".local")
-            .join("share")
-            .join("axysbrowser");
-    }
-
-    PathBuf::from("axysbrowser-data")
-}
-
-fn cache_dir() -> PathBuf {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        return PathBuf::from(xdg).join("axysbrowser");
-    }
-
-    if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".cache").join("axysbrowser");
-    }
-
-    PathBuf::from("axysbrowser-cache")
-}
-
 /// Directory holding the HTTP disk cache. Only cache files live here —
 /// website data (IndexedDB, local storage, …) lives next to it, so wiping
 /// this directory is safe while the browser runs.
 pub fn web_cache_dir() -> PathBuf {
-    cache_dir().join("web-cache")
+    crate::paths::cache_dir().join("web-cache")
 }
 
 /// Normalizes a cookie-policy setting value and applies it to a session.
@@ -75,7 +48,7 @@ pub fn chrome_user_agent() -> String {
 }
 
 fn ensure_dirs() -> (String, String) {
-    let data = data_dir();
+    let data = crate::paths::data_dir();
 
     let website_data = data.join("web-data");
     let web_cache = web_cache_dir();

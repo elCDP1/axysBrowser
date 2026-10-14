@@ -47,7 +47,7 @@ impl TabBar {
 
         let new_button = Button::builder()
             .icon_name("list-add-symbolic")
-            .tooltip_text("New tab")
+            .tooltip_text(rust_i18n::t!("app.new_tab").as_ref())
             .build();
 
         new_button.add_css_class("flat");
@@ -88,13 +88,21 @@ impl TabBar {
                 tab.add_css_class("active");
             }
 
+            let new_tab_title = rust_i18n::t!("app.new_tab").to_string();
+
             let title = if tab_data.title.is_empty() {
-                "New Tab"
+                new_tab_title.as_str()
             } else {
                 &tab_data.title
             };
 
             let select = Button::with_label(title);
+
+            // Long titles must shrink instead of widening the whole window.
+            if let Some(label) = select.child().and_downcast::<gtk::Label>() {
+                label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                label.set_max_width_chars(24);
+            }
 
             select.set_hexpand(true);
 
@@ -104,7 +112,7 @@ impl TabBar {
 
             let close = Button::builder()
                 .icon_name("window-close-symbolic")
-                .tooltip_text("Close tab")
+                .tooltip_text(rust_i18n::t!("app.close_tab").as_ref())
                 .build();
 
             close.add_css_class("tab-close");

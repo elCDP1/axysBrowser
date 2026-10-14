@@ -14,7 +14,6 @@ use gtk::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use std::cell::{Cell, RefCell};
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -51,9 +50,6 @@ pub struct UserSettings {
     pub search_engine: String,
 
     #[serde(default = "default_true")]
-    pub show_extensions: bool,
-
-    #[serde(default = "default_true")]
     pub developer_tools: bool,
 
     #[serde(default = "default_true")]
@@ -71,7 +67,6 @@ impl Default for UserSettings {
         Self {
             dark_mode: true,
             search_engine: default_search_engine(),
-            show_extensions: true,
             developer_tools: true,
             tracking_prevention: true,
             cookie_policy: default_cookie_policy(),
@@ -168,24 +163,12 @@ impl AppState {
         state
     }
 
-    fn config_directory() -> PathBuf {
-        if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-            return PathBuf::from(xdg).join("axysbrowser");
-        }
-
-        if let Ok(home) = env::var("HOME") {
-            return PathBuf::from(home).join(".config").join("axysbrowser");
-        }
-
-        PathBuf::from("axysbrowser")
-    }
-
     fn config_path() -> PathBuf {
-        Self::config_directory().join("settings.toml")
+        crate::paths::config_dir().join("settings.toml")
     }
 
     fn cookie_path() -> PathBuf {
-        Self::config_directory().join("cookies.sqlite")
+        crate::paths::config_dir().join("cookies.sqlite")
     }
 
     fn load_user_settings() -> UserSettings {
@@ -287,14 +270,6 @@ impl AppState {
 
         self.apply_theme();
         self.save();
-    }
-
-    pub fn set_extensions_visible(&self, visible: bool) {
-        self.settings.borrow_mut().show_extensions = visible;
-
-        self.save();
-
-        self.notify_settings_changed();
     }
 
     pub fn set_developer_tools(&self, enabled: bool) {

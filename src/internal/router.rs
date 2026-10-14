@@ -36,12 +36,10 @@ pub fn page_title(uri: &str) -> String {
     }
 }
 
-#[expect(clippy::too_many_arguments)]
 pub fn route(
     uri: &str,
     on_search: Rc<dyn Fn(String)>,
     on_about: Rc<dyn Fn()>,
-    on_extensions_changed: Rc<dyn Fn(bool)>,
     on_downloads: Rc<dyn Fn()>,
     on_history: Rc<dyn Fn()>,
     on_clear_browsing_data: Rc<dyn Fn()>,
@@ -50,13 +48,13 @@ pub fn route(
     match uri {
         "axys://" | "axys://newtab" => Some(build_newtab(on_search, on_about).upcast()),
 
-        "axys://welcome" => Some(build_welcome().upcast()),
+        "axys://welcome" => Some(build_welcome(state, on_search).upcast()),
 
-        "axys://privacy" => Some(build_privacy().upcast()),
+        "axys://privacy" => Some(build_privacy(on_search).upcast()),
 
         "axys://about" => Some(build_about().upcast()),
 
-        "axys://settings" => Some(build_settings(state, on_extensions_changed).upcast()),
+        "axys://settings" => Some(build_settings(state).upcast()),
 
         "axys://tools" => {
             Some(build_tools(on_downloads, on_history, on_clear_browsing_data).upcast())

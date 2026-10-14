@@ -54,9 +54,9 @@ fn build_browser_window(
     private_mode: bool,
 ) {
     let window_title = if private_mode {
-        "Privacy mode"
+        rust_i18n::t!("privacy.title").to_string()
     } else {
-        "axysBrowser"
+        "axysBrowser".to_string()
     };
 
     let window = ApplicationWindow::builder()
@@ -64,6 +64,8 @@ fn build_browser_window(
         .title(window_title)
         .icon_name("axysbrowser")
         .resizable(true)
+        .default_width(1100)
+        .default_height(720)
         .build();
 
     if !state.css_installed.get()
@@ -85,8 +87,9 @@ fn build_browser_window(
 
     if private_mode {
         let banner = gtk::Label::new(Some(&format!(
-            "{} · temporary website data · {}",
+            "{} · {} · {}",
             rust_i18n::t!("privacy.title"),
+            rust_i18n::t!("privacy.temporary_data"),
             rust_i18n::t!("privacy.search"),
         )));
 
@@ -301,6 +304,12 @@ fn build_browser_window(
 
                     tab.content.set_visible_child_name(page);
 
+                    if tab.uri.starts_with("http://") || tab.uri.starts_with("https://") {
+                        let current = tab.uri.clone();
+
+                        tab.push_history(current);
+                    }
+
                     tab.uri = target.clone();
 
                     tab.title = router::page_title(&target);
@@ -415,12 +424,9 @@ fn build_browser_window(
                 && let Some(view) = current_web_view.borrow().as_ref()
                 && view.can_go_back()
             {
-                // Best-effort sync of the lightweight custom history so the
-                // address bar / tab state stays coherent.
-                if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
-                    let _ = tab.go_back();
-                }
-
+                // The custom history only tracks the entries *before* the web
+                // view (internal pages); touching it here desynchronised it
+                // from WebKit's stack and made the first entry unreachable.
                 view.go_back();
 
                 return;
@@ -440,10 +446,12 @@ fn build_browser_window(
                 return;
             };
 
-            if router::page_name(&target).is_some()
-                && let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id)
-            {
-                tab.title = router::page_title(&target);
+            if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
+                tab.uri = target.clone();
+
+                if router::page_name(&target).is_some() {
+                    tab.title = router::page_title(&target);
+                }
             }
 
             let tab_data = {
@@ -512,10 +520,6 @@ fn build_browser_window(
                 && let Some(view) = current_web_view.borrow().as_ref()
                 && view.can_go_forward()
             {
-                if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
-                    let _ = tab.go_forward();
-                }
-
                 view.go_forward();
 
                 return;
@@ -535,10 +539,12 @@ fn build_browser_window(
                 return;
             };
 
-            if router::page_name(&target).is_some()
-                && let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id)
-            {
-                tab.title = router::page_title(&target);
+            if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
+                tab.uri = target.clone();
+
+                if router::page_name(&target).is_some() {
+                    tab.title = router::page_title(&target);
+                }
             }
 
             let tab_data = {
@@ -590,13 +596,16 @@ fn build_browser_window(
     let new_tab_slot: Rc<RefCell<Option<NewTabCallback>>> = Rc::new(RefCell::new(None));
 
     let open_in_new_tab: Rc<dyn Fn(String)> = {
-        let new_tab_slot = new_tab_slot.clone();
+        // Weak: new_tab owns this closure, and the slot owns new_tab.
+        let new_tab_slot = Rc::downgrade(&new_tab_slot);
 
         Rc::new(move |url: String| {
             let new_tab_slot = new_tab_slot.clone();
 
             gtk::glib::idle_add_local_once(move || {
-                if let Some(new_tab) = new_tab_slot.borrow().clone() {
+                if let Some(slot) = new_tab_slot.upgrade()
+                    && let Some(new_tab) = slot.borrow().clone()
+                {
                     new_tab(Some(&url));
                 }
             });
@@ -691,18 +700,6 @@ fn build_browser_window(
                 })
             };
 
-            let local_extensions_changed = {
-                let toolbar_slot = toolbar_slot.clone();
-
-                Rc::new(move |visible: bool| {
-                    if let Some(slot) = toolbar_slot.upgrade()
-                        && let Some(toolbar) = slot.borrow().as_ref()
-                    {
-                        toolbar.set_extensions_visible(visible);
-                    }
-                })
-            };
-
             let local_downloads = {
                 let navigate_tab = navigate_tab.clone();
 
@@ -741,7 +738,6 @@ fn build_browser_window(
                     uri,
                     local_search.clone(),
                     local_about.clone(),
-                    local_extensions_changed.clone(),
                     local_downloads.clone(),
                     local_history.clone(),
                     local_clear_browsing_data.clone(),
@@ -1080,16 +1076,6 @@ fn build_browser_window(
                     })
                 };
 
-                let local_extensions_changed = {
-                    let toolbar_slot = toolbar_slot.clone();
-
-                    Rc::new(move |visible: bool| {
-                        if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                            toolbar.set_extensions_visible(visible);
-                        }
-                    })
-                };
-
                 let local_downloads = {
                     let navigate_tab = navigate_tab.clone();
 
@@ -1132,7 +1118,6 @@ fn build_browser_window(
                         page_uri,
                         local_search.clone(),
                         local_about.clone(),
-                        local_extensions_changed.clone(),
                         local_downloads.clone(),
                         local_history.clone(),
                         local_clear_browsing_data.clone(),
@@ -1185,25 +1170,19 @@ fn build_browser_window(
 
     state.subscribe_language(&language_refresh);
 
-    // Live-apply developer tools and the extensions button to every open tab
+    // Live-apply developer tools to every open tab
     // of this window (private windows never enable dev extras).
     let settings_refresh: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
-        let toolbar_slot = toolbar_slot.clone();
         let state = state.clone();
 
         Rc::new(move || {
             let developer_tools = state.settings.borrow().developer_tools && !private_mode;
-            let show_extensions = state.settings.borrow().show_extensions;
 
             for tab in tabs.borrow().iter() {
                 if let Some(settings) = webkit6::prelude::WebViewExt::settings(&tab.web_view) {
                     settings.set_enable_developer_extras(developer_tools);
                 }
-            }
-
-            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                toolbar.set_extensions_visible(show_extensions);
             }
         })
     };
@@ -1214,9 +1193,21 @@ fn build_browser_window(
         let language_refresh = language_refresh.clone();
         let settings_refresh = settings_refresh.clone();
 
+        let tabs = tabs.clone();
+
         window.connect_close_request(move |_| {
             let _keep_alive = language_refresh.clone();
             let _keep_alive_settings = settings_refresh.clone();
+
+            // Every WebView signal handler holds `tabs`, and `tabs` holds the
+            // WebViews: without this the web processes of a closed window
+            // (and any audio they play) would stay alive.
+            let closed = std::mem::take(&mut *tabs.borrow_mut());
+
+            for tab in closed {
+                tab.web_view.stop_loading();
+                tab.web_view.try_close();
+            }
 
             Propagation::Proceed
         });

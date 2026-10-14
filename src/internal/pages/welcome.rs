@@ -1,7 +1,17 @@
 use gtk::prelude::*;
 use gtk::{Box, Button, DropDown, Label, Orientation, Separator};
+use std::rc::Rc;
 
-pub fn build_welcome() -> Box {
+use crate::app_state::AppState;
+
+const ENGINES: [(&str, &str); 4] = [
+    ("brave", "Brave Search"),
+    ("duckduckgo", "DuckDuckGo"),
+    ("google", "Google"),
+    ("bing", "Bing"),
+];
+
+pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Box {
     let page = Box::new(Orientation::Vertical, 18);
 
     page.set_vexpand(true);
@@ -21,9 +31,28 @@ pub fn build_welcome() -> Box {
     let search_label = Label::new(Some(&rust_i18n::t!("welcome.search")));
     search_label.set_halign(gtk::Align::Start);
 
-    let search = DropDown::from_strings(&["Brave Search", "DuckDuckGo", "Google", "Bing"]);
+    let names: Vec<&str> = ENGINES.iter().map(|(_, name)| *name).collect();
 
-    search.set_selected(0);
+    let search = DropDown::from_strings(&names);
+
+    let current = state.settings.borrow().search_engine.clone();
+
+    search.set_selected(
+        ENGINES
+            .iter()
+            .position(|(id, _)| *id == current)
+            .unwrap_or(0) as u32,
+    );
+
+    {
+        let state = state.clone();
+
+        search.connect_selected_notify(move |dropdown| {
+            if let Some((id, _)) = ENGINES.get(dropdown.selected() as usize) {
+                state.set_search_engine(id);
+            }
+        });
+    }
 
     let notice = Label::new(Some(&rust_i18n::t!("welcome.search_note")));
 
@@ -46,6 +75,10 @@ pub fn build_welcome() -> Box {
     let continue_button = Button::with_label(&rust_i18n::t!("welcome.continue"));
     continue_button.add_css_class("suggested-action");
     continue_button.set_halign(gtk::Align::Center);
+
+    continue_button.connect_clicked(move |_| {
+        on_continue("axys://newtab".to_string());
+    });
 
     page.append(&title);
     page.append(&subtitle);

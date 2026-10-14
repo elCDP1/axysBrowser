@@ -9,9 +9,9 @@ app:
   back: "Back"
   forward: "Forward"
   reload: "Reload"
-  extensions: "Extensions"
   enter_url: "Enter URL"
   search_or_enter_url: "Search or enter URL"
+  close_tab: "Close tab"
 
 settings:
   title: "Settings"
@@ -22,8 +22,6 @@ settings:
   language: "Language"
   english: "English"
   spanish: "Spanish"
-  extensions: "Show extensions"
-  extensions_description: "Show the extensions area in the browser toolbar."
   search: "Search"
   search_note: "Changes apply immediately. Brave Search is the default."
   privacy_security: "Privacy & Security"
@@ -63,6 +61,7 @@ downloads:
   download_complete: "Download complete"
   see_all: "See all downloads"
   clear_finished: "Clear finished"
+  active_tooltip: "Downloads (%{count} active)"
 
 tools:
   title: "Tools"
@@ -88,11 +87,17 @@ about:
   author: "Original project by elCDP1"
   copyright: "Copyright © 2026 elCDP1"
   notice: "Derivative works may be modified and renamed, but must retain visible attribution to the original axysBrowser project and elCDP1."
+  tooltip: "About axysBrowser"
 
 privacy:
   title: "Privacy mode"
   description: "Temporary website data and an isolated browsing session."
   search: "Brave Search"
+  subtitle: "A temporary browsing session"
+  temporary_data: "temporary website data"
+  details: "This window uses a separate ephemeral browsing session. Website data is not persisted when the privacy window closes. Brave Search is always used for searches in this mode."
+  note: "Privacy mode does not provide network anonymity. Your network connection is still handled normally."
+  continue: "Continue browsing"
 
 menu:
   navigation: "Navigation"

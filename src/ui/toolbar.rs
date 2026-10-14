@@ -176,7 +176,6 @@ pub struct Toolbar {
     spinner: Spinner,
     back: Button,
     forward: Button,
-    extensions: Button,
     bookmark: Button,
     bookmark_refresh: Action,
     _downloads_refresh: Action,
@@ -280,24 +279,6 @@ impl Toolbar {
                 }
 
                 address.select_region(0, -1);
-            });
-        }
-
-        {
-            let address = address.clone();
-
-            address.connect_has_focus_notify(move |entry| {
-                if !entry.has_focus() {
-                    return;
-                }
-
-                let text = entry.text().to_string();
-
-                if text.starts_with("axys://") {
-                    entry.set_text("");
-                }
-
-                entry.select_region(0, -1);
             });
         }
 
@@ -414,21 +395,11 @@ impl Toolbar {
         downloads.add_css_class("flat");
         downloads.set_visible(false);
 
-        let extensions = Button::builder()
-            .icon_name("list-add-symbolic")
-            .tooltip_text(rust_i18n::t!("app.extensions").as_ref())
-            .build();
-
-        extensions.add_css_class("flat");
-
-        extensions.set_visible(state.settings.borrow().show_extensions);
-
         let menu = build_menu();
         menu.add_css_class("flat");
 
         right.append(&bookmark);
         right.append(&downloads);
-        right.append(&extensions);
         right.append(&menu);
 
         toolbar.set_start_widget(Some(&navigation));
@@ -457,7 +428,7 @@ impl Toolbar {
                 downloads_button.set_visible(!entries.is_empty());
 
                 let tooltip = if active > 0 {
-                    format!("{} ({active} active)", rust_i18n::t!("app.downloads"),)
+                    rust_i18n::t!("downloads.active_tooltip", count = active).to_string()
                 } else {
                     rust_i18n::t!("app.downloads").to_string()
                 };
@@ -544,8 +515,6 @@ impl Toolbar {
 
             let address = address.clone();
 
-            let extensions = extensions.clone();
-
             let downloads = downloads.clone();
 
             let menu = menu.clone();
@@ -562,8 +531,6 @@ impl Toolbar {
                 reload.set_tooltip_text(Some(rust_i18n::t!("app.reload").as_ref()));
 
                 address.set_placeholder_text(Some(rust_i18n::t!("app.enter_url").as_ref()));
-
-                extensions.set_tooltip_text(Some(rust_i18n::t!("app.extensions").as_ref()));
 
                 downloads.set_tooltip_text(Some(rust_i18n::t!("app.downloads").as_ref()));
 
@@ -586,7 +553,6 @@ impl Toolbar {
             spinner,
             back,
             forward,
-            extensions,
             bookmark,
             bookmark_refresh: bookmark_refresh.clone(),
             _downloads_refresh: downloads_refresh,
@@ -617,10 +583,6 @@ impl Toolbar {
         self.back.set_sensitive(can_go_back);
 
         self.forward.set_sensitive(can_go_forward);
-    }
-
-    pub fn set_extensions_visible(&self, visible: bool) {
-        self.extensions.set_visible(visible);
     }
 
     pub fn activate_bookmark(&self) {
