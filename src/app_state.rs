@@ -339,30 +339,71 @@ impl AppState {
     /// Real "clear browsing data": history, all cookies, favicon cache,
     /// persistent website data (IndexedDB, local storage, DOM caches, …)
     /// and the HTTP disk cache. Open tabs are left alone (sites log out on
-    /// next reload), and bookmarks are never touched. `on_done` fires when
-    /// the asynchronous website-data wipe finishes (pass `None` to skip).
+    /// next reload), and bookmarks are never touched. `on_done` fires once
+    /// every asynchronous step finished, reporting success only when ALL
+    /// of them succeeded (pass `None` to skip the report).
     pub fn clear_browsing_data(&self, on_done: Option<Rc<dyn Fn(bool)>>) {
         self.history.clear();
 
+        let pending = Rc::new(Cell::new(0usize));
+        let failed = Rc::new(Cell::new(false));
+        let done = Rc::new(RefCell::new(on_done));
+
+        let finish_one = Rc::new({
+            let pending = pending.clone();
+            let failed = failed.clone();
+            let done = done.clone();
+
+            move |ok: bool| {
+                if !ok {
+                    failed.set(true);
+                }
+
+                let left = pending.get().saturating_sub(1);
+                pending.set(left);
+
+                if left == 0 {
+                    if let Some(callback) = done.borrow_mut().take() {
+                        callback(!failed.get());
+                    }
+                }
+            }
+        });
+
         if let Some(cookie_manager) = self.network_session.cookie_manager() {
+            pending.set(pending.get() + 1);
+
+            let pending = pending.clone();
+            let finish_one = finish_one.clone();
+
             cookie_manager.clone().all_cookies(
                 None::<&webkit6::gio::Cancellable>,
                 move |result| match result {
                     Ok(cookies) => {
                         for cookie in cookies {
+                            pending.set(pending.get() + 1);
+
+                            let finish_one = finish_one.clone();
+
                             cookie_manager.delete_cookie(
                                 &cookie,
                                 None::<&webkit6::gio::Cancellable>,
-                                |result| {
+                                move |result| {
                                     if let Err(error) = result {
                                         eprintln!("Failed to delete cookie: {error}");
+                                        finish_one(false);
+                                    } else {
+                                        finish_one(true);
                                     }
                                 },
                             );
                         }
+
+                        finish_one(true);
                     }
                     Err(error) => {
                         eprintln!("Failed to list cookies: {error}");
+                        finish_one(false);
                     }
                 },
             );
@@ -377,13 +418,15 @@ impl AppState {
         // Everything else the sites persisted: IndexedDB, local storage,
         // DOM/ServiceWorker caches, … (cookies are deleted above).
         if let Some(data_manager) = self.network_session.website_data_manager() {
+            pending.set(pending.get() + 1);
+
+            let finish_one = finish_one.clone();
+
             crate::browser::engine::BrowserEngine::clear_website_data(
                 &data_manager,
                 webkit6::WebsiteDataTypes::ALL,
-                on_done,
+                Some(Rc::new(move |ok| finish_one(ok))),
             );
-        } else if let Some(done) = on_done {
-            done(false);
         }
 
         let cache = crate::browser::engine::web_cache_dir();
@@ -391,8 +434,17 @@ impl AppState {
         if cache.exists() {
             if let Err(error) = fs::remove_dir_all(&cache) {
                 eprintln!("Failed to clear disk cache: {error}");
+                failed.set(true);
             } else if let Err(error) = fs::create_dir_all(&cache) {
                 eprintln!("Failed to recreate cache directory: {error}");
+                failed.set(true);
+            }
+        }
+
+        // Fully synchronous path (no managers): report immediately.
+        if pending.get() == 0 {
+            if let Some(callback) = done.borrow_mut().take() {
+                callback(!failed.get());
             }
         }
     }

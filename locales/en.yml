@@ -71,6 +71,7 @@ downloads:
   download_complete: "Download complete"
   see_all: "See all downloads"
   clear_finished: "Clear finished"
+  private_note: "Files stay on disk wherever they were saved — private windows only keep a separate list that vanishes with the window."
   active_tooltip: "Downloads (%{count} active)"
 
 tools:

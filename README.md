@@ -9,6 +9,7 @@ GTK4 and WebKitGTK 6.
 
 - Tabs, bookmarks bar, history (with age-based cleanup), downloads manager
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
+- Private downloads keep a separate list that dies with the window (files stay on disk, like other browsers)
 - Per-site permissions (notifications, camera, mic, location) with allow/block prompts
 - Tracking prevention (WebKit ITP) and cookie policy settings
 - Search engines: Brave (default), DuckDuckGo, Google, Bing, Yahoo, Startpage, Ecosia, Qwant

@@ -160,6 +160,19 @@ pub fn build_downloads(manager: DownloadManager) -> GtkBox {
 
     page.append(&scroller);
 
+    // Privacy honesty: files downloaded in a private window stay on disk
+    // like everywhere else — closing it only clears this list, and each
+    // private window keeps a separate list that dies with it.
+    let note = Label::new(Some(&rust_i18n::t!("downloads.private_note")));
+
+    note.add_css_class("dim-label");
+
+    note.set_halign(Align::Start);
+
+    note.set_wrap(true);
+
+    page.append(&note);
+
     let refresh: Rc<dyn Fn()> = {
         let list = list.clone();
 

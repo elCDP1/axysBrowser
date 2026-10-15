@@ -50,6 +50,9 @@ jobs:
       - name: GUI smoke under Xvfb (sandbox enabled)
         run: xvfb-run -a bash .github/gui-smoke.sh strict
 
+      - name: Memory smoke under Xvfb
+        run: xvfb-run -a bash .github/mem-smoke.sh
+
   audit:
     runs-on: ubuntu-24.04
 

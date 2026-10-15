@@ -298,9 +298,17 @@ impl BrowserEngine {
     /// Full site origin for permission prompts: scheme + host + effective
     /// port. A grant for `https://example.com:443` must never apply to
     /// `http://example.com` or another port, so the bare host is not
-    /// enough. (Decisions stored by older versions under the bare host
-    /// simply stop matching, which fails safe back to asking.)
+    /// enough. IPv6 hosts get brackets. (Decisions stored by older
+    /// versions under the bare host simply stop matching, which fails
+    /// safe back to asking.)
+    ///
+    /// NOTE: this is the top-level page origin. WebKit's permission API
+    /// does not reveal which embedded frame asked, so a prompt triggered
+    /// by an iframe is attributed to the top page — treat unexpected
+    /// prompts on unfamiliar pages as a reason to deny.
     fn permission_origin(view: &WebView) -> String {
+        use super::permissions::GENERIC_ORIGIN;
+
         let parsed = view.uri().and_then(|uri| {
             gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok()
         });
@@ -316,7 +324,7 @@ impl BrowserEngine {
             .and_then(|uri| uri.host().map(|h| h.to_string()))
             .filter(|host| !host.is_empty())
         else {
-            return "this site".to_string();
+            return GENERIC_ORIGIN.to_string();
         };
 
         let port = parsed.as_ref().map(|uri| uri.port()).unwrap_or(-1);
@@ -327,6 +335,12 @@ impl BrowserEngine {
             80
         } else {
             443
+        };
+
+        let host = if host.contains(':') {
+            format!("[{host}]")
+        } else {
+            host
         };
 
         format!("{scheme}://{host}:{effective}")

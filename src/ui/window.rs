@@ -1508,6 +1508,44 @@ fn build_browser_window(
         },
     );
 
+    // Test-only memory smoke (AXYS_MEM_SMOKE=1, used by CI): opens a
+    // handful of real tabs, closes them again and reports WebKit
+    // descendant RSS at each stage. Never set in normal use.
+    if std::env::var("AXYS_MEM_SMOKE").is_ok() {
+        let tabs = tabs.clone();
+        let new_tab = new_tab.clone();
+        let close_tab = close_tab.clone();
+        let navigate_tab = navigate_tab.clone();
+        let app = app.clone();
+
+        gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            let base = super::memprobe::descendants_rss_kb();
+
+            for _ in 0..6 {
+                let id = new_tab(Some("https://example.com"));
+                navigate_tab(id, "https://example.com".to_string());
+            }
+
+            gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(13), move || {
+                let peak = super::memprobe::descendants_rss_kb();
+
+                let ids: Vec<usize> = tabs.borrow().iter().map(|tab| tab.id).collect();
+
+                for id in ids.into_iter().skip(1) {
+                    close_tab(id);
+                }
+
+                gtk::glib::timeout_add_local_once(std::time::Duration::from_secs(10), move || {
+                    let after = super::memprobe::descendants_rss_kb();
+
+                    eprintln!("MEM_SMOKE baseline_kb={base} peak_kb={peak} after_kb={after}");
+
+                    app.quit();
+                });
+            });
+        });
+    }
+
     let first_tab = new_tab(None);
 
     active_id.set(first_tab);

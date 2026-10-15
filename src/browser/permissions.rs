@@ -94,6 +94,11 @@ fn kind_key(kind: PermissionKind) -> String {
     format!("{kind:?}").to_ascii_lowercase()
 }
 
+/// Fallback identity for pages without a real origin (about:blank, data:,
+/// file errors). Never recorded and never consulted: every such page asks
+/// afresh, so unrelated hostless pages cannot share grants.
+pub const GENERIC_ORIGIN: &str = "this site";
+
 /// Remembers per-origin permission decisions, optionally on disk.
 #[derive(Clone)]
 pub struct PermissionManager {
@@ -126,8 +131,14 @@ impl PermissionManager {
         }
     }
 
-    /// A remembered verdict for this origin + kind, if any.
+    /// A remembered verdict for this origin + kind, if any. The generic
+    /// `"this site"` identity (hostless pages) is never consulted: it
+    /// would otherwise let one such page reuse another's sensitive grant.
     pub fn remembered(&self, origin: &str, kind: PermissionKind) -> Option<bool> {
+        if origin == GENERIC_ORIGIN {
+            return None;
+        }
+
         self.store
             .borrow()
             .decisions
@@ -136,8 +147,14 @@ impl PermissionManager {
             .copied()
     }
 
-    /// Records a verdict (persisted unless ephemeral).
+    /// Records a verdict (persisted unless ephemeral). The generic
+    /// `"this site"` identity is never recorded at all: every hostless
+    /// page asks afresh, so unrelated pages cannot share grants.
     pub fn remember(&self, origin: &str, kind: PermissionKind, allowed: bool) {
+        if origin == GENERIC_ORIGIN {
+            return;
+        }
+
         self.store
             .borrow_mut()
             .decisions

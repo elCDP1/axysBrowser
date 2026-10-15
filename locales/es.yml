@@ -71,6 +71,7 @@ downloads:
   download_complete: "Descarga completada"
   see_all: "Ver todas las descargas"
   clear_finished: "Limpiar terminadas"
+  private_note: "Los archivos quedan en disco donde se guardaron — las ventanas privadas solo mantienen una lista aparte que desaparece con la ventana."
   active_tooltip: "Descargas (%{count} activas)"
 
 tools:
