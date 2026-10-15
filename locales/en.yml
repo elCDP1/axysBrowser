@@ -38,6 +38,12 @@ settings:
   clear_data_done: "Browsing data cleared."
   developer_tools: "Developer tools"
   developer_description: "Enable WebKit developer tools. Changes apply immediately."
+  hw_accel: "Hardware acceleration"
+  hw_accel_description: "Use the GPU for rendering (applies to new tabs). Turn off on systems without a working GPU."
+  permissions: "Website permissions"
+  permissions_description: "Notifications, camera, microphone and other per-site decisions you remembered."
+  permissions_reset: "Forget all"
+  permissions_cleared: "Permissions forgotten."
   language_note: "Changes apply to newly created browser pages."
 
 error:
@@ -125,6 +131,20 @@ find:
   previous: "Previous match"
   next: "Next match"
   close: "Close find bar"
+
+permission:
+  title: "Permission request"
+  message: "%{host} wants to: %{capability}."
+  remember: "Remember this decision"
+  allow: "Allow"
+  block: "Block"
+  use_notifications: "show notifications"
+  use_location: "know your location"
+  use_camera_mic: "use your camera and microphone"
+  share_screen: "capture your screen"
+  use_drm: "play protected media"
+  use_pointer_lock: "lock the pointer"
+  use_other: "use an unknown capability"
 
 dialog:
   ok: "OK"

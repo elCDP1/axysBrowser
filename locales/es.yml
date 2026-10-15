@@ -38,6 +38,12 @@ settings:
   clear_data_done: "Datos de navegación borrados."
   developer_tools: "Herramientas de desarrollo"
   developer_description: "Activar las herramientas de desarrollo de WebKit. Los cambios se aplican inmediatamente."
+  hw_accel: "Aceleración de hardware"
+  hw_accel_description: "Usar la GPU para renderizar (se aplica a pestañas nuevas). Desactívalo sin GPU funcional."
+  permissions: "Permisos de sitios web"
+  permissions_description: "Decisiones recordadas de notificaciones, cámara, micrófono y otros permisos por sitio."
+  permissions_reset: "Olvidar todo"
+  permissions_cleared: "Permisos olvidados."
   language_note: "Los cambios se aplican a las nuevas páginas del navegador."
 
 error:
@@ -125,6 +131,20 @@ find:
   previous: "Anterior coincidencia"
   next: "Siguiente coincidencia"
   close: "Cerrar búsqueda"
+
+permission:
+  title: "Solicitud de permiso"
+  message: "%{host} quiere: %{capability}."
+  remember: "Recordar esta decisión"
+  allow: "Permitir"
+  block: "Bloquear"
+  use_notifications: "mostrar notificaciones"
+  use_location: "conocer tu ubicación"
+  use_camera_mic: "usar tu cámara y micrófono"
+  share_screen: "capturar tu pantalla"
+  use_drm: "reproducir contenido protegido"
+  use_pointer_lock: "bloquear el puntero"
+  use_other: "usar una función desconocida"
 
 dialog:
   ok: "Aceptar"

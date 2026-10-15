@@ -3,12 +3,13 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.0.0-beta.1`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.0.2`. Linux only (a Windows build is experimental and not working yet).
 
 ## Features
 
 - Tabs, bookmarks bar, history (with age-based cleanup), downloads manager
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
+- Per-site permissions (notifications, camera, mic, location) with allow/block prompts
 - Tracking prevention (WebKit ITP) and cookie policy settings
 - Search engines: Brave (default), DuckDuckGo, Google, Bing, Yahoo, Startpage, Ecosia, Qwant
 - Find in page (Ctrl+F), reopen closed tab (Ctrl+Shift+T)

@@ -1,7 +1,10 @@
+pub mod actions;
 pub mod bookmarks;
 pub mod findbar;
 pub mod logo;
 pub mod menu;
+pub mod navigation;
+pub mod shortcuts;
 pub mod spinner;
 pub mod tabs;
 pub mod toolbar;

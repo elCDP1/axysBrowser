@@ -24,3 +24,37 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  gui-smoke:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install GTK4 / WebKitGTK / Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config xvfb
+
+      - name: Build (debug)
+        run: cargo build --locked
+
+      - name: GUI smoke under Xvfb
+        run: xvfb-run -a bash .github/gui-smoke.sh
+
+  audit:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit

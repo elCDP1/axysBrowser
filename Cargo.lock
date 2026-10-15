@@ -64,15 +64,15 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "axysbrowser"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "gtk4",
  "rust-i18n",
  "serde",
- "sys-locale",
  "toml 0.9.12+spec-1.1.0",
  "url",
  "webkit6",
+ "webkit6-sys",
 ]
 
 [[package]]
@@ -1202,15 +1202,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "sys-locale"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8eab9a99a024a169fe8a903cf9d4a3b3601109bcc13bd9e3c6fff259138626c4"
-dependencies = [
- "libc",
 ]
 
 [[package]]

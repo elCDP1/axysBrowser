@@ -3,6 +3,7 @@ use crate::browser::bookmarks::BookmarkManager;
 use crate::browser::downloads::DownloadManager;
 use crate::browser::engine::BrowserEngine;
 use crate::browser::history::HistoryManager;
+use crate::browser::permissions::PermissionManager;
 use crate::i18n;
 use crate::theme;
 
@@ -56,6 +57,9 @@ pub struct UserSettings {
     pub developer_tools: bool,
 
     #[serde(default = "default_true")]
+    pub hardware_acceleration: bool,
+
+    #[serde(default = "default_true")]
     pub tracking_prevention: bool,
 
     #[serde(default = "default_cookie_policy")]
@@ -71,6 +75,7 @@ impl Default for UserSettings {
             dark_mode: true,
             search_engine: default_search_engine(),
             developer_tools: true,
+            hardware_acceleration: true,
             tracking_prevention: true,
             cookie_policy: default_cookie_policy(),
             language: default_language(),
@@ -88,6 +93,7 @@ pub struct AppState {
     pub downloads: DownloadManager,
     pub history: HistoryManager,
     pub bookmarks: BookmarkManager,
+    pub permissions: PermissionManager,
     language_listeners: LanguageListeners,
     settings_listeners: SettingsListeners,
 }
@@ -148,6 +154,8 @@ impl AppState {
 
         let bookmarks = BookmarkManager::load();
 
+        let permissions = PermissionManager::load();
+
         let state = Rc::new(Self {
             settings: Rc::new(RefCell::new(settings)),
             search: Rc::new(RefCell::new(search)),
@@ -157,6 +165,7 @@ impl AppState {
             downloads,
             history,
             bookmarks,
+            permissions,
             language_listeners: Rc::new(RefCell::new(Vec::new())),
             settings_listeners: Rc::new(RefCell::new(Vec::new())),
         });
@@ -284,6 +293,20 @@ impl AppState {
         self.notify_settings_changed();
     }
 
+    /// Hardware acceleration for new tabs (existing ones keep theirs).
+    pub fn set_hardware_acceleration(&self, enabled: bool) {
+        self.settings.borrow_mut().hardware_acceleration = enabled;
+
+        self.save();
+
+        self.notify_settings_changed();
+    }
+
+    /// Forgets every remembered website permission decision.
+    pub fn reset_permissions(&self) {
+        self.permissions.clear_all();
+    }
+
     pub fn set_tracking_prevention(&self, enabled: bool) {
         self.settings.borrow_mut().tracking_prevention = enabled;
 
@@ -309,9 +332,10 @@ impl AppState {
         self.save();
     }
 
-    /// Real "clear browsing data": history, all cookies, favicon cache and
-    /// the HTTP disk cache. Open tabs are left alone (sites log out on next
-    /// reload), and bookmarks are never touched.
+    /// Real "clear browsing data": history, all cookies, favicon cache,
+    /// persistent website data (IndexedDB, local storage, DOM caches, …)
+    /// and the HTTP disk cache. Open tabs are left alone (sites log out on
+    /// next reload), and bookmarks are never touched.
     pub fn clear_browsing_data(&self) {
         self.history.clear();
 
@@ -343,6 +367,15 @@ impl AppState {
             && let Some(favicons) = data_manager.favicon_database()
         {
             favicons.clear();
+        }
+
+        // Everything else the sites persisted: IndexedDB, local storage,
+        // DOM/ServiceWorker caches, … (cookies are deleted above).
+        if let Some(data_manager) = self.network_session.website_data_manager() {
+            crate::browser::engine::BrowserEngine::clear_website_data(
+                &data_manager,
+                webkit6::WebsiteDataTypes::ALL,
+            );
         }
 
         let cache = crate::browser::engine::web_cache_dir();

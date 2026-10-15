@@ -1,91 +1,27 @@
 use gtk::prelude::*;
 use gtk::{
-    Application, ApplicationWindow, Box, EventControllerKey, Orientation, Stack,
+    Application, ApplicationWindow, Box, Orientation, Stack,
     StackTransitionType, gdk, gio, glib::Propagation, style_context_add_provider_for_display,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::{LoadEvent, NetworkSession, WebView, prelude::WebViewExt};
 
-type NewTabCallback = Rc<dyn Fn(Option<&str>) -> usize>;
-
 use crate::app_state::AppState;
 use crate::browser::address::{SearchConfig, resolve_input};
 use crate::browser::engine::BrowserEngine;
-use crate::browser::tabs::Tab;
+use crate::browser::tabs::{NewTabCallback, Tab};
 use crate::internal::router;
 
+use super::actions::{WindowActions, register_window_actions};
 use super::bookmarks::BookmarkBar;
 use super::findbar::FindBar;
+use super::navigation::{address_text_for, begin_web_load};
 use super::tabs::TabBar;
 use super::toolbar::{Toolbar, ToolbarOptions};
 
 fn maximize_window(window: &ApplicationWindow) {
     window.maximize();
-}
-
-/// Address bar text for a tab URI: the new tab and privacy pages show an
-/// empty bar like Chromium's NTP; every other page keeps its URL.
-fn address_text_for(uri: &str) -> &str {
-    match router::page_name(uri) {
-        Some("newtab") | Some("privacy") => "",
-        _ => uri,
-    }
-}
-
-/// Seconds without committing a load before the watchdog gives up on it.
-const LOAD_TIMEOUT_SECS: u64 = 60;
-
-/// Marks a fresh web load on `id` and arms the hang watchdog: if nothing
-/// has committed after [`LOAD_TIMEOUT_SECS`] (DNS/connect/TLS stuck), the
-/// load is stopped and the error page is shown instead of spinning
-/// forever. A page that already committed is never replaced (slow
-/// subresources are normal), and a watchdog from an older navigation
-/// (different serial or URI) never kills a newer load.
-fn begin_web_load(
-    tabs: &Rc<RefCell<Vec<Tab>>>,
-    id: usize,
-    web_view: &WebView,
-    target: &str,
-) {
-    let serial = {
-        let mut tabs = tabs.borrow_mut();
-
-        tabs.iter_mut()
-            .find(|tab| tab.id == id)
-            .map(|tab| {
-                tab.nav_serial += 1;
-                tab.committed = false;
-
-                tab.nav_serial
-            })
-            .unwrap_or(0)
-    };
-
-    let weak = web_view.downgrade();
-    let tabs = tabs.clone();
-    let target = target.to_string();
-
-    gtk::glib::timeout_add_local_once(
-        std::time::Duration::from_secs(LOAD_TIMEOUT_SECS),
-        move || {
-            let Some(view) = weak.upgrade() else {
-                return;
-            };
-
-            let stuck = tabs.borrow().iter().find(|tab| tab.id == id).is_some_and(
-                |tab| tab.nav_serial == serial && !tab.committed && tab.uri == target,
-            );
-
-            if stuck && view.is_loading() {
-                eprintln!("Load timed out: {target}");
-
-                view.stop_loading();
-
-                BrowserEngine::show_timeout_page(&view, &target);
-            }
-        },
-    );
 }
 
 pub fn build_window(app: &Application, state: Rc<AppState>) {
@@ -332,8 +268,11 @@ fn build_browser_window(
 
                 top_stack.set_visible_child(&content);
 
-                // Don't leave a heavy page loading in a hidden view.
+                // Don't leave a heavy page loading in a hidden view, and
+                // release the old page's resources: this WebView is reused
+                // for the fresh tab, so unload explicitly.
                 web_view.stop_loading();
+                web_view.load_html("", None);
 
                 *current_web_view.borrow_mut() = Some(web_view);
 
@@ -808,11 +747,24 @@ fn build_browser_window(
             web_view.set_halign(gtk::Align::Fill);
             web_view.set_valign(gtk::Align::Fill);
 
-            BrowserEngine::configure(&web_view, state.settings.borrow().developer_tools);
+            BrowserEngine::configure(
+                &web_view,
+                state.settings.borrow().developer_tools,
+                state.settings.borrow().hardware_acceleration,
+            );
+
+            let permissions = if private_mode {
+                // Private grants live only as long as this window.
+                crate::browser::permissions::PermissionManager::ephemeral()
+            } else {
+                state.permissions.clone()
+            };
+
             BrowserEngine::wire_view(
                 &web_view,
                 open_in_new_tab.clone(),
                 show_notification.clone(),
+                permissions,
             );
 
             if private_mode
@@ -1028,6 +980,22 @@ fn build_browser_window(
                 let state = state.clone();
 
                 web_view.connect_load_changed(move |view, event| {
+                    // History is per-window, not per-visible-tab: a page
+                    // finishing in the background must still be recorded.
+                    if event == LoadEvent::Finished
+                        && !private_mode
+                        && let Some(uri) = view.uri().map(|uri| uri.to_string())
+                        && (uri.starts_with("http://") || uri.starts_with("https://"))
+                    {
+                        let title = view
+                            .title()
+                            .map(|title| title.to_string())
+                            .filter(|title| !title.trim().is_empty())
+                            .unwrap_or_else(|| uri.clone());
+
+                        state.history.add_visit(title, uri);
+                    }
+
                     if active_id.get() != id {
                         return;
                     }
@@ -1052,19 +1020,6 @@ fn build_browser_window(
                                 );
 
                                 toolbar.refresh_bookmark();
-
-                                if !private_mode
-                                    && let Some(uri) = view.uri().map(|uri| uri.to_string())
-                                    && (uri.starts_with("http://") || uri.starts_with("https://"))
-                                {
-                                    let title = view
-                                        .title()
-                                        .map(|title| title.to_string())
-                                        .filter(|title| !title.trim().is_empty())
-                                        .unwrap_or_else(|| uri.clone());
-
-                                    state.history.add_visit(title, uri);
-                                }
                             }
 
                             _ => {}
@@ -1460,484 +1415,66 @@ fn build_browser_window(
         });
     }
 
-    let keyboard = EventControllerKey::new();
+    super::shortcuts::install_keyboard_shortcuts(
+        &window,
+        super::shortcuts::ShortcutContext {
+            new_tab: new_tab.clone(),
+            close_tab: close_tab.clone(),
+            reopen_closed_tab: reopen_closed_tab.clone(),
+            select_tab: select_tab.clone(),
+            tabs: tabs.clone(),
+            active_id: active_id.clone(),
+            toolbar_slot: toolbar_slot.clone(),
+            current_web_view: current_web_view.clone(),
+            go_back: go_back.clone(),
+            go_forward: go_forward.clone(),
+            navigate_tab: navigate_tab.clone(),
+            app: app.clone(),
+            state: state.clone(),
+            private_mode,
+            window_weak: window_weak.clone(),
+            findbar_slot: findbar_slot.clone(),
+            bookmark_bar_slot: bookmark_bar_slot.clone(),
+        },
+    );
 
-    {
-        let new_tab = new_tab.clone();
-        let close_tab = close_tab.clone();
-        let reopen_closed_tab = reopen_closed_tab.clone();
-        let select_tab = select_tab.clone();
-        let tabs = tabs.clone();
-        let active_id = active_id.clone();
-        let toolbar_slot = toolbar_slot.clone();
-        let current_web_view = current_web_view.clone();
-        let go_back = go_back.clone();
-        let go_forward = go_forward.clone();
-        let navigate_tab = navigate_tab.clone();
-        let app_for_shortcuts = app.clone();
-        let state_for_shortcuts = state.clone();
-        let window_weak = window_weak.clone();
-        let findbar_slot = findbar_slot.clone();
-        let bookmark_bar_slot = bookmark_bar_slot.clone();
+    register_window_actions(
+        &window,
+        WindowActions {
+            new_tab: new_tab.clone(),
+            reopen_closed_tab: reopen_closed_tab.clone(),
+            open_window: {
+                let app = app.clone();
+                let state = state.clone();
 
-        keyboard.connect_key_pressed(move |_, key, _, modifiers| {
-            let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+                Rc::new(move || {
+                    build_window(&app, state.clone());
+                })
+            },
+            open_private_toggle: {
+                let app = app.clone();
+                let state = state.clone();
+                let window_weak = window_weak.clone();
 
-            let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+                Rc::new(move || {
+                    // Toggle: from a private window this opens a normal
+                    // window instead.
+                    if private_mode {
+                        build_window(&app, state.clone());
 
-            let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
-
-            if ctrl {
-                if let Some(ch) = key.to_unicode() {
-                    match ch.to_ascii_lowercase() {
-                        'n' => {
-                            if shift {
-                                // Same toggle as the menu item: entering
-                                // private mode, or leaving it when active.
-                                if private_mode {
-                                    build_window(
-                                        &app_for_shortcuts,
-                                        state_for_shortcuts.clone(),
-                                    );
-
-                                    if let Some(window) = window_weak.upgrade() {
-                                        window.close();
-                                    }
-                                } else {
-                                    build_private_window(
-                                        &app_for_shortcuts,
-                                        state_for_shortcuts.clone(),
-                                    );
-                                }
-                            } else {
-                                build_window(&app_for_shortcuts, state_for_shortcuts.clone());
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        't' => {
-                            // Chromium parity: Ctrl+Shift+T reopens the last
-                            // closed tab instead of opening a blank one.
-                            if shift {
-                                reopen_closed_tab();
-                            } else {
-                                new_tab(None);
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        'w' => {
-                            close_tab(active_id.get());
-
-                            return Propagation::Stop;
-                        }
-
-                        'l' => {
-                            // Focus the address without deleting anything;
-                            // the focus handler selects everything.
-                            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                                toolbar.address.grab_focus();
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        'r' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                if shift {
-                                    view.reload_bypass_cache();
-                                } else {
-                                    BrowserEngine::reload(view);
-                                }
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        '+' | '=' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level((view.zoom_level() + 0.1).clamp(0.25, 5.0));
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        '-' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level((view.zoom_level() - 0.1).clamp(0.25, 5.0));
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        '0' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level(1.0);
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        'j' => {
-                            new_tab(Some("axys://downloads"));
-
-                            return Propagation::Stop;
-                        }
-
-                        'h' => {
-                            new_tab(Some("axys://history"));
-
-                            return Propagation::Stop;
-                        }
-
-                        'd' if !shift => {
-                            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                                toolbar.activate_bookmark();
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        // Ctrl+F opens the find-in-page bar.
-                        'f' => {
-                            if let Some(findbar) = findbar_slot.borrow().as_ref() {
-                                findbar.show();
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        // Ctrl+O opens a local file in the active tab.
-                        'o' => {
-                            if let Some(parent) = app_for_shortcuts.active_window() {
-                                let dialog = gtk::FileDialog::new();
-
-                                let navigate_tab = navigate_tab.clone();
-                                let active_id = active_id.clone();
-
-                                dialog.open(
-                                    Some(&parent),
-                                    None::<&gio::Cancellable>,
-                                    move |result| {
-                                        if let Ok(file) = result {
-                                            navigate_tab(
-                                                active_id.get(),
-                                                file.uri().to_string(),
-                                            );
-                                        }
-                                    },
-                                );
-                            }
-
-                            return Propagation::Stop;
-                        }
-
-                        _ => {}
-                    }
-                }
-
-                if key == gdk::Key::Tab {
-                    let tabs_ref = tabs.borrow();
-
-                    if tabs_ref.is_empty() {
-                        return Propagation::Stop;
-                    }
-
-                    let current = tabs_ref
-                        .iter()
-                        .position(|tab| tab.id == active_id.get())
-                        .unwrap_or(0);
-
-                    let next = if shift {
-                        if current == 0 {
-                            tabs_ref.len() - 1
-                        } else {
-                            current - 1
+                        // "Exit private mode" really leaves it: close this
+                        // window so no private session is left open behind
+                        // the new one.
+                        if let Some(window) = window_weak.upgrade() {
+                            window.close();
                         }
                     } else {
-                        (current + 1) % tabs_ref.len()
-                    };
-
-                    let next_id = tabs_ref[next].id;
-
-                    drop(tabs_ref);
-
-                    select_tab(next_id);
-
-                    return Propagation::Stop;
-                }
-
-                if key == gdk::Key::Page_Up {
-                    let tabs_ref = tabs.borrow();
-
-                    if tabs_ref.is_empty() {
-                        return Propagation::Stop;
+                        build_private_window(&app, state.clone());
                     }
-
-                    let current = tabs_ref
-                        .iter()
-                        .position(|tab| tab.id == active_id.get())
-                        .unwrap_or(0);
-
-                    let next = if current == 0 {
-                        tabs_ref.len() - 1
-                    } else {
-                        current - 1
-                    };
-
-                    let next_id = tabs_ref[next].id;
-
-                    drop(tabs_ref);
-
-                    select_tab(next_id);
-
-                    return Propagation::Stop;
-                }
-
-                if key == gdk::Key::Page_Down {
-                    let tabs_ref = tabs.borrow();
-
-                    if tabs_ref.is_empty() {
-                        return Propagation::Stop;
-                    }
-
-                    let current = tabs_ref
-                        .iter()
-                        .position(|tab| tab.id == active_id.get())
-                        .unwrap_or(0);
-
-                    let next = (current + 1) % tabs_ref.len();
-
-                    let next_id = tabs_ref[next].id;
-
-                    drop(tabs_ref);
-
-                    select_tab(next_id);
-
-                    return Propagation::Stop;
-                }
-
-                if let Some(ch) = key.to_unicode()
-                    && let Some(digit) = ch.to_digit(10)
-                    && (1..=9).contains(&digit)
-                {
-                    let index = digit as usize - 1;
-
-                    let tabs_ref = tabs.borrow();
-
-                    if index < tabs_ref.len() {
-                        let id = tabs_ref[index].id;
-
-                        drop(tabs_ref);
-
-                        select_tab(id);
-                    }
-
-                    return Propagation::Stop;
-                }
-            }
-
-            if alt {
-                match key {
-                    gdk::Key::Left => {
-                        go_back();
-
-                        return Propagation::Stop;
-                    }
-
-                    gdk::Key::Right => {
-                        go_forward();
-
-                        return Propagation::Stop;
-                    }
-
-                    _ => {}
-                }
-            }
-
-            if key == gdk::Key::F5 {
-                if let Some(view) = current_web_view.borrow().as_ref() {
-                    BrowserEngine::reload(view);
-                }
-
-                return Propagation::Stop;
-            }
-
-            // F6 focuses the address bar (Chromium parity with Ctrl+L).
-            if key == gdk::Key::F6 {
-                if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                    toolbar.address.grab_focus();
-                }
-
-                return Propagation::Stop;
-            }
-
-            if key == gdk::Key::F11 {
-                if let Some(win) = window_weak.upgrade() {
-                    if win.is_fullscreen() {
-                        win.unfullscreen();
-                    } else {
-                        win.fullscreen();
-                    }
-                }
-
-                return Propagation::Stop;
-            }
-
-            // Esc closes menu panels first, then the findbar, otherwise
-            // stops loading.
-            if key == gdk::Key::Escape {
-                let panels_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
-                    toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
-                }) || bookmark_bar_slot.borrow().as_ref().is_some_and(|bar| {
-                    bar.overflow_panel.is_visible()
-                });
-
-                if panels_open {
-                    if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-                        toolbar.close_panels();
-                    }
-
-                    if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
-                        bar.close_panels();
-                    }
-
-                    return Propagation::Stop;
-                }
-
-                if let Some(findbar) = findbar_slot.borrow().as_ref()
-                    && findbar.is_visible()
-                {
-                    findbar.hide();
-
-                    return Propagation::Stop;
-                }
-
-                if let Some(view) = current_web_view.borrow().as_ref()
-                    && view.is_loading()
-                {
-                    view.stop_loading();
-
-                    return Propagation::Stop;
-                }
-            }
-
-            Propagation::Proceed
-        });
-
-        window.add_controller(keyboard);
-    }
-
-    {
-        let new_tab = new_tab.clone();
-
-        let action = gio::SimpleAction::new("new-tab", None);
-
-        action.connect_activate(move |_, _| {
-            new_tab(None);
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let app = app.clone();
-        let state = state.clone();
-
-        let action = gio::SimpleAction::new("new-window", None);
-
-        action.connect_activate(move |_, _| {
-            build_window(&app, state.clone());
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let reopen_closed_tab = reopen_closed_tab.clone();
-
-        let action = gio::SimpleAction::new("reopen-tab", None);
-
-        action.connect_activate(move |_, _| {
-            reopen_closed_tab();
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let app = app.clone();
-        let state = state.clone();
-
-        // Toggle: from a private window this opens a normal window instead.
-        let action = gio::SimpleAction::new("privacy", None);
-
-        action.connect_activate(move |_, _| {
-            if private_mode {
-                build_window(&app, state.clone());
-
-                // "Exit private mode" really leaves it: close this window so
-                // no private session is left open behind the new one.
-                if let Some(window) = window_weak.upgrade() {
-                    window.close();
-                }
-            } else {
-                build_private_window(&app, state.clone());
-            }
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let new_tab = new_tab.clone();
-
-        let action = gio::SimpleAction::new("tools", None);
-
-        action.connect_activate(move |_, _| {
-            new_tab(Some("axys://tools"));
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let new_tab = new_tab.clone();
-
-        let action = gio::SimpleAction::new("downloads", None);
-
-        action.connect_activate(move |_, _| {
-            new_tab(Some("axys://downloads"));
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let new_tab = new_tab.clone();
-
-        let action = gio::SimpleAction::new("history", None);
-
-        action.connect_activate(move |_, _| {
-            new_tab(Some("axys://history"));
-        });
-
-        window.add_action(&action);
-    }
-
-    {
-        let new_tab = new_tab.clone();
-
-        let action = gio::SimpleAction::new("settings", None);
-
-        action.connect_activate(move |_, _| {
-            new_tab(Some("axys://settings"));
-        });
-
-        window.add_action(&action);
-    }
+                })
+            },
+        },
+    );
 
     let first_tab = new_tab(None);
 

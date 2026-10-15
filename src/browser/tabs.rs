@@ -1,5 +1,10 @@
 use gtk::Stack;
+use std::rc::Rc;
 use webkit6::WebView;
+
+/// Opens a tab; `None` = blank new tab, `Some(uri)` = starting page.
+/// Returns the new tab id.
+pub type NewTabCallback = Rc<dyn Fn(Option<&str>) -> usize>;
 
 pub struct Tab {
     pub id: usize,

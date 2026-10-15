@@ -1,5 +1,7 @@
 use gtk::glib;
 use gtk::glib::object::Cast;
+use gtk::glib::translate::{FromGlibPtrFull as _, IntoGlib, ToGlibPtr as _};
+use gtk::prelude::*;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -9,6 +11,8 @@ use webkit6::{
     NetworkSession, PermissionRequest, PermissionState, PolicyDecisionType, ResponsePolicyDecision,
     ScriptDialogType, WebProcessTerminationReason, WebView, prelude::*,
 };
+
+use super::permissions::{PermissionKind, PermissionManager};
 
 pub struct BrowserEngine;
 
@@ -109,7 +113,7 @@ impl BrowserEngine {
         session
     }
 
-    pub fn configure(view: &WebView, developer_tools: bool) {
+    pub fn configure(view: &WebView, developer_tools: bool, hardware_acceleration: bool) {
         let Some(settings) = webkit6::prelude::WebViewExt::settings(view) else {
             return;
         };
@@ -136,12 +140,22 @@ impl BrowserEngine {
         settings.set_enable_2d_canvas_acceleration(true);
         settings.set_enable_fullscreen(true);
         settings.set_media_playback_allows_inline(true);
-        settings.set_media_playback_requires_user_gesture(false);
+
+        // Autoplay with sound needs a user gesture (Chromium parity).
+        // WebRTC calls are unaffected: they use explicit permission grants.
+        settings.set_media_playback_requires_user_gesture(true);
 
         // Popups (OAuth) and rendering.
         settings.set_javascript_can_open_windows_automatically(true);
         settings.set_javascript_can_access_clipboard(true);
-        settings.set_hardware_acceleration_policy(HardwareAccelerationPolicy::Always);
+
+        // Configurable (Settings → Appearance): forced acceleration breaks
+        // systems without a working GPU (notably some WSLg setups).
+        settings.set_hardware_acceleration_policy(if hardware_acceleration {
+            HardwareAccelerationPolicy::Always
+        } else {
+            HardwareAccelerationPolicy::Never
+        });
 
         settings.set_user_agent(Some(chrome_user_agent()).as_deref());
     }
@@ -158,25 +172,45 @@ impl BrowserEngine {
         view: &WebView,
         open_in_new_tab: Rc<dyn Fn(String)>,
         show_notification: Rc<dyn Fn(String, String)>,
+        permissions: PermissionManager,
     ) {
-        Self::wire_policy(view, open_in_new_tab.clone());
-        Self::wire_popups(view, open_in_new_tab);
-        Self::wire_permissions(view);
-        Self::wire_dialogs(view);
-        Self::wire_crash_recovery(view);
-        Self::wire_notifications(view, show_notification);
-    }
-
-    fn wire_policy(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>) {
-        // Dedupe: window.open() typically fires `create` AND a NewWindow
-        // policy decision for the same URL. Opening both would duplicate tabs.
-        let last_popup: Rc<RefCell<(String, Instant)>> = Rc::new(RefCell::new((
+        // Shared popup guard: window.open() typically fires `create` AND a
+        // NewWindow policy decision for the same URL — one guard for both
+        // paths so the same URL can never open two tabs.
+        let popup_guard: Rc<RefCell<(String, Instant)>> = Rc::new(RefCell::new((
             String::new(),
             Instant::now()
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now),
         )));
 
+        Self::wire_policy(view, open_in_new_tab.clone(), popup_guard.clone());
+        Self::wire_popups(view, open_in_new_tab, popup_guard);
+        Self::wire_permissions(view, permissions);
+        Self::wire_dialogs(view);
+        Self::wire_crash_recovery(view);
+        Self::wire_notifications(view, show_notification);
+    }
+
+    /// First-seen check for a popup URL; records it when fresh.
+    fn popup_is_fresh(guard: &Rc<RefCell<(String, Instant)>>, uri: &str) -> bool {
+        let mut last = guard.borrow_mut();
+
+        if last.0 != uri || last.1.elapsed() > Duration::from_secs(1) {
+            *last = (uri.to_string(), Instant::now());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn wire_policy(
+        view: &WebView,
+        open_in_new_tab: Rc<dyn Fn(String)>,
+        popup_guard: Rc<RefCell<(String, Instant)>>,
+    ) {
+        // Dedupe: window.open() typically fires `create` AND a NewWindow
+        // policy decision for the same URL. Opening both would duplicate tabs.
         view.connect_decide_policy(move |_, decision, decision_type| {
             match decision_type {
                 PolicyDecisionType::NavigationAction | PolicyDecisionType::NewWindowAction => {
@@ -190,26 +224,14 @@ impl BrowserEngine {
                     if decision_type == PolicyDecisionType::NewWindowAction {
                         if let Some(uri) = uri
                             && (uri.starts_with("http://") || uri.starts_with("https://"))
+                            && Self::popup_is_fresh(&popup_guard, &uri)
                         {
-                            let fresh = {
-                                let last = last_popup.borrow();
+                            let opener = open_in_new_tab.clone();
 
-                                last.0 != uri || last.1.elapsed() > Duration::from_secs(1)
-                            };
-
-                            if fresh {
-                                *last_popup.borrow_mut() =
-                                    (uri.clone(), Instant::now());
-
-                                let opener = open_in_new_tab.clone();
-
-                                glib::idle_add_local_once(move || opener(uri));
-                            }
-
-                            decision.ignore();
-                        } else {
-                            decision.ignore();
+                            glib::idle_add_local_once(move || opener(uri));
                         }
+
+                        decision.ignore();
 
                         return true;
                     }
@@ -241,34 +263,22 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_popups(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>) {
-        let last_popup: Rc<RefCell<(String, Instant)>> = Rc::new(RefCell::new((
-            String::new(),
-            Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-        )));
-
+    fn wire_popups(
+        view: &WebView,
+        open_in_new_tab: Rc<dyn Fn(String)>,
+        popup_guard: Rc<RefCell<(String, Instant)>>,
+    ) {
         view.connect_create(move |_, action| {
             if let Some(uri) = action
                 .request()
                 .and_then(|r| r.uri())
                 .map(|u| u.to_string())
                 && (uri.starts_with("http://") || uri.starts_with("https://"))
+                && Self::popup_is_fresh(&popup_guard, &uri)
             {
-                let fresh = {
-                    let last = last_popup.borrow();
+                let opener = open_in_new_tab.clone();
 
-                    last.0 != uri || last.1.elapsed() > Duration::from_secs(1)
-                };
-
-                if fresh {
-                    *last_popup.borrow_mut() = (uri.clone(), Instant::now());
-
-                    let opener = open_in_new_tab.clone();
-
-                    glib::idle_add_local_once(move || opener(uri));
-                }
+                glib::idle_add_local_once(move || opener(uri));
             }
 
             // Return None: the URL is opened as a regular tab (see above)
@@ -278,35 +288,155 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_permissions(view: &WebView) {
-        view.connect_permission_request(|_, request: &PermissionRequest| {
-            // PermissionRequest is an interface; the concrete type name tells
-            // us what is being asked for.
-            let kind = request.type_().name().to_string();
-            let lower = kind.to_ascii_lowercase();
+    /// Site origin for permission prompts (host, or a generic label).
+    fn permission_origin(view: &WebView) -> String {
+        view.uri()
+            .and_then(|uri| gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok())
+            .and_then(|uri| uri.host().map(|host| host.to_string()))
+            .filter(|host| !host.is_empty())
+            .unwrap_or_else(|| "this site".to_string())
+    }
 
-            if lower.contains("notification") {
+    /// Permission prompt dialog. The WebKit request is answered
+    /// asynchronously from the dialog buttons, so the page never hangs.
+    fn ask_permission(
+        view: &WebView,
+        request: PermissionRequest,
+        kind: PermissionKind,
+        origin: String,
+        permissions: PermissionManager,
+    ) {
+        let dialog = gtk::Window::builder()
+            .modal(true)
+            .title(rust_i18n::t!("permission.title").as_ref())
+            .default_width(420)
+            .build();
+
+        if let Some(root) = view.root()
+            && let Ok(parent) = root.downcast::<gtk::Window>()
+        {
+            dialog.set_transient_for(Some(&parent));
+        }
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+
+        content.set_margin_top(18);
+        content.set_margin_bottom(18);
+        content.set_margin_start(18);
+        content.set_margin_end(18);
+
+        let message = gtk::Label::new(Some(&rust_i18n::t!(
+            "permission.message",
+            host = origin,
+            capability = rust_i18n::t!(kind.label_key()).as_ref()
+        )));
+
+        message.set_wrap(true);
+        message.set_halign(gtk::Align::Start);
+
+        let remember = gtk::CheckButton::with_label(&rust_i18n::t!("permission.remember"));
+
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        buttons.set_halign(gtk::Align::End);
+
+        let block = gtk::Button::with_label(&rust_i18n::t!("permission.block"));
+        let allow = gtk::Button::with_label(&rust_i18n::t!("permission.allow"));
+        allow.add_css_class("suggested-action");
+
+        buttons.append(&block);
+        buttons.append(&allow);
+
+        content.append(&message);
+        content.append(&remember);
+        content.append(&buttons);
+
+        {
+            let dialog = dialog.clone();
+            let permissions = permissions.clone();
+            let origin = origin.clone();
+            let remember = remember.clone();
+            let request = request.clone();
+
+            allow.connect_clicked(move |_| {
+                if remember.is_active() {
+                    permissions.remember(&origin, kind, true);
+                }
+
                 request.allow();
-            } else {
-                // Mic / camera / display capture / geolocation / DRM, …:
-                // deny by default so the JS promise always settles instead of
-                // hanging the page (and growing memory) forever. Voice/video
-                // then fails gracefully instead of killing the web process.
-                eprintln!("Denied web permission: {kind}");
-                request.deny();
-            }
+                dialog.close();
+            });
+        }
 
-            true
+        {
+            let dialog = dialog.clone();
+            let permissions = permissions.clone();
+            let remember = remember.clone();
+            let request = request.clone();
+
+            block.connect_clicked(move |_| {
+                if remember.is_active() {
+                    permissions.remember(&origin, kind, false);
+                }
+
+                request.deny();
+                dialog.close();
+            });
+        }
+
+        dialog.set_child(Some(&content));
+        dialog.present();
+    }
+
+    fn wire_permissions(view: &WebView, permissions: PermissionManager) {
+        view.connect_permission_request({
+            let permissions = permissions.clone();
+
+            move |view, request: &PermissionRequest| {
+                // PermissionRequest is an interface; the concrete type name
+                // tells us what is being asked for.
+                let type_name = request.type_().name();
+                let kind = PermissionKind::classify(type_name);
+
+                if !kind.needs_prompt() {
+                    match kind {
+                        // Harmless and games need it: granted silently.
+                        PermissionKind::PointerLock => request.allow(),
+                        // Unknown kinds stay denied so the JS promise
+                        // settles instead of hanging the page forever.
+                        _ => {
+                            eprintln!(
+                                "Denied unknown web permission: {}",
+                                request.type_().name()
+                            );
+                            request.deny();
+                        }
+                    }
+
+                    return true;
+                }
+
+                let origin = Self::permission_origin(view);
+
+                if let Some(allowed) = permissions.remembered(&origin, kind) {
+                    if allowed {
+                        request.allow();
+                    } else {
+                        request.deny();
+                    }
+
+                    return true;
+                }
+
+                Self::ask_permission(view, request.clone(), kind, origin, permissions.clone());
+
+                true
+            }
         });
 
-        view.connect_query_permission_state(|_, query| {
-            let name = query.name().map(|n| n.to_string()).unwrap_or_default();
-
-            if name.to_ascii_lowercase().contains("notification") {
-                query.finish(PermissionState::Granted);
-            } else {
-                query.finish(PermissionState::Denied);
-            }
+        view.connect_query_permission_state(move |_, query| {
+            // Queries carry no origin, so there is nothing remembered to
+            // consult: answer Prompt (not Denied) so pages still ask.
+            query.finish(PermissionState::Prompt);
 
             true
         });
@@ -425,6 +555,55 @@ impl BrowserEngine {
         view.load_alternate_html(&Self::error_page(&title, &detail, uri), uri, None);
     }
 
+    /// Removes persistent website data (IndexedDB, local storage, DOM
+    /// caches, …) of the given types from `manager`. The safe bindings omit
+    /// `webkit_website_data_manager_clear`, so this calls the FFI directly;
+    /// completion (or failure) is only logged.
+    pub fn clear_website_data(
+        manager: &webkit6::WebsiteDataManager,
+        types: webkit6::WebsiteDataTypes,
+    ) {
+        // Ten years in microseconds: effectively "everything ever stored".
+        const TEN_YEARS_US: i64 = 10 * 365 * 24 * 3600 * 1_000_000;
+
+        unsafe extern "C" fn finished(
+            source: *mut gtk::glib::gobject_ffi::GObject,
+            result: *mut webkit6::gio::ffi::GAsyncResult,
+            _user_data: gtk::glib::ffi::gpointer,
+        ) {
+            let mut error = std::ptr::null_mut();
+
+            let ok = unsafe {
+                webkit6_sys::webkit_website_data_manager_clear_finish(
+                    source as *mut _,
+                    result,
+                    &mut error,
+                )
+            };
+
+            if ok == 0 {
+                let message = if error.is_null() {
+                    "unknown error".to_string()
+                } else {
+                    unsafe { gtk::glib::Error::from_glib_full(error).to_string() }
+                };
+
+                eprintln!("Failed to clear website data: {message}");
+            }
+        }
+
+        unsafe {
+            webkit6_sys::webkit_website_data_manager_clear(
+                manager.to_glib_none().0,
+                types.into_glib(),
+                TEN_YEARS_US,
+                std::ptr::null_mut(),
+                Some(finished),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
     fn wire_crash_recovery(view: &WebView) {
         view.connect_web_process_terminated(|view, reason| {
             let uri = view.uri().map(|u| u.to_string()).unwrap_or_default();
@@ -537,5 +716,36 @@ impl BrowserEngine {
         // If the web process is gone, reload() respawns it; bypass-cache
         // would do the same but slower, so plain reload is the right default.
         view.reload();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_guard() -> Rc<RefCell<(String, Instant)>> {
+        Rc::new(RefCell::new((
+            String::new(),
+            Instant::now()
+                .checked_sub(Duration::from_secs(10))
+                .unwrap_or_else(Instant::now),
+        )))
+    }
+
+    #[test]
+    fn popup_guard_dedupes_same_url() {
+        let guard = fresh_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        // Same URL within the window is a duplicate (create + decide_policy).
+        assert!(!BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+    }
+
+    #[test]
+    fn popup_guard_allows_different_urls() {
+        let guard = fresh_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/b"));
     }
 }

@@ -90,3 +90,11 @@ impl LoadingSpinner {
         }
     }
 }
+
+impl Drop for LoadingSpinner {
+    /// A window closed mid-load must not leave the timer registered: it
+    /// holds the widget alive and would spin (and redraw) forever.
+    fn drop(&mut self) {
+        self.stop();
+    }
+}

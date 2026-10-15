@@ -232,6 +232,60 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
         });
     }
 
+    let hw_row = row(
+        &rust_i18n::t!("settings.hw_accel"),
+        &rust_i18n::t!("settings.hw_accel_description"),
+    );
+
+    let hw_switch = Switch::new();
+
+    hw_switch.set_active(state.settings.borrow().hardware_acceleration);
+
+    hw_switch.set_valign(gtk::Align::Center);
+
+    hw_row.append(&hw_switch);
+
+    {
+        let state = state.clone();
+
+        hw_switch.connect_active_notify(move |switch| {
+            state.set_hardware_acceleration(switch.is_active());
+        });
+    }
+
+    let permissions_desc = format!(
+        "{} ({})",
+        rust_i18n::t!("settings.permissions_description"),
+        state.permissions.decision_count()
+    );
+
+    let permissions_row = row(
+        &rust_i18n::t!("settings.permissions"),
+        &permissions_desc,
+    );
+
+    let permissions_reset = gtk::Button::with_label(&rust_i18n::t!("settings.permissions_reset"));
+
+    permissions_reset.set_valign(gtk::Align::Center);
+
+    let permissions_status = Label::new(None);
+
+    permissions_status.add_css_class("dim-label");
+
+    {
+        let state = state.clone();
+        let permissions_status = permissions_status.clone();
+
+        permissions_reset.connect_clicked(move |_| {
+            state.reset_permissions();
+
+            permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
+        });
+    }
+
+    permissions_row.append(&permissions_status);
+    permissions_row.append(&permissions_reset);
+
     let language_title = Label::new(Some(&rust_i18n::t!("settings.language")));
 
     language_title.add_css_class("title-3");
@@ -287,6 +341,10 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     page.append(&clear_row);
 
     page.append(&developer_row);
+
+    page.append(&hw_row);
+
+    page.append(&permissions_row);
 
     page.append(&language_title);
 
