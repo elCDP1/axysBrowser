@@ -201,9 +201,17 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
         let clear_status = clear_status.clone();
 
         clear_button.connect_clicked(move |_| {
-            state.clear_browsing_data();
+            clear_status.set_text(&rust_i18n::t!("settings.clearing"));
 
-            clear_status.set_text(&rust_i18n::t!("settings.clear_data_done"));
+            let clear_status = clear_status.clone();
+
+            state.clear_browsing_data(Some(Rc::new(move |ok| {
+                clear_status.set_text(&rust_i18n::t!(if ok {
+                    "settings.clear_data_done"
+                } else {
+                    "settings.clear_data_failed"
+                }));
+            })));
         });
     }
 

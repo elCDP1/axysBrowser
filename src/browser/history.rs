@@ -292,4 +292,27 @@ mod tests {
 
         assert!(manager.entries().is_empty());
     }
+
+    #[test]
+    fn non_web_urls_are_never_recordable() {
+        // Internal pages, blanks and local files must never reach history
+        // (this is what keeps private-adjacent pages out of it too).
+        for url in [
+            "axys://newtab",
+            "axys://privacy",
+            "axys://settings",
+            "about:blank",
+            "file:///home/user/page.html",
+            "data:text/html,hi",
+        ] {
+            let manager = test_manager("recordable");
+
+            manager.add_visit("title", url);
+
+            assert!(
+                manager.entries().is_empty(),
+                "{url} must not be recorded"
+            );
+        }
+    }
 }

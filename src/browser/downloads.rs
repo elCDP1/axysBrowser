@@ -82,13 +82,19 @@ type DownloadListeners = Rc<RefCell<Vec<DownloadListener>>>;
 /// native GTK save dialog (like "Save As" in Chromium), sends a desktop
 /// notification when it finishes, and can be cancelled mid-flight. Shared
 /// via `AppState`, so every open `axys://downloads` page and the toolbar's
-/// downloads button across all windows reflect the same list.
+/// Per-window download tracking. Normal windows share the profile-wide
+/// manager (one list everywhere); each private window gets its own
+/// manager, so private downloads never appear in normal windows and die
+/// with the private window.
 #[derive(Clone)]
 pub struct DownloadManager {
     entries: Rc<RefCell<Vec<DownloadEntry>>>,
     listeners: DownloadListeners,
     next_id: Rc<RefCell<u64>>,
     application: Application,
+    /// Whether finished downloads pop a desktop notification (off in
+    /// private windows: the filename would linger in the shell).
+    announce: Rc<std::cell::Cell<bool>>,
 }
 
 impl DownloadManager {
@@ -98,7 +104,13 @@ impl DownloadManager {
             listeners: Rc::new(RefCell::new(Vec::new())),
             next_id: Rc::new(RefCell::new(1)),
             application,
+            announce: Rc::new(std::cell::Cell::new(true)),
         }
+    }
+
+    /// Disables (or re-enables) the finished-download desktop toast.
+    pub fn set_announce(&self, enabled: bool) {
+        self.announce.set(enabled);
     }
 
     pub fn entries(&self) -> Vec<DownloadEntry> {
@@ -293,6 +305,12 @@ impl DownloadManager {
                     manager.notify();
 
                     if !completed {
+                        return;
+                    }
+
+                    // Private windows mute this: the filename would linger
+                    // in the desktop notification history.
+                    if !manager.announce.get() {
                         return;
                     }
 

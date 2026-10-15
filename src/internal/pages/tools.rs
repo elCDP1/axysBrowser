@@ -7,7 +7,7 @@ use crate::browser::history::HistoryManager;
 pub fn build_tools(
     on_downloads: Rc<dyn Fn()>,
     on_history: Rc<dyn Fn()>,
-    on_clear_browsing_data: Rc<dyn Fn()>,
+    on_clear_browsing_data: crate::app_state::ClearBrowsingData,
     history: HistoryManager,
 ) -> Box {
     let page = Box::new(Orientation::Vertical, 14);
@@ -67,9 +67,17 @@ pub fn build_tools(
         let status = status.clone();
 
         browsing_data.connect_clicked(move |_| {
-            callback();
+            status.set_text(&rust_i18n::t!("tools.clearing"));
 
-            status.set_text(&rust_i18n::t!("tools.cleared"));
+            let status = status.clone();
+
+            callback(Rc::new(move |ok| {
+                status.set_text(&rust_i18n::t!(if ok {
+                    "tools.cleared"
+                } else {
+                    "tools.clear_failed"
+                }));
+            }));
         });
     }
 

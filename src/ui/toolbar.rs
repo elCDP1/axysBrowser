@@ -204,6 +204,7 @@ pub struct ToolbarOptions {
     pub state: Rc<AppState>,
     pub search: Rc<RefCell<SearchConfig>>,
     pub private_mode: bool,
+    pub downloads: crate::browser::downloads::DownloadManager,
     /// Called after any panel toggles so the window can sync its
     /// click-catcher (visible while any panel is open).
     pub on_panel_toggled: Rc<dyn Fn()>,
@@ -222,6 +223,7 @@ impl Toolbar {
             state,
             search,
             private_mode,
+            downloads,
             on_panel_toggled,
         } = options;
         let toolbar = CenterBox::new();
@@ -443,13 +445,13 @@ impl Toolbar {
 
         downloads_panel.append(&downloads_content);
 
-        let downloads = Button::builder()
+        let downloads_button = Button::builder()
             .icon_name("folder-download-symbolic")
             .tooltip_text(rust_i18n::t!("app.downloads").as_ref())
             .build();
 
-        downloads.add_css_class("flat");
-        downloads.set_visible(false);
+        downloads_button.add_css_class("flat");
+        downloads_button.set_visible(false);
 
         // Hamburger panel (rows built by ui::menu).
         let menu_panel = MenuPanel::new(
@@ -462,7 +464,7 @@ impl Toolbar {
             let downloads_panel = downloads_panel.clone();
             let on_panel_toggled = on_panel_toggled.clone();
 
-            downloads.connect_clicked(move |_| {
+            downloads_button.connect_clicked(move |_| {
                 menu_panel.hide();
                 downloads_panel
                     .set_visible(!downloads_panel.is_visible());
@@ -490,7 +492,7 @@ impl Toolbar {
         }
 
         right.append(&bookmark);
-        right.append(&downloads);
+        right.append(&downloads_button);
         right.append(&menu_button);
 
         toolbar.set_start_widget(Some(&navigation));
@@ -512,13 +514,13 @@ impl Toolbar {
         };
 
         let downloads_refresh: Action = {
-            let downloads_button = downloads.clone();
+            let button = downloads_button.clone();
 
             let downloads_content = downloads_content.clone();
 
             let close_panels = close_panels.clone();
 
-            let manager = state.downloads.clone();
+            let manager = downloads.clone();
 
             let on_navigate = on_navigate.clone();
 
@@ -530,7 +532,7 @@ impl Toolbar {
                     .filter(|entry| entry.status == DownloadStatus::InProgress)
                     .count();
 
-                downloads_button.set_visible(!entries.is_empty());
+                button.set_visible(!entries.is_empty());
 
                 let tooltip = if active > 0 {
                     rust_i18n::t!("downloads.active_tooltip", count = active).to_string()
@@ -538,7 +540,7 @@ impl Toolbar {
                     rust_i18n::t!("app.downloads").to_string()
                 };
 
-                downloads_button.set_tooltip_text(Some(&tooltip));
+                button.set_tooltip_text(Some(&tooltip));
 
                 while let Some(child) = downloads_content.first_child() {
                     downloads_content.remove(&child);
@@ -614,7 +616,7 @@ impl Toolbar {
 
         downloads_refresh();
 
-        state.downloads.subscribe(&downloads_refresh);
+        downloads.subscribe(&downloads_refresh);
 
         bookmark_refresh();
 
@@ -627,7 +629,7 @@ impl Toolbar {
 
             let address = address.clone();
 
-            let downloads = downloads.clone();
+            let downloads_button = downloads_button.clone();
 
             let menu_panel = menu_panel.clone();
 
@@ -646,7 +648,7 @@ impl Toolbar {
 
                 update_placeholder(&address, &search);
 
-                downloads.set_tooltip_text(Some(rust_i18n::t!("app.downloads").as_ref()));
+                downloads_button.set_tooltip_text(Some(rust_i18n::t!("app.downloads").as_ref()));
 
                 bookmark_refresh();
 

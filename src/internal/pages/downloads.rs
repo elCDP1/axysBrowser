@@ -5,7 +5,6 @@ use gtk::{
 };
 use std::rc::Rc;
 
-use crate::app_state::AppState;
 use crate::browser::downloads::{DownloadEntry, DownloadManager, DownloadStatus, format_speed};
 
 /// A download row. When shown inside the toolbar popup, `on_interact` closes
@@ -130,7 +129,7 @@ pub fn build_row(
     row
 }
 
-pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
+pub fn build_downloads(manager: DownloadManager) -> GtkBox {
     let page = GtkBox::new(Orientation::Vertical, 14);
 
     page.set_margin_top(28);
@@ -164,7 +163,7 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
     let refresh: Rc<dyn Fn()> = {
         let list = list.clone();
 
-        let manager = state.downloads.clone();
+        let manager = manager.clone();
 
         Rc::new(move || {
             while let Some(child) = list.first_child() {
@@ -193,7 +192,7 @@ pub fn build_downloads(state: Rc<AppState>) -> GtkBox {
 
     refresh();
 
-    state.downloads.subscribe(&refresh);
+    manager.subscribe(&refresh);
 
     let refresh_keepalive = refresh.clone();
 

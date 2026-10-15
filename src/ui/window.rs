@@ -12,6 +12,7 @@ use crate::browser::address::{SearchConfig, resolve_input};
 use crate::browser::engine::BrowserEngine;
 use crate::browser::tabs::{NewTabCallback, Tab};
 use crate::internal::router;
+use crate::internal::router::PageCallbacks;
 
 use super::actions::{WindowActions, register_window_actions};
 use super::bookmarks::BookmarkBar;
@@ -28,13 +29,25 @@ pub fn build_window(app: &Application, state: Rc<AppState>) {
     let session = state.network_session.clone();
     let search = state.search.clone();
 
-    build_browser_window(app, state, session, search, false);
+    build_browser_window(
+        app,
+        state.clone(),
+        session,
+        search,
+        false,
+        state.downloads.clone(),
+    );
 }
 
 pub fn build_private_window(app: &Application, state: Rc<AppState>) {
     let session = BrowserEngine::create_ephemeral_session();
 
-    state.downloads.watch(&session);
+    // Private downloads get their own manager: they never appear in normal
+    // windows and die with this window. Desktop toasts are muted so
+    // filenames don't linger in the shell.
+    let downloads = crate::browser::downloads::DownloadManager::new(app.clone());
+    downloads.set_announce(false);
+    downloads.watch(&session);
 
     let mut private_search = state.search.borrow().clone();
 
@@ -44,7 +57,7 @@ pub fn build_private_window(app: &Application, state: Rc<AppState>) {
 
     let search = Rc::new(RefCell::new(private_search));
 
-    build_browser_window(app, state, session, search, true);
+    build_browser_window(app, state, session, search, true, downloads);
 }
 
 fn build_browser_window(
@@ -53,6 +66,7 @@ fn build_browser_window(
     session: NetworkSession,
     search: Rc<RefCell<SearchConfig>>,
     private_mode: bool,
+    downloads: crate::browser::downloads::DownloadManager,
 ) {
     let window_title = if private_mode {
         rust_i18n::t!("privacy.title").to_string()
@@ -105,6 +119,15 @@ fn build_browser_window(
     const MAX_CLOSED_TABS: usize = 25;
 
     let closed_tabs = Rc::new(RefCell::new(Vec::<(String, String)>::new()));
+
+    // One permission manager per window: private windows share a single
+    // ephemeral one across all their tabs (never persisted), normal
+    // windows share the profile-wide persisted one.
+    let window_permissions = if private_mode {
+        crate::browser::permissions::PermissionManager::ephemeral()
+    } else {
+        state.permissions.clone()
+    };
 
     let top_stack = Stack::new();
 
@@ -691,11 +714,17 @@ fn build_browser_window(
     };
 
     // Forwards web notifications (Discord mentions, …) to the desktop.
+    // Private windows stay silent: title and body would linger in the
+    // desktop notification history.
     let show_notification: Rc<dyn Fn(String, String)> = {
         let app = app.clone();
         let next_id = Rc::new(Cell::new(0u64));
 
         Rc::new(move |title: String, body: String| {
+            if private_mode {
+                return;
+            }
+
             let id = next_id.get();
 
             next_id.set(id + 1);
@@ -726,6 +755,7 @@ fn build_browser_window(
         let show_notification = show_notification.clone();
         let state = state.clone();
         let session = session.clone();
+        let downloads = downloads.clone();
 
         Rc::new(move |starting_uri: Option<&str>| {
             let id = next_id.get();
@@ -753,12 +783,7 @@ fn build_browser_window(
                 state.settings.borrow().hardware_acceleration,
             );
 
-            let permissions = if private_mode {
-                // Private grants live only as long as this window.
-                crate::browser::permissions::PermissionManager::ephemeral()
-            } else {
-                state.permissions.clone()
-            };
+            let permissions = window_permissions.clone();
 
             BrowserEngine::wire_view(
                 &web_view,
@@ -810,8 +835,8 @@ fn build_browser_window(
             let local_clear_browsing_data = {
                 let state = state.clone();
 
-                Rc::new(move || {
-                    state.clear_browsing_data();
+                Rc::new(move |done: Rc<dyn Fn(bool)>| {
+                    state.clear_browsing_data(Some(done));
                 })
             };
 
@@ -827,12 +852,15 @@ fn build_browser_window(
             ] {
                 if let Some(widget) = router::route(
                     uri,
-                    local_search.clone(),
-                    local_about.clone(),
-                    local_downloads.clone(),
-                    local_history.clone(),
-                    local_clear_browsing_data.clone(),
+                    PageCallbacks {
+                        on_search: local_search.clone(),
+                        on_about: local_about.clone(),
+                        on_downloads: local_downloads.clone(),
+                        on_history: local_history.clone(),
+                        on_clear_browsing_data: local_clear_browsing_data.clone(),
+                    },
                     state.clone(),
+                    downloads.clone(),
                 ) && let Some(name) = router::page_name(uri)
                 {
                     content.add_named(&widget, Some(name));
@@ -1134,6 +1162,7 @@ fn build_browser_window(
             state: state.clone(),
             search: search.clone(),
             private_mode,
+            downloads: downloads.clone(),
             on_panel_toggled: sync_panels.clone(),
         },
     );
@@ -1297,8 +1326,8 @@ fn build_browser_window(
                 let local_clear_browsing_data = {
                     let state = state.clone();
 
-                    Rc::new(move || {
-                        state.clear_browsing_data();
+                    Rc::new(move |done: Rc<dyn Fn(bool)>| {
+                        state.clear_browsing_data(Some(done));
                     })
                 };
 
@@ -1318,12 +1347,15 @@ fn build_browser_window(
 
                     let Some(widget) = router::route(
                         page_uri,
-                        local_search.clone(),
-                        local_about.clone(),
-                        local_downloads.clone(),
-                        local_history.clone(),
-                        local_clear_browsing_data.clone(),
+                        PageCallbacks {
+                            on_search: local_search.clone(),
+                            on_about: local_about.clone(),
+                            on_downloads: local_downloads.clone(),
+                            on_history: local_history.clone(),
+                            on_clear_browsing_data: local_clear_browsing_data.clone(),
+                        },
                         state.clone(),
+                        downloads.clone(),
                     ) else {
                         continue;
                     };

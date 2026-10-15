@@ -36,15 +36,30 @@ pub fn page_title(uri: &str) -> String {
     }
 }
 
+/// Page callbacks shared by every internal page, kept together so
+/// [`route`] stays readable as pages gain callbacks.
+pub struct PageCallbacks {
+    pub on_search: Rc<dyn Fn(String)>,
+    pub on_about: Rc<dyn Fn()>,
+    pub on_downloads: Rc<dyn Fn()>,
+    pub on_history: Rc<dyn Fn()>,
+    pub on_clear_browsing_data: crate::app_state::ClearBrowsingData,
+}
+
 pub fn route(
     uri: &str,
-    on_search: Rc<dyn Fn(String)>,
-    on_about: Rc<dyn Fn()>,
-    on_downloads: Rc<dyn Fn()>,
-    on_history: Rc<dyn Fn()>,
-    on_clear_browsing_data: Rc<dyn Fn()>,
+    callbacks: PageCallbacks,
     state: Rc<AppState>,
+    downloads: crate::browser::downloads::DownloadManager,
 ) -> Option<Widget> {
+    let PageCallbacks {
+        on_search,
+        on_about,
+        on_downloads,
+        on_history,
+        on_clear_browsing_data,
+    } = callbacks;
+
     match uri {
         "axys://" | "axys://newtab" => Some(build_newtab(on_search, on_about).upcast()),
 
@@ -66,7 +81,7 @@ pub fn route(
             .upcast(),
         ),
 
-        "axys://downloads" => Some(build_downloads(state).upcast()),
+        "axys://downloads" => Some(build_downloads(downloads).upcast()),
 
         "axys://history" => Some(build_history(state.history.clone(), on_search).upcast()),
 

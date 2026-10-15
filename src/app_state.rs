@@ -45,6 +45,10 @@ type LanguageListeners = Rc<RefCell<Vec<LanguageListener>>>;
 type SettingsListener = Weak<dyn Fn()>;
 type SettingsListeners = Rc<RefCell<Vec<SettingsListener>>>;
 
+/// Browsing-data wipe with completion: receives a one-shot callback that
+/// fires with success once the asynchronous wipe finishes.
+pub type ClearBrowsingData = Rc<dyn Fn(Rc<dyn Fn(bool)>)>;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct UserSettings {
     #[serde(default = "default_true")]
@@ -335,8 +339,9 @@ impl AppState {
     /// Real "clear browsing data": history, all cookies, favicon cache,
     /// persistent website data (IndexedDB, local storage, DOM caches, …)
     /// and the HTTP disk cache. Open tabs are left alone (sites log out on
-    /// next reload), and bookmarks are never touched.
-    pub fn clear_browsing_data(&self) {
+    /// next reload), and bookmarks are never touched. `on_done` fires when
+    /// the asynchronous website-data wipe finishes (pass `None` to skip).
+    pub fn clear_browsing_data(&self, on_done: Option<Rc<dyn Fn(bool)>>) {
         self.history.clear();
 
         if let Some(cookie_manager) = self.network_session.cookie_manager() {
@@ -375,7 +380,10 @@ impl AppState {
             crate::browser::engine::BrowserEngine::clear_website_data(
                 &data_manager,
                 webkit6::WebsiteDataTypes::ALL,
+                on_done,
             );
+        } else if let Some(done) = on_done {
+            done(false);
         }
 
         let cache = crate::browser::engine::web_cache_dir();

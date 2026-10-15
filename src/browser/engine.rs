@@ -2,7 +2,7 @@ use gtk::glib;
 use gtk::glib::object::Cast;
 use gtk::glib::translate::{FromGlibPtrFull as _, IntoGlib, ToGlibPtr as _};
 use gtk::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -193,6 +193,12 @@ impl BrowserEngine {
     }
 
     /// First-seen check for a popup URL; records it when fresh.
+    ///
+    /// There is no request identity shared between the `create` signal and
+    /// the policy decision, so URL + a short window is the best available
+    /// key. A match is *consumed* (guard reset): the duplicate pair fires
+    /// once, while a genuinely new opening of the same URL moments later
+    /// still goes through.
     fn popup_is_fresh(guard: &Rc<RefCell<(String, Instant)>>, uri: &str) -> bool {
         let mut last = guard.borrow_mut();
 
@@ -200,6 +206,7 @@ impl BrowserEngine {
             *last = (uri.to_string(), Instant::now());
             true
         } else {
+            *last = (String::new(), Instant::now());
             false
         }
     }
@@ -288,13 +295,41 @@ impl BrowserEngine {
         });
     }
 
-    /// Site origin for permission prompts (host, or a generic label).
+    /// Full site origin for permission prompts: scheme + host + effective
+    /// port. A grant for `https://example.com:443` must never apply to
+    /// `http://example.com` or another port, so the bare host is not
+    /// enough. (Decisions stored by older versions under the bare host
+    /// simply stop matching, which fails safe back to asking.)
     fn permission_origin(view: &WebView) -> String {
-        view.uri()
-            .and_then(|uri| gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok())
-            .and_then(|uri| uri.host().map(|host| host.to_string()))
+        let parsed = view.uri().and_then(|uri| {
+            gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok()
+        });
+
+        let scheme = parsed
+            .as_ref()
+            .map(|uri| uri.scheme().to_string())
+            .filter(|scheme| !scheme.is_empty())
+            .unwrap_or_else(|| "https".to_string());
+
+        let Some(host) = parsed
+            .as_ref()
+            .and_then(|uri| uri.host().map(|h| h.to_string()))
             .filter(|host| !host.is_empty())
-            .unwrap_or_else(|| "this site".to_string())
+        else {
+            return "this site".to_string();
+        };
+
+        let port = parsed.as_ref().map(|uri| uri.port()).unwrap_or(-1);
+
+        let effective = if port > 0 {
+            port
+        } else if scheme == "http" {
+            80
+        } else {
+            443
+        };
+
+        format!("{scheme}://{host}:{effective}")
     }
 
     /// Permission prompt dialog. The WebKit request is answered
@@ -350,14 +385,22 @@ impl BrowserEngine {
         content.append(&remember);
         content.append(&buttons);
 
+        // Answered tracks whether Allow/Block ran: if the dialog is
+        // dismissed any other way (window manager close), the request must
+        // still be denied explicitly instead of left hanging.
+        let answered = Rc::new(Cell::new(false));
+
         {
             let dialog = dialog.clone();
             let permissions = permissions.clone();
             let origin = origin.clone();
             let remember = remember.clone();
             let request = request.clone();
+            let answered = answered.clone();
 
             allow.connect_clicked(move |_| {
+                answered.set(true);
+
                 if remember.is_active() {
                     permissions.remember(&origin, kind, true);
                 }
@@ -372,14 +415,31 @@ impl BrowserEngine {
             let permissions = permissions.clone();
             let remember = remember.clone();
             let request = request.clone();
+            let answered = answered.clone();
 
             block.connect_clicked(move |_| {
+                answered.set(true);
+
                 if remember.is_active() {
                     permissions.remember(&origin, kind, false);
                 }
 
                 request.deny();
                 dialog.close();
+            });
+        }
+
+        {
+            let request = request.clone();
+            let answered = answered.clone();
+
+            dialog.connect_close_request(move |_| {
+                if !answered.get() {
+                    answered.set(true);
+                    request.deny();
+                }
+
+                gtk::glib::Propagation::Proceed
             });
         }
 
@@ -557,11 +617,12 @@ impl BrowserEngine {
 
     /// Removes persistent website data (IndexedDB, local storage, DOM
     /// caches, …) of the given types from `manager`. The safe bindings omit
-    /// `webkit_website_data_manager_clear`, so this calls the FFI directly;
-    /// completion (or failure) is only logged.
+    /// `webkit_website_data_manager_clear`, so this calls the FFI directly.
+    /// `on_done` reports success; pass `None` to only log failures.
     pub fn clear_website_data(
         manager: &webkit6::WebsiteDataManager,
         types: webkit6::WebsiteDataTypes,
+        on_done: Option<Rc<dyn Fn(bool)>>,
     ) {
         // Ten years in microseconds: effectively "everything ever stored".
         const TEN_YEARS_US: i64 = 10 * 365 * 24 * 3600 * 1_000_000;
@@ -569,7 +630,7 @@ impl BrowserEngine {
         unsafe extern "C" fn finished(
             source: *mut gtk::glib::gobject_ffi::GObject,
             result: *mut webkit6::gio::ffi::GAsyncResult,
-            _user_data: gtk::glib::ffi::gpointer,
+            user_data: gtk::glib::ffi::gpointer,
         ) {
             let mut error = std::ptr::null_mut();
 
@@ -579,9 +640,9 @@ impl BrowserEngine {
                     result,
                     &mut error,
                 )
-            };
+            } != 0;
 
-            if ok == 0 {
+            if !ok {
                 let message = if error.is_null() {
                     "unknown error".to_string()
                 } else {
@@ -590,7 +651,19 @@ impl BrowserEngine {
 
                 eprintln!("Failed to clear website data: {message}");
             }
+
+            if !user_data.is_null() {
+                let callback: Box<Rc<dyn Fn(bool)>> =
+                    unsafe { Box::from_raw(user_data as *mut _) };
+
+                callback(ok);
+            }
         }
+
+        let user_data = match on_done {
+            Some(callback) => Box::into_raw(Box::new(callback)) as *mut std::ffi::c_void,
+            None => std::ptr::null_mut(),
+        };
 
         unsafe {
             webkit6_sys::webkit_website_data_manager_clear(
@@ -599,7 +672,7 @@ impl BrowserEngine {
                 TEN_YEARS_US,
                 std::ptr::null_mut(),
                 Some(finished),
-                std::ptr::null_mut(),
+                user_data,
             );
         }
     }
@@ -747,5 +820,15 @@ mod tests {
 
         assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
         assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/b"));
+    }
+
+    #[test]
+    fn popup_guard_match_is_consumed() {
+        let guard = fresh_guard();
+
+        // A duplicate pair fires once; a later genuine opening still works.
+        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
     }
 }
