@@ -17,7 +17,6 @@ app:
 settings:
   title: "Ajustes"
   appearance: "Apariencia"
-  theme: "Tema"
   dark: "Oscuro"
   light: "Claro"
   language: "Idioma"
@@ -46,7 +45,6 @@ settings:
   permissions_description: "Decisiones recordadas de notificaciones, cámara, micrófono y otros permisos por sitio."
   permissions_reset: "Olvidar todo"
   permissions_cleared: "Permisos olvidados."
-  language_note: "Los cambios se aplican a las nuevas páginas del navegador."
 
 error:
   crashed_title: "Esta página ha fallado"
@@ -73,10 +71,16 @@ downloads:
   clear_finished: "Limpiar terminadas"
   private_note: "Los archivos quedan en disco donde se guardaron — las ventanas privadas solo mantienen una lista aparte que desaparece con la ventana."
   active_tooltip: "Descargas (%{count} activas)"
+  untitled: "Descarga"
+  default_name: "descarga"
+
+notification:
+  untitled: "Notificación web"
 
 tools:
   title: "Herramientas"
-  web_inspector: "Inspector web"
+  browser: "Navegador"
+  web_inspector: "Herramientas de desarrollo"
   browsing_data: "Datos de navegación"
   clear_browsing_data: "Borrar datos de navegación"
   cleared: "Datos de navegación borrados."
@@ -85,6 +89,24 @@ tools:
   purged: "%{count} entradas eliminadas."
   note: "Historial, cookies, caché de faviconos y caché de disco. Los marcadores se conservan."
   open_downloads: "Descargas"
+  bookmarks: "Gestor de marcadores"
+  page: "Esta página"
+  system: "Sistema"
+  view_source: "Ver código fuente"
+  source_title: "Código"
+  zoom_level: "Zoom: %{percent}%"
+  zoom_in: "Acercar"
+  zoom_out: "Alejar"
+  zoom_reset: "Restablecer zoom"
+  open_downloads_folder: "Abrir carpeta de descargas"
+  tasks: "Gestor de tareas"
+  tasks_memory: "Memoria"
+  tasks_processes: "Procesos web"
+  tasks_graph: "Últimos 60 segundos"
+  tasks_tabs: "Pestañas"
+  tasks_active: "Activa"
+  tasks_close: "Cerrar"
+  tasks_note: "Memoria total del navegador (proceso principal y ayudantes de WebKit). WebKit no expone una cifra por pestaña."
 
 welcome:
   title: "Bienvenida"
@@ -116,7 +138,6 @@ history:
   empty: "Todavía no hay historial."
   open: "Abrir"
   delete: "Eliminar"
-  purge_title: "Borrar anteriores a"
   older_day: "24 horas"
   older_week: "7 días"
   older_month: "30 días"
@@ -130,6 +151,9 @@ bookmarks:
   save: "Guardar"
   cancel: "Cancelar"
   remove: "Eliminar"
+  open: "Abrir"
+  search: "Buscar marcadores"
+  empty: "Todavía no hay marcadores."
 
 find:
   title: "Buscar en la página"
@@ -145,6 +169,8 @@ permission:
   block: "Bloquear"
   use_notifications: "mostrar notificaciones"
   use_location: "conocer tu ubicación"
+  use_camera: "usar tu cámara"
+  use_microphone: "usar tu micrófono"
   use_camera_mic: "usar tu cámara y micrófono"
   share_screen: "capturar tu pantalla"
   use_drm: "reproducir contenido protegido"

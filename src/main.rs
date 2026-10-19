@@ -33,5 +33,5 @@ mod ui;
 fn main() {
     paths::secure_dirs();
 
-    app::run();
+    std::process::exit(i32::from(app::run()));
 }

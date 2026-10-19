@@ -1,15 +1,99 @@
 use gtk::prelude::*;
-use gtk::{Box, Button, Label, Orientation};
+use gtk::{Box, Button, Label, Orientation, ScrolledWindow, Separator};
 use std::rc::Rc;
 
 use crate::browser::history::HistoryManager;
 
-pub fn build_tools(
-    on_downloads: Rc<dyn Fn()>,
-    on_history: Rc<dyn Fn()>,
-    on_clear_browsing_data: crate::app_state::ClearBrowsingData,
-    history: HistoryManager,
-) -> Box {
+/// Page-scoped / system actions the Tools page can trigger. Each one maps
+/// to a `win.*` action owned by the window, so the same code runs whether
+/// it is invoked from here or from the hamburger menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolAction {
+    ViewSource,
+    DevTools,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    OpenBookmarks,
+    OpenTasks,
+    OpenDownloadsFolder,
+}
+
+pub struct ToolsDeps {
+    pub on_downloads: Rc<dyn Fn()>,
+    pub on_history: Rc<dyn Fn()>,
+    pub on_clear_browsing_data: crate::app_state::ClearBrowsingData,
+    pub history: HistoryManager,
+    /// Runs a page/system action (maps to a `win.*` action).
+    pub on_tool: Rc<dyn Fn(ToolAction)>,
+    /// Current zoom level of the active web view, if any.
+    pub zoom_level: Rc<dyn Fn() -> Option<f64>>,
+}
+
+fn section_title(key: &str) -> Label {
+    let label = Label::new(Some(&rust_i18n::t!(key)));
+
+    label.add_css_class("title-3");
+
+    label.set_halign(gtk::Align::Start);
+
+    label
+}
+
+/// A flat button that runs a [`ToolAction`] when clicked.
+fn tool_button(label_key: &str, action: ToolAction, on_tool: &Rc<dyn Fn(ToolAction)>) -> Button {
+    let button = Button::with_label(&rust_i18n::t!(label_key));
+
+    button.set_halign(gtk::Align::Start);
+
+    let on_tool = on_tool.clone();
+
+    button.connect_clicked(move |_| {
+        on_tool(action);
+    });
+
+    button
+}
+
+/// Escapes raw page source so it can be dropped into a `<pre>` without the
+/// markup (or any `<script>` inside it) being interpreted.
+pub fn escape_html(source: &str) -> String {
+    let mut escaped = String::with_capacity(source.len());
+
+    for ch in source.chars() {
+        match ch {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            _ => escaped.push(ch),
+        }
+    }
+
+    escaped
+}
+
+/// Full HTML document shown by "View page source".
+pub fn source_document(source: &str) -> String {
+    format!(
+        "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <title>{}</title></head>\
+         <body style=\"margin:0\"><pre style=\"white-space:pre-wrap;word-wrap:break-word;\
+         font-family:monospace;font-size:13px;padding:12px;\">{}</pre></body></html>",
+        escape_html(&rust_i18n::t!("tools.source_title")),
+        escape_html(source)
+    )
+}
+
+pub fn build_tools(deps: ToolsDeps) -> ScrolledWindow {
+    let ToolsDeps {
+        on_downloads,
+        on_history,
+        on_clear_browsing_data,
+        history,
+        on_tool,
+        zoom_level,
+    } = deps;
+
     let page = Box::new(Orientation::Vertical, 14);
 
     page.set_margin_top(28);
@@ -25,6 +109,21 @@ pub fn build_tools(
     title.add_css_class("title-1");
 
     title.set_halign(gtk::Align::Start);
+
+    page.append(&title);
+
+    let status = Label::new(None);
+
+    status.add_css_class("dim-label");
+
+    status.set_halign(gtk::Align::Start);
+
+    /*
+     * Browser pages (Chromium's "More tools" grouping).
+     */
+    page.append(&section_title("tools.browser"));
+
+    let browser_row = Box::new(Orientation::Horizontal, 8);
 
     let downloads = Button::with_label(&rust_i18n::t!("tools.open_downloads"));
 
@@ -50,17 +149,122 @@ pub fn build_tools(
         });
     }
 
+    browser_row.append(&downloads);
+    browser_row.append(&history_button);
+    browser_row.append(&tool_button(
+        "tools.bookmarks",
+        ToolAction::OpenBookmarks,
+        &on_tool,
+    ));
+    browser_row.append(&tool_button(
+        "tools.tasks",
+        ToolAction::OpenTasks,
+        &on_tool,
+    ));
+
+    page.append(&browser_row);
+
+    /*
+     * Page-scoped tools acting on the active tab.
+     */
+    page.append(&section_title("tools.page"));
+
+    let page_row = Box::new(Orientation::Horizontal, 8);
+
+    page_row.append(&tool_button(
+        "tools.view_source",
+        ToolAction::ViewSource,
+        &on_tool,
+    ));
+
+    page_row.append(&tool_button(
+        "tools.web_inspector",
+        ToolAction::DevTools,
+        &on_tool,
+    ));
+
+    page.append(&page_row);
+
+    let zoom_row = Box::new(Orientation::Horizontal, 8);
+
+    let zoom_label = Label::new(None);
+
+    zoom_label.set_halign(gtk::Align::Start);
+
+    let update_zoom = {
+        let zoom_label = zoom_label.clone();
+        let zoom_level = zoom_level.clone();
+
+        Rc::new(move || {
+            let percent = zoom_level()
+                .map(|level| (level * 100.0).round() as i64)
+                .unwrap_or(100);
+
+            zoom_label.set_text(&rust_i18n::t!("tools.zoom_level", percent = percent));
+        })
+    };
+
+    zoom_row.append(&zoom_label);
+
+    // Show the current level immediately, not only after the first click.
+    update_zoom();
+
+    {
+        let update_zoom = update_zoom.clone();
+
+        // The page is built once and reused for the life of the tab; re-read
+        // the zoom every time it becomes visible so a level changed by
+        // Ctrl+scroll or the menu is never shown stale on return.
+        page.connect_map(move |_| update_zoom());
+    }
+
+    for (key, action) in [
+        ("tools.zoom_out", ToolAction::ZoomOut),
+        ("tools.zoom_reset", ToolAction::ZoomReset),
+        ("tools.zoom_in", ToolAction::ZoomIn),
+    ] {
+        let button = Button::with_label(&rust_i18n::t!(key));
+
+        {
+            let on_tool = on_tool.clone();
+            let update_zoom = update_zoom.clone();
+
+            button.connect_clicked(move |_| {
+                on_tool(action);
+
+                // Re-read the level right after the action ran.
+                update_zoom();
+            });
+        }
+
+        zoom_row.append(&button);
+    }
+
+    page.append(&zoom_row);
+
+    /*
+     * System.
+     */
+    page.append(&section_title("tools.system"));
+
+    page.append(&tool_button(
+        "tools.open_downloads_folder",
+        ToolAction::OpenDownloadsFolder,
+        &on_tool,
+    ));
+
+    page.append(&Separator::new(Orientation::Horizontal));
+
+    /*
+     * Browsing data.
+     */
+    page.append(&section_title("tools.browsing_data"));
+
     let browsing_data = Button::with_label(&rust_i18n::t!("tools.clear_browsing_data"));
 
     browsing_data.set_halign(gtk::Align::Start);
 
     browsing_data.add_css_class("destructive-action");
-
-    let status = Label::new(None);
-
-    status.add_css_class("dim-label");
-
-    status.set_halign(gtk::Align::Start);
 
     {
         let callback = on_clear_browsing_data.clone();
@@ -81,14 +285,10 @@ pub fn build_tools(
         });
     }
 
+    page.append(&browsing_data);
+
     // Manual age-based history cleanup (the manager also caps the total at
     // MAX_HISTORY_ENTRIES, oldest first).
-    let purge_title = Label::new(Some(&rust_i18n::t!("history.purge_title")));
-
-    purge_title.add_css_class("title-3");
-
-    purge_title.set_halign(gtk::Align::Start);
-
     let purge_row = Box::new(Orientation::Horizontal, 8);
 
     for (label_key, max_age_secs) in [
@@ -120,21 +320,39 @@ pub fn build_tools(
 
     note.set_halign(gtk::Align::Start);
 
-    page.append(&title);
-
-    page.append(&downloads);
-
-    page.append(&history_button);
-
-    page.append(&browsing_data);
-
-    page.append(&status);
-
-    page.append(&purge_title);
+    note.set_wrap(true);
 
     page.append(&purge_row);
-
+    page.append(&status);
     page.append(&note);
 
-    page
+    // The page has several sections, so it must scroll on small windows.
+    let scroller = ScrolledWindow::new();
+
+    scroller.set_child(Some(&page));
+    scroller.set_hexpand(true);
+    scroller.set_vexpand(true);
+
+    scroller
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn escape_html_neutralizes_markup() {
+        assert_eq!(
+            escape_html("<script>alert(1)</script> & <b>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &lt;b&gt;"
+        );
+    }
+
+    #[test]
+    fn source_document_wraps_escaped_source() {
+        let document = source_document("<p>hi</p>");
+
+        assert!(document.contains("&lt;p&gt;hi&lt;/p&gt;"));
+        assert!(!document.contains("<p>hi</p>"));
+    }
 }

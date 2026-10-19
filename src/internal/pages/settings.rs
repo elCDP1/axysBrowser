@@ -6,6 +6,12 @@ use crate::app_state::AppState;
 use crate::ui::menu::build_inline_picker;
 
 fn row(title: &str, description: &str) -> Box {
+    row_with_description(title, description).0
+}
+
+/// Like [`row`], but also returns the description label so callers can
+/// refresh its text in place (e.g. the remembered-permission count).
+fn row_with_description(title: &str, description: &str) -> (Box, Label) {
     let row = Box::new(Orientation::Horizontal, 12);
 
     let labels = Box::new(Orientation::Vertical, 2);
@@ -30,10 +36,13 @@ fn row(title: &str, description: &str) -> Box {
 
     row.append(&labels);
 
-    row
+    (row, description_label)
 }
 
-pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
+pub fn build_settings(
+    state: Rc<AppState>,
+    on_clear_browsing_data: crate::app_state::ClearBrowsingData,
+) -> ScrolledWindow {
     let page = Box::new(Orientation::Vertical, 18);
 
     page.set_margin_top(28);
@@ -197,7 +206,7 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     clear_status.set_halign(gtk::Align::End);
 
     {
-        let state = state.clone();
+        let on_clear_browsing_data = on_clear_browsing_data.clone();
         let clear_status = clear_status.clone();
 
         clear_button.connect_clicked(move |_| {
@@ -205,13 +214,13 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
 
             let clear_status = clear_status.clone();
 
-            state.clear_browsing_data(Some(Rc::new(move |ok| {
+            on_clear_browsing_data(Rc::new(move |ok| {
                 clear_status.set_text(&rust_i18n::t!(if ok {
                     "settings.clear_data_done"
                 } else {
                     "settings.clear_data_failed"
                 }));
-            })));
+            }));
         });
     }
 
@@ -267,10 +276,8 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
         state.permissions.decision_count()
     );
 
-    let permissions_row = row(
-        &rust_i18n::t!("settings.permissions"),
-        &permissions_desc,
-    );
+    let (permissions_row, permissions_desc_label) =
+        row_with_description(&rust_i18n::t!("settings.permissions"), &permissions_desc);
 
     let permissions_reset = gtk::Button::with_label(&rust_i18n::t!("settings.permissions_reset"));
 
@@ -283,9 +290,17 @@ pub fn build_settings(state: Rc<AppState>) -> ScrolledWindow {
     {
         let state = state.clone();
         let permissions_status = permissions_status.clone();
+        let permissions_desc_label = permissions_desc_label.clone();
 
         permissions_reset.connect_clicked(move |_| {
             state.reset_permissions();
+
+            // Refresh the count in place: the description is built once.
+            permissions_desc_label.set_text(&format!(
+                "{} ({})",
+                rust_i18n::t!("settings.permissions_description"),
+                state.permissions.decision_count()
+            ));
 
             permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
         });

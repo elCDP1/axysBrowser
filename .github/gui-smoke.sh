@@ -7,13 +7,20 @@
 #     namespaces; this smoke covers startup and rendering, not the sandbox).
 #   strict: sandbox left enabled; catches sandbox-specific breakage on
 #     runners where user namespaces do work.
-set -u
+set -uo pipefail
 if [ "${1:-}" = "strict" ]; then
   echo "strict mode: sandbox enabled"
 else
   export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 fi
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
+
+# Same single-instance trap as mem-smoke.sh: a running browser would absorb
+# this launch (activate + exit at once) and look like a startup crash.
+if pgrep -f "target/debug/axysbrowser" > /dev/null; then
+  echo "A browser instance is already running: close it first."
+  exit 2
+fi
 LOG=/tmp/axys_gui_smoke.log
 rm -f "$LOG"
 timeout -s TERM 25 ./target/debug/axysbrowser > "$LOG" 2>&1 &

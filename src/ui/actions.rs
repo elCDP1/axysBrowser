@@ -20,9 +20,19 @@ pub struct WindowActions {
     /// Privacy toggle: open a private window, or (from a private window)
     /// go back to a normal one.
     pub open_private_toggle: Rc<dyn Fn()>,
+    /// Show the active page's HTML source in a new tab.
+    pub view_source: Rc<dyn Fn()>,
+    /// Open the WebKit inspector for the active page.
+    pub devtools: Rc<dyn Fn()>,
+    /// Zoom the active page.
+    pub zoom_in: Rc<dyn Fn()>,
+    pub zoom_out: Rc<dyn Fn()>,
+    pub zoom_reset: Rc<dyn Fn()>,
+    /// Open the downloads directory in the system file manager.
+    pub open_downloads_folder: Rc<dyn Fn()>,
 }
 
-/// Registers the eight `win.*` actions on `window`.
+/// Registers every `win.*` action on `window`.
 pub fn register_window_actions(window: &ApplicationWindow, actions: WindowActions) {
     {
         let new_tab = actions.new_tab.clone();
@@ -76,6 +86,8 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
         ("tools", "axys://tools"),
         ("downloads", "axys://downloads"),
         ("history", "axys://history"),
+        ("bookmarks", "axys://bookmarks"),
+        ("tasks", "axys://tasks"),
         ("settings", "axys://settings"),
     ] {
         let new_tab = actions.new_tab.clone();
@@ -84,6 +96,23 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
 
         action.connect_activate(move |_, _| {
             new_tab(Some(uri));
+        });
+
+        window.add_action(&action);
+    }
+
+    for (name, callback) in [
+        ("view-source", actions.view_source.clone()),
+        ("devtools", actions.devtools.clone()),
+        ("zoom-in", actions.zoom_in.clone()),
+        ("zoom-out", actions.zoom_out.clone()),
+        ("zoom-reset", actions.zoom_reset.clone()),
+        ("open-downloads-folder", actions.open_downloads_folder.clone()),
+    ] {
+        let action = gio::SimpleAction::new(name, None);
+
+        action.connect_activate(move |_, _| {
+            callback();
         });
 
         window.add_action(&action);

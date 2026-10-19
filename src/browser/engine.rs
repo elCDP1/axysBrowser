@@ -16,6 +16,24 @@ use super::permissions::{PermissionKind, PermissionManager};
 
 pub struct BrowserEngine;
 
+/// Which WebKit signal reported a popup request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PopupSource {
+    /// The view's `create` signal (window.open()).
+    Create,
+    /// A `NewWindowAction` policy decision (target=_blank, window.open()).
+    Policy,
+}
+
+/// Recently seen popups: URL, reporting signal and when. A list (not a
+/// single slot) so interleaved `window.open()` calls that are reported as
+/// `create(A), create(B), policy(A), policy(B)` still pair up correctly.
+type PopupGuard = Rc<RefCell<Vec<(String, PopupSource, Instant)>>>;
+
+fn new_popup_guard() -> PopupGuard {
+    Rc::new(RefCell::new(Vec::new()))
+}
+
 /// Directory holding the HTTP disk cache. Only cache files live here —
 /// website data (IndexedDB, local storage, …) lives next to it, so wiping
 /// this directory is safe while the browser runs.
@@ -177,12 +195,7 @@ impl BrowserEngine {
         // Shared popup guard: window.open() typically fires `create` AND a
         // NewWindow policy decision for the same URL — one guard for both
         // paths so the same URL can never open two tabs.
-        let popup_guard: Rc<RefCell<(String, Instant)>> = Rc::new(RefCell::new((
-            String::new(),
-            Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-        )));
+        let popup_guard = new_popup_guard();
 
         Self::wire_policy(view, open_in_new_tab.clone(), popup_guard.clone());
         Self::wire_popups(view, open_in_new_tab, popup_guard);
@@ -192,46 +205,120 @@ impl BrowserEngine {
         Self::wire_notifications(view, show_notification);
     }
 
+    /// Schemes the engine never loads itself: handed to the desktop
+    /// instead (mail clients, dialers, …). Everything else WebKit owns:
+    /// http(s), files, internal pages and script/data URLs.
+    fn is_external_scheme(uri: &str) -> bool {
+        let lower = uri.to_ascii_lowercase();
+
+        let Some(colon) = lower.find(':') else {
+            return false;
+        };
+
+        // `://foo` or `:foo`: no scheme at all — not something to hand to
+        // the desktop.
+        if colon == 0 {
+            return false;
+        }
+
+        if lower[..colon].contains('/') {
+            return false;
+        }
+
+        !matches!(
+            &lower[..colon],
+            "http" | "https" | "file" | "axys" | "about" | "blank" | "data" | "blob"
+                | "javascript"
+        )
+    }
+
     /// First-seen check for a popup URL; records it when fresh.
     ///
-    /// There is no request identity shared between the `create` signal and
-    /// the policy decision, so URL + a short window is the best available
-    /// key. A match is *consumed* (guard reset): the duplicate pair fires
-    /// once, while a genuinely new opening of the same URL moments later
-    /// still goes through.
-    fn popup_is_fresh(guard: &Rc<RefCell<(String, Instant)>>, uri: &str) -> bool {
-        let mut last = guard.borrow_mut();
+    /// window.open() can report the same request through BOTH `create` and
+    /// a NewWindow policy decision, with no shared request identity. So a
+    /// request is a duplicate only when the same URL arrives through the
+    /// *other* signal within a short window; that match is consumed. The
+    /// same signal repeating a URL (a page deliberately opening it twice,
+    /// OAuth retries) is always a genuine new opening and goes through.
+    fn popup_is_fresh(guard: &PopupGuard, uri: &str, source: PopupSource) -> bool {
+        let mut entries = guard.borrow_mut();
 
-        if last.0 != uri || last.1.elapsed() > Duration::from_secs(1) {
-            *last = (uri.to_string(), Instant::now());
-            true
-        } else {
-            *last = (String::new(), Instant::now());
+        let now = Instant::now();
+
+        entries.retain(|(_, _, seen)| now.duration_since(*seen) <= Duration::from_secs(1));
+
+        // A duplicate is the same URL arriving through the *other* signal;
+        // consume exactly one matching entry so paired `create`+`policy`
+        // emissions open a single tab even when several popups interleave.
+        if let Some(position) = entries
+            .iter()
+            .position(|(seen, seen_source, _)| seen == uri && *seen_source != source)
+        {
+            entries.remove(position);
+
             false
+        } else {
+            entries.push((uri.to_string(), source, now));
+
+            true
         }
     }
 
     fn wire_policy(
         view: &WebView,
         open_in_new_tab: Rc<dyn Fn(String)>,
-        popup_guard: Rc<RefCell<(String, Instant)>>,
+        popup_guard: PopupGuard,
     ) {
         // Dedupe: window.open() typically fires `create` AND a NewWindow
         // policy decision for the same URL. Opening both would duplicate tabs.
         view.connect_decide_policy(move |_, decision, decision_type| {
             match decision_type {
                 PolicyDecisionType::NavigationAction | PolicyDecisionType::NewWindowAction => {
-                    let uri = decision
+                    let navigation_action = decision
                         .downcast_ref::<NavigationPolicyDecision>()
-                        .and_then(|d| d.navigation_action())
+                        .and_then(|d| d.navigation_action());
+
+                    let uri = navigation_action
+                        .as_ref()
                         .and_then(|a| a.request())
                         .and_then(|r| r.uri())
                         .map(|u| u.to_string());
 
+                    // External schemes (mailto:, tel:, …) open in their
+                    // desktop app instead of showing a WebKit error page.
+                    // A user gesture is required: otherwise a hostile page
+                    // could spam the OS protocol handler on load.
+                    if let Some(uri) = uri.as_ref()
+                        && Self::is_external_scheme(uri)
+                    {
+                        let gesture = navigation_action
+                            .as_ref()
+                            .is_some_and(|action| action.is_user_gesture());
+
+                        if gesture {
+                            eprintln!("Opening externally: {uri}");
+
+                            if webkit6::gio::AppInfo::launch_default_for_uri(
+                                uri,
+                                None::<&webkit6::gio::AppLaunchContext>,
+                            )
+                            .is_err()
+                            {
+                                eprintln!("No application handles: {uri}");
+                            }
+                        } else {
+                            eprintln!("Ignored external scheme without user gesture: {uri}");
+                        }
+
+                        decision.ignore();
+
+                        return true;
+                    }
+
                     if decision_type == PolicyDecisionType::NewWindowAction {
                         if let Some(uri) = uri
                             && (uri.starts_with("http://") || uri.starts_with("https://"))
-                            && Self::popup_is_fresh(&popup_guard, &uri)
+                            && Self::popup_is_fresh(&popup_guard, &uri, PopupSource::Policy)
                         {
                             let opener = open_in_new_tab.clone();
 
@@ -273,7 +360,7 @@ impl BrowserEngine {
     fn wire_popups(
         view: &WebView,
         open_in_new_tab: Rc<dyn Fn(String)>,
-        popup_guard: Rc<RefCell<(String, Instant)>>,
+        popup_guard: PopupGuard,
     ) {
         view.connect_create(move |_, action| {
             if let Some(uri) = action
@@ -281,7 +368,7 @@ impl BrowserEngine {
                 .and_then(|r| r.uri())
                 .map(|u| u.to_string())
                 && (uri.starts_with("http://") || uri.starts_with("https://"))
-                && Self::popup_is_fresh(&popup_guard, &uri)
+                && Self::popup_is_fresh(&popup_guard, &uri, PopupSource::Create)
             {
                 let opener = open_in_new_tab.clone();
 
@@ -321,7 +408,8 @@ impl BrowserEngine {
 
         let Some(host) = parsed
             .as_ref()
-            .and_then(|uri| uri.host().map(|h| h.to_string()))
+            .and_then(|uri| uri.host().map(|h| h.to_ascii_lowercase()))
+            .map(|host| host.trim_end_matches('.').to_string())
             .filter(|host| !host.is_empty())
         else {
             return GENERIC_ORIGIN.to_string();
@@ -405,7 +493,10 @@ impl BrowserEngine {
         let answered = Rc::new(Cell::new(false));
 
         {
-            let dialog = dialog.clone();
+            // Weak: the button is a child of `content`/`dialog`, so a strong
+            // capture here would make `dialog -> content -> button -> handler
+            // -> dialog` a GObject refcount cycle that never finalizes.
+            let dialog = dialog.downgrade();
             let permissions = permissions.clone();
             let origin = origin.clone();
             let remember = remember.clone();
@@ -420,12 +511,15 @@ impl BrowserEngine {
                 }
 
                 request.allow();
-                dialog.close();
+
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.close();
+                }
             });
         }
 
         {
-            let dialog = dialog.clone();
+            let dialog = dialog.downgrade();
             let permissions = permissions.clone();
             let remember = remember.clone();
             let request = request.clone();
@@ -439,18 +533,44 @@ impl BrowserEngine {
                 }
 
                 request.deny();
-                dialog.close();
+
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.close();
+                }
             });
+        }
+
+        // If the tab/window is destroyed while the prompt is open, the
+        // modal must not outlive it: close it (which denies the request).
+        let destroy_handler: Rc<RefCell<Option<gtk::glib::SignalHandlerId>>> =
+            Rc::new(RefCell::new(None));
+
+        {
+            let dialog_weak = dialog.downgrade();
+
+            let id = view.connect_destroy(move |_| {
+                if let Some(dialog) = dialog_weak.upgrade() {
+                    dialog.close();
+                }
+            });
+
+            *destroy_handler.borrow_mut() = Some(id);
         }
 
         {
             let request = request.clone();
             let answered = answered.clone();
+            let view = view.clone();
+            let destroy_handler = destroy_handler.clone();
 
             dialog.connect_close_request(move |_| {
                 if !answered.get() {
                     answered.set(true);
                     request.deny();
+                }
+
+                if let Some(id) = destroy_handler.borrow_mut().take() {
+                    view.disconnect(id);
                 }
 
                 gtk::glib::Propagation::Proceed
@@ -469,7 +589,20 @@ impl BrowserEngine {
                 // PermissionRequest is an interface; the concrete type name
                 // tells us what is being asked for.
                 let type_name = request.type_().name();
-                let kind = PermissionKind::classify(type_name);
+
+                let (is_display, is_audio, is_video) =
+                    match request.downcast_ref::<webkit6::UserMediaPermissionRequest>() {
+                        Some(media) => (
+                            webkit6::functions::user_media_permission_is_for_display_device(media),
+                            media.is_for_audio_device(),
+                            media.is_for_video_device(),
+                        ),
+                        None => (false, false, false),
+                    };
+
+                let kind = PermissionKind::classify_request(
+                    type_name, is_display, is_audio, is_video,
+                );
 
                 if !kind.needs_prompt() {
                     match kind {
@@ -507,12 +640,32 @@ impl BrowserEngine {
             }
         });
 
-        view.connect_query_permission_state(move |_, query| {
-            // Queries carry no origin, so there is nothing remembered to
-            // consult: answer Prompt (not Denied) so pages still ask.
-            query.finish(PermissionState::Prompt);
+        view.connect_query_permission_state({
+            let permissions = permissions.clone();
 
-            true
+            move |view, query| {
+                // Report a remembered verdict so sites see the real state
+                // instead of always being told "prompt". Kinds we never
+                // remember (or the hostless generic origin) stay Prompt so
+                // the page still asks.
+                let kind = query
+                    .name()
+                    .as_deref()
+                    .map(PermissionKind::classify)
+                    .unwrap_or(PermissionKind::Other);
+
+                let origin = Self::permission_origin(view);
+
+                let state = match permissions.remembered(&origin, kind) {
+                    Some(true) => PermissionState::Granted,
+                    Some(false) => PermissionState::Denied,
+                    None => PermissionState::Prompt,
+                };
+
+                query.finish(state);
+
+                true
+            }
         });
     }
 
@@ -626,7 +779,40 @@ impl BrowserEngine {
         let title = rust_i18n::t!("error.load_title").to_string();
         let detail = rust_i18n::t!("error.timeout_detail").to_string();
 
+        Self::mark_error_page(view, uri);
+
         view.load_alternate_html(&Self::error_page(&title, &detail, uri), uri, None);
+    }
+
+    /// Records, on the view, the URI whose load failed and for which an error
+    /// page is now shown, so history recording can skip it.
+    fn mark_error_page(view: &WebView, uri: &str) {
+        const ERROR_PAGE_URI_KEY: &str = "axys-error-page-uri";
+
+        unsafe {
+            view.set_data(ERROR_PAGE_URI_KEY, uri.to_string());
+        }
+    }
+
+    /// Returns true (and clears the mark) when `uri` is the URI of an error
+    /// page currently shown in `view`. Successful loads of the same URI later
+    /// are recorded normally because the mark is consumed here.
+    pub fn take_error_page(view: &WebView, uri: &str) -> bool {
+        const ERROR_PAGE_URI_KEY: &str = "axys-error-page-uri";
+
+        let marked = unsafe {
+            view.data::<String>(ERROR_PAGE_URI_KEY)
+                .map(|stored| stored.as_ref().as_str() == uri)
+                .unwrap_or(false)
+        };
+
+        if marked {
+            unsafe {
+                view.steal_data::<String>(ERROR_PAGE_URI_KEY);
+            }
+        }
+
+        marked
     }
 
     /// Removes persistent website data (IndexedDB, local storage, DOM
@@ -714,6 +900,8 @@ impl BrowserEngine {
 
             eprintln!("Web process terminated ({reason:?}) on {uri}");
 
+            Self::mark_error_page(view, &uri);
+
             view.load_alternate_html(
                 &Self::error_page(&title, &detail, &uri),
                 &uri,
@@ -742,6 +930,8 @@ impl BrowserEngine {
 
             let title = rust_i18n::t!("error.load_title").to_string();
 
+            Self::mark_error_page(view, failing_uri);
+
             view.load_alternate_html(
                 &Self::error_page(&title, &message, failing_uri),
                 failing_uri,
@@ -756,6 +946,8 @@ impl BrowserEngine {
 
             let title = rust_i18n::t!("error.tls_title").to_string();
             let detail = rust_i18n::t!("error.tls_detail").to_string();
+
+            Self::mark_error_page(view, failing_uri);
 
             view.load_alternate_html(
                 &Self::error_page(&title, &detail, failing_uri),
@@ -773,7 +965,7 @@ impl BrowserEngine {
                 .title()
                 .map(|title| title.to_string())
                 .filter(|title| !title.trim().is_empty())
-                .unwrap_or_else(|| "Web notification".to_string());
+                .unwrap_or_else(|| rust_i18n::t!("notification.untitled").to_string());
 
             let body = notification
                 .body()
@@ -810,39 +1002,94 @@ impl BrowserEngine {
 mod tests {
     use super::*;
 
-    fn fresh_guard() -> Rc<RefCell<(String, Instant)>> {
-        Rc::new(RefCell::new((
-            String::new(),
-            Instant::now()
-                .checked_sub(Duration::from_secs(10))
-                .unwrap_or_else(Instant::now),
-        )))
+    const A: &str = "https://example.com/a";
+
+    #[test]
+    fn popup_guard_dedupes_create_plus_policy_pair() {
+        let guard = new_popup_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
     }
 
     #[test]
-    fn popup_guard_dedupes_same_url() {
-        let guard = fresh_guard();
+    fn popup_guard_dedupes_in_either_order() {
+        let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
-        // Same URL within the window is a duplicate (create + decide_policy).
-        assert!(!BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+    }
+
+    #[test]
+    fn popup_guard_allows_same_url_twice_from_one_signal() {
+        // Two real window.open(A) calls must open two tabs.
+        let guard = new_popup_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
     }
 
     #[test]
     fn popup_guard_allows_different_urls() {
-        let guard = fresh_guard();
+        let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
-        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/b"));
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            "https://example.com/b",
+            PopupSource::Policy
+        ));
     }
 
     #[test]
     fn popup_guard_match_is_consumed() {
-        let guard = fresh_guard();
+        let guard = new_popup_guard();
 
-        // A duplicate pair fires once; a later genuine opening still works.
-        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
-        assert!(BrowserEngine::popup_is_fresh(&guard, "https://example.com/a"));
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        // A later genuine opening of the same URL still works.
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+    }
+
+    #[test]
+    fn popup_guard_expires() {
+        let guard = new_popup_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+
+        let stale = Instant::now()
+            .checked_sub(Duration::from_secs(5))
+            .unwrap_or_else(Instant::now);
+
+        for entry in guard.borrow_mut().iter_mut() {
+            entry.2 = stale;
+        }
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+    }
+
+    #[test]
+    fn popup_guard_pairs_interleaved_popups() {
+        // Two window.open() calls reported as create(A), create(B),
+        // policy(A), policy(B) must yield exactly two openings, not four.
+        let guard = new_popup_guard();
+
+        const B: &str = "https://example.com/b";
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(&guard, B, PopupSource::Create));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, B, PopupSource::Policy));
+    }
+
+    #[test]
+    fn popup_guard_pairs_duplicate_ur_ls() {
+        // create(A), create(A), policy(A), policy(A) = two real openings.
+        let guard = new_popup_guard();
+
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
     }
 }

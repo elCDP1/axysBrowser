@@ -55,25 +55,49 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return "axys://newtab".to_string();
     }
 
-    if input.starts_with("axys://") {
-        return input.to_string();
-    }
-
-    if input == "about:blank" {
-        return input.to_string();
-    }
-
-    if input.starts_with("http://")
-        || input.starts_with("https://")
-        || input.starts_with("file://")
-    {
-        return input.to_string();
-    }
-
     let lower = input.to_ascii_lowercase();
+
+    if lower.starts_with("axys://") {
+        return lower;
+    }
+
+    if lower == "about:blank" {
+        return lower;
+    }
+
+    if lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("file://")
+    {
+        // Normalise only the scheme to lower case: `HTTPS://x` would
+        // otherwise be dropped by the navigation guard, which is
+        // case-sensitive. The rest of the URL is preserved verbatim
+        // (paths are case-sensitive).
+        let scheme_len = lower.find("://").map(|i| i + 3).unwrap_or(0);
+
+        return format!("{}{}", &lower[..scheme_len], &input[scheme_len..]);
+    }
 
     if !input.contains(' ') && (lower == "localhost" || lower.starts_with("localhost:") || lower.starts_with("localhost/")) {
         return format!("http://{input}");
+    }
+
+    // Bare IP literals are local/LAN addresses: default to plain HTTP (like
+    // Chromium), not HTTPS, and accept bracketed IPv6 (`[::1]:8080`) which
+    // has no dot and would otherwise be sent to the search engine.
+    if !input.contains(' ') {
+        let host = input.split(['/', '?', '#']).next().unwrap_or(input);
+
+        let host_only = match host.rsplit_once(':') {
+            Some((head, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                head
+            }
+            _ => host,
+        };
+
+        if host_only.starts_with('[') || host_only.parse::<std::net::Ipv4Addr>().is_ok() {
+            return format!("http://{input}");
+        }
     }
 
     if input.contains('.') && !input.contains(' ') {
@@ -114,6 +138,34 @@ mod tests {
             resolve_input("https://example.com", &config),
             "https://example.com"
         );
+    }
+
+    #[test]
+    fn resolves_uppercase_scheme() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("HTTPS://example.com", &config),
+            "https://example.com"
+        );
+    }
+
+    #[test]
+    fn uppercase_scheme_keeps_path_case() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("HTTP://Example.com/CaseSensitive", &config),
+            "http://Example.com/CaseSensitive"
+        );
+    }
+
+    #[test]
+    fn normalizes_uppercase_internal_pages() {
+        let config = load_config();
+
+        assert_eq!(resolve_input("AXYS://NEWTAB", &config), "axys://newtab");
+        assert_eq!(resolve_input("About:Blank", &config), "about:blank");
     }
 
     #[test]
@@ -171,6 +223,27 @@ mod tests {
             resolve_input("localhost:3000", &config),
             "http://localhost:3000"
         );
+    }
+
+    #[test]
+    fn resolves_ipv4_over_http() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("192.168.1.1", &config),
+            "http://192.168.1.1"
+        );
+        assert_eq!(
+            resolve_input("127.0.0.1:8080", &config),
+            "http://127.0.0.1:8080"
+        );
+    }
+
+    #[test]
+    fn resolves_ipv6_literal_over_http() {
+        let config = load_config();
+
+        assert_eq!(resolve_input("[::1]:8080", &config), "http://[::1]:8080");
     }
 
     #[test]

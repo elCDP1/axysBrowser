@@ -92,6 +92,14 @@ pub fn stylesheet(dark: bool) -> String {
             background-color: alpha(@axys_accent, 0.78);
         }}
 
+        /* The global `label` colour rule overrides the colour inherited from
+         * the button, so the white text of accent/destructive buttons must
+         * be set on the label explicitly. */
+        button.suggested-action label,
+        button.destructive-action label {{
+            color: #ffffff;
+        }}
+
         button.destructive-action {{
             background-color: #c03636;
             border-color: transparent;
@@ -116,6 +124,10 @@ pub fn stylesheet(dark: bool) -> String {
 
         entry:focus {{
             border-color: alpha(@axys_accent, 0.45);
+        }}
+
+        entry.error {{
+            border-color: #c03636;
         }}
 
         entry selection {{

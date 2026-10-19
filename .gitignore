@@ -11,3 +11,6 @@ Cargo.toml.backup-beta1
 *.swp
 .vscode/
 .idea/
+
+# Stray files created by mis-quoted shell redirections (e.g. `=80`).
+/=*

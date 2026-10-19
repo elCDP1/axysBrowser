@@ -19,7 +19,13 @@ use std::rc::Rc;
 pub enum PermissionKind {
     Notification,
     Geolocation,
-    /// Camera and/or microphone (single WebKit user-media request).
+    /// Camera only (`getUserMedia({video: true})`).
+    Camera,
+    /// Microphone only (`getUserMedia({audio: true})`).
+    Microphone,
+    /// Camera and microphone in a single WebKit user-media request. Stored
+    /// as two separate decisions (Camera + Microphone) so a later single-
+    /// device request never reuses the other one's grant.
     Media,
     ScreenShare,
     Drm,
@@ -58,12 +64,40 @@ impl PermissionKind {
         }
     }
 
+    /// Like [`classify`](Self::classify) but aware of display capture and
+    /// of which user-media devices are requested: `getDisplayMedia()`
+    /// arrives as the very same `WebKitUserMediaPermissionRequest` type as
+    /// camera/microphone, so the type name alone would file screen sharing
+    /// under `Media` and let a remembered camera/mic grant silently allow
+    /// screen capture. Camera and microphone are likewise split so a
+    /// remembered audio-only grant can never authorize the camera.
+    pub fn classify_request(
+        type_name: &str,
+        is_display_capture: bool,
+        is_audio: bool,
+        is_video: bool,
+    ) -> Self {
+        match Self::classify(type_name) {
+            Self::Media if is_display_capture => Self::ScreenShare,
+            Self::Media => match (is_audio, is_video) {
+                (true, true) => Self::Media,
+                (false, true) => Self::Camera,
+                (true, false) => Self::Microphone,
+                // Unknown media request: prompt as a combined one.
+                (false, false) => Self::Media,
+            },
+            kind => kind,
+        }
+    }
+
     /// Whether this kind ever prompts (as opposed to an automatic verdict).
     pub fn needs_prompt(self) -> bool {
         matches!(
             self,
             Self::Notification
                 | Self::Geolocation
+                | Self::Camera
+                | Self::Microphone
                 | Self::Media
                 | Self::ScreenShare
                 | Self::Drm
@@ -75,6 +109,8 @@ impl PermissionKind {
         match self {
             Self::Notification => "permission.use_notifications",
             Self::Geolocation => "permission.use_location",
+            Self::Camera => "permission.use_camera",
+            Self::Microphone => "permission.use_microphone",
             Self::Media => "permission.use_camera_mic",
             Self::ScreenShare => "permission.share_screen",
             Self::Drm => "permission.use_drm",
@@ -112,15 +148,44 @@ impl PermissionManager {
     pub fn load() -> Self {
         let path = Self::storage_path();
 
-        let store = fs::read_to_string(&path)
+        let mut store = fs::read_to_string(&path)
             .ok()
             .and_then(|contents| toml::from_str::<PermissionStore>(&contents).ok())
             .unwrap_or_default();
 
-        Self {
+        let migrated = Self::migrate_legacy_media(&mut store);
+
+        let manager = Self {
             store: Rc::new(RefCell::new(store)),
             path: Some(path),
+        };
+
+        // Persist immediately: otherwise a crash before the next decision
+        // would leave the old `media` key on disk to migrate again.
+        if migrated {
+            manager.save();
         }
+
+        manager
+    }
+
+    /// Older versions stored a single combined camera+microphone decision
+    /// under the `media` key. Split it into the per-device keys the current
+    /// code reads, so upgrading users don't get re-prompted for a grant they
+    /// already gave.
+    fn migrate_legacy_media(store: &mut PermissionStore) -> bool {
+        let mut changed = false;
+
+        for kinds in store.decisions.values_mut() {
+            if let Some(allowed) = kinds.remove("media") {
+                kinds.entry("camera".to_string()).or_insert(allowed);
+                kinds.entry("microphone".to_string()).or_insert(allowed);
+
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     /// Starts an empty manager that never touches disk.
@@ -134,11 +199,29 @@ impl PermissionManager {
     /// A remembered verdict for this origin + kind, if any. The generic
     /// `"this site"` identity (hostless pages) is never consulted: it
     /// would otherwise let one such page reuse another's sensitive grant.
+    ///
+    /// A combined camera+microphone request (`Media`) is only remembered
+    /// when *both* devices agree, so a camera-only grant cannot silently
+    /// authorize a later request that also wants the microphone.
     pub fn remembered(&self, origin: &str, kind: PermissionKind) -> Option<bool> {
         if origin == GENERIC_ORIGIN {
             return None;
         }
 
+        if kind == PermissionKind::Media {
+            let camera = self.raw(origin, PermissionKind::Camera);
+            let microphone = self.raw(origin, PermissionKind::Microphone);
+
+            return match (camera, microphone) {
+                (Some(camera), Some(microphone)) if camera == microphone => Some(camera),
+                _ => None,
+            };
+        }
+
+        self.raw(origin, kind)
+    }
+
+    fn raw(&self, origin: &str, kind: PermissionKind) -> Option<bool> {
         self.store
             .borrow()
             .decisions
@@ -150,17 +233,26 @@ impl PermissionManager {
     /// Records a verdict (persisted unless ephemeral). The generic
     /// `"this site"` identity is never recorded at all: every hostless
     /// page asks afresh, so unrelated pages cannot share grants.
+    ///
+    /// A combined camera+microphone decision is stored as two separate
+    /// entries so each device can later be revoked independently.
     pub fn remember(&self, origin: &str, kind: PermissionKind, allowed: bool) {
         if origin == GENERIC_ORIGIN {
             return;
         }
 
-        self.store
-            .borrow_mut()
-            .decisions
-            .entry(origin.to_string())
-            .or_default()
-            .insert(kind_key(kind), allowed);
+        {
+            let mut store = self.store.borrow_mut();
+
+            let kinds = store.decisions.entry(origin.to_string()).or_default();
+
+            if kind == PermissionKind::Media {
+                kinds.insert(kind_key(PermissionKind::Camera), allowed);
+                kinds.insert(kind_key(PermissionKind::Microphone), allowed);
+            } else {
+                kinds.insert(kind_key(kind), allowed);
+            }
+        }
 
         self.save();
     }
@@ -238,6 +330,90 @@ mod tests {
     }
 
     #[test]
+    fn display_capture_is_never_filed_as_camera_or_mic() {
+        let name = "WebKitUserMediaPermissionRequest";
+
+        assert_eq!(
+            PermissionKind::classify_request(name, false, true, true),
+            PermissionKind::Media
+        );
+        assert_eq!(
+            PermissionKind::classify_request(name, true, true, true),
+            PermissionKind::ScreenShare
+        );
+        // Single-device requests are split so grants cannot cross over.
+        assert_eq!(
+            PermissionKind::classify_request(name, false, false, true),
+            PermissionKind::Camera
+        );
+        assert_eq!(
+            PermissionKind::classify_request(name, false, true, false),
+            PermissionKind::Microphone
+        );
+        // Other request types are unaffected by the flags.
+        assert_eq!(
+            PermissionKind::classify_request("WebKitGeolocationPermissionRequest", true, true, true),
+            PermissionKind::Geolocation
+        );
+    }
+
+    #[test]
+    fn camera_grant_does_not_cover_screen_share() {
+        let manager = PermissionManager::ephemeral();
+
+        manager.remember("https://meet.example:443", PermissionKind::Media, true);
+
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::ScreenShare),
+            None
+        );
+    }
+
+    #[test]
+    fn camera_and_microphone_do_not_cross_grant() {
+        let manager = PermissionManager::ephemeral();
+
+        manager.remember("https://meet.example:443", PermissionKind::Camera, true);
+
+        // The camera grant must not authorize the microphone…
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Microphone),
+            None
+        );
+
+        // …nor a combined camera+microphone request.
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Media),
+            None
+        );
+
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Camera),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn combined_media_grant_covers_both_devices() {
+        let manager = PermissionManager::ephemeral();
+
+        manager.remember("https://meet.example:443", PermissionKind::Media, true);
+
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Camera),
+            Some(true)
+        );
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Microphone),
+            Some(true)
+        );
+        assert_eq!(
+            manager.remembered("https://meet.example:443", PermissionKind::Media),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn ephemeral_manager_remembers_in_memory_only() {
         let manager = PermissionManager::ephemeral();
 
@@ -249,7 +425,8 @@ mod tests {
             manager.remembered("example.com", PermissionKind::Media),
             Some(true)
         );
-        assert_eq!(manager.decision_count(), 1);
+        // A combined grant is stored as two independent device decisions.
+        assert_eq!(manager.decision_count(), 2);
 
         manager.clear_all();
 
@@ -265,5 +442,24 @@ mod tests {
         assert!(load_store_for_test(&path).is_err());
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn legacy_media_decision_migrates_to_devices() {
+        let mut store = PermissionStore::default();
+
+        store
+            .decisions
+            .entry("https://meet.example:443".to_string())
+            .or_default()
+            .insert("media".to_string(), true);
+
+        assert!(PermissionManager::migrate_legacy_media(&mut store));
+
+        let kinds = store.decisions.get("https://meet.example:443").unwrap();
+
+        assert_eq!(kinds.get("media"), None);
+        assert_eq!(kinds.get("camera"), Some(&true));
+        assert_eq!(kinds.get("microphone"), Some(&true));
     }
 }

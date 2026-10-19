@@ -122,7 +122,10 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
 
         let manager = manager.clone();
 
-        let search = search.clone();
+        // Weak: the entry owns the `changed` handler which owns `refresh`,
+        // so a strong capture here would form a cycle that keeps the whole
+        // page (and this listener) alive forever.
+        let search = search.downgrade();
 
         let on_open = on_open.clone();
 
@@ -131,7 +134,12 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
                 list.remove(&child);
             }
 
-            let entries = manager.search(&search.text());
+            let query = search
+                .upgrade()
+                .map(|entry| entry.text().to_string())
+                .unwrap_or_default();
+
+            let entries = manager.search_limited(&query, 200);
 
             if entries.is_empty() {
                 let empty = Label::new(Some(&rust_i18n::t!("history.empty")));
@@ -145,10 +153,9 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
                 return;
             }
 
-            // Rendering thousands of rows on every keystroke would jank the
-            // main loop; search still scans everything, only the newest 200
-            // rows are shown.
-            for entry in entries.into_iter().take(200) {
+            // Capped by search_limited above: no per-keystroke clone of the
+            // whole store, no thousands of rows.
+            for entry in entries {
                 list.append(&build_entry_row(&entry, &manager, &on_open));
             }
         })
@@ -168,7 +175,9 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
         let refresh = refresh.clone();
 
         clear.connect_clicked(move |_| {
-            manager.clear();
+            if let Err(error) = manager.clear() {
+                eprintln!("Failed to clear browsing history: {error}");
+            }
 
             refresh();
         });

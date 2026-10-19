@@ -17,7 +17,6 @@ app:
 settings:
   title: "Settings"
   appearance: "Appearance"
-  theme: "Theme"
   dark: "Dark"
   light: "Light"
   language: "Language"
@@ -46,7 +45,6 @@ settings:
   permissions_description: "Notifications, camera, microphone and other per-site decisions you remembered."
   permissions_reset: "Forget all"
   permissions_cleared: "Permissions forgotten."
-  language_note: "Changes apply to newly created browser pages."
 
 error:
   crashed_title: "This page crashed"
@@ -73,10 +71,16 @@ downloads:
   clear_finished: "Clear finished"
   private_note: "Files stay on disk wherever they were saved — private windows only keep a separate list that vanishes with the window."
   active_tooltip: "Downloads (%{count} active)"
+  untitled: "Download"
+  default_name: "download"
+
+notification:
+  untitled: "Web notification"
 
 tools:
   title: "Tools"
-  web_inspector: "Web Inspector"
+  browser: "Browser"
+  web_inspector: "Developer tools"
   browsing_data: "Browsing data"
   clear_browsing_data: "Clear browsing data"
   cleared: "Browsing data cleared."
@@ -85,6 +89,24 @@ tools:
   purged: "Deleted %{count} entries."
   note: "History, cookies, favicon cache and disk cache. Bookmarks are kept."
   open_downloads: "Downloads"
+  bookmarks: "Bookmarks manager"
+  page: "This page"
+  system: "System"
+  view_source: "View page source"
+  source_title: "Source"
+  zoom_level: "Zoom: %{percent}%"
+  zoom_in: "Zoom in"
+  zoom_out: "Zoom out"
+  zoom_reset: "Reset zoom"
+  open_downloads_folder: "Open downloads folder"
+  tasks: "Task manager"
+  tasks_memory: "Memory"
+  tasks_processes: "Web processes"
+  tasks_graph: "Last 60 seconds"
+  tasks_tabs: "Tabs"
+  tasks_active: "Active"
+  tasks_close: "Close"
+  tasks_note: "Total browser memory (main process plus WebKit helpers). WebKit does not expose a per-tab figure."
 
 welcome:
   title: "Welcome"
@@ -116,7 +138,6 @@ history:
   empty: "No history yet."
   open: "Open"
   delete: "Delete"
-  purge_title: "Delete older than"
   older_day: "24 hours"
   older_week: "7 days"
   older_month: "30 days"
@@ -130,6 +151,9 @@ bookmarks:
   save: "Save"
   cancel: "Cancel"
   remove: "Remove"
+  open: "Open"
+  search: "Search bookmarks"
+  empty: "No bookmarks yet."
 
 find:
   title: "Find in page"
@@ -145,6 +169,8 @@ permission:
   block: "Block"
   use_notifications: "show notifications"
   use_location: "know your location"
+  use_camera: "use your camera"
+  use_microphone: "use your microphone"
   use_camera_mic: "use your camera and microphone"
   share_screen: "capture your screen"
   use_drm: "play protected media"

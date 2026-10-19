@@ -32,7 +32,7 @@ fn bookmark_dialog(
     existing: Option<Bookmark>,
     current_url: String,
     current_title: String,
-    current_web_view: Rc<RefCell<Option<WebView>>>,
+    favicon: Option<gtk::gdk::Texture>,
     refresh_star: Rc<dyn Fn()>,
 ) {
     let dialog = Window::builder()
@@ -122,7 +122,9 @@ fn bookmark_dialog(
         let name = name.clone();
         let url = url.clone();
         let existing = existing.clone();
-        let current_web_view = current_web_view.clone();
+        // Snapshot: switching tabs while the dialog is open must not change
+        // which page's favicon gets saved.
+        let favicon = favicon.clone();
         let refresh_star = refresh_star.clone();
 
         save.connect_clicked(move |_| {
@@ -135,11 +137,6 @@ fn bookmark_dialog(
                 url.add_css_class("error");
                 return;
             }
-
-            let favicon = current_web_view
-                .borrow()
-                .as_ref()
-                .and_then(|view| view.favicon());
 
             let success = if let Some(bookmark) = existing.as_ref() {
                 state
@@ -389,8 +386,12 @@ impl Toolbar {
         {
             let state = state.clone();
             let current_web_view = current_web_view.clone();
-            let parent = toolbar.clone();
-            let refresh_star = bookmark_refresh.clone();
+            // Weak to the toolbar and to the refresh action: the button is a
+            // descendant of the toolbar, and `bookmark_refresh` captures the
+            // button, so strong captures here form a cycle that leaks the
+            // whole toolbar subtree on window close.
+            let parent = toolbar.downgrade();
+            let refresh_star = Rc::downgrade(&bookmark_refresh);
 
             bookmark.connect_clicked(move |_| {
                 let current_web_view_ref = current_web_view.borrow();
@@ -415,14 +416,22 @@ impl Toolbar {
 
                 let existing = state.bookmarks.get(&uri);
 
+                let favicon = view.favicon();
+
+                let (Some(parent), Some(refresh_star)) =
+                    (parent.upgrade(), refresh_star.upgrade())
+                else {
+                    return;
+                };
+
                 bookmark_dialog(
                     parent.upcast_ref(),
                     &state,
                     existing,
                     uri,
                     title,
-                    current_web_view.clone(),
-                    refresh_star.clone(),
+                    favicon,
+                    refresh_star,
                 );
             });
         }
@@ -501,14 +510,23 @@ impl Toolbar {
 
         // Closes both panels and syncs the window catcher. Used by every
         // in-panel button (clicking a panel button always dismisses it).
+        // Weak panels: these buttons live inside `downloads_panel`, so a
+        // strong capture would be a cycle keeping the panels (and the
+        // catcher) alive after the window closes.
         let close_panels: Action = {
-            let menu_panel = menu_panel.clone();
-            let downloads_panel = downloads_panel.clone();
+            let menu_container = menu_panel.container.downgrade();
+            let downloads_panel = downloads_panel.downgrade();
             let on_panel_toggled = on_panel_toggled.clone();
 
             Rc::new(move || {
-                menu_panel.hide();
-                downloads_panel.set_visible(false);
+                if let Some(container) = menu_container.upgrade() {
+                    container.set_visible(false);
+                }
+
+                if let Some(downloads_panel) = downloads_panel.upgrade() {
+                    downloads_panel.set_visible(false);
+                }
+
                 on_panel_toggled();
             })
         };

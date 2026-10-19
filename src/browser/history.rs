@@ -26,14 +26,29 @@ type Listeners = Rc<RefCell<Vec<Listener>>>;
 #[derive(Clone)]
 pub struct HistoryManager {
     entries: Rc<RefCell<Vec<HistoryEntry>>>,
-    path: PathBuf,
+    /// `None` = ephemeral (private windows): kept in memory for the session,
+    /// never read from or written to disk.
+    path: Option<PathBuf>,
     listeners: Listeners,
 }
 
 impl HistoryManager {
     pub fn load() -> Self {
-        let path = Self::storage_path();
+        Self::load_from(Self::storage_path())
+    }
 
+    /// Starts an empty, non-persistent manager. Used by private windows so
+    /// their `axys://history` page shows only that session's visits and
+    /// nothing ever touches the on-disk history.
+    pub fn ephemeral() -> Self {
+        Self {
+            entries: Rc::new(RefCell::new(Vec::new())),
+            path: None,
+            listeners: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
+
+    fn load_from(path: PathBuf) -> Self {
         let mut entries = fs::read_to_string(&path)
             .ok()
             .and_then(|contents| {
@@ -51,7 +66,7 @@ impl HistoryManager {
 
         Self {
             entries: Rc::new(RefCell::new(entries)),
-            path,
+            path: Some(path),
             listeners: Rc::new(RefCell::new(Vec::new())),
         }
     }
@@ -74,7 +89,8 @@ impl HistoryManager {
 
             if let Some(last) = entries.last()
                 && last.url == url
-                && visited_at.saturating_sub(last.visited_at) < 2
+                && visited_at >= last.visited_at
+                && visited_at - last.visited_at < 2
             {
                 false
             } else {
@@ -99,15 +115,13 @@ impl HistoryManager {
         }
     }
 
-    pub fn entries(&self) -> Vec<HistoryEntry> {
-        self.entries.borrow().iter().rev().cloned().collect()
-    }
-
-    pub fn search(&self, query: &str) -> Vec<HistoryEntry> {
+    /// Newest-first matches, capped at `limit` rows so pages never clone
+    /// and render thousands of widgets per keystroke.
+    pub fn search_limited(&self, query: &str, limit: usize) -> Vec<HistoryEntry> {
         let query = query.trim().to_ascii_lowercase();
 
         if query.is_empty() {
-            return self.entries();
+            return self.entries.borrow().iter().rev().take(limit).cloned().collect();
         }
 
         self.entries
@@ -118,6 +132,7 @@ impl HistoryManager {
                 entry.title.to_ascii_lowercase().contains(&query)
                     || entry.url.to_ascii_lowercase().contains(&query)
             })
+            .take(limit)
             .cloned()
             .collect()
     }
@@ -140,21 +155,18 @@ impl HistoryManager {
         removed
     }
 
-    pub fn clear(&self) {
-        let changed = {
-            let mut entries = self.entries.borrow_mut();
+    /// Forgets every entry and rewrites the history file. Always touches
+    /// the file (even when memory is already empty) so entries that could
+    /// not be parsed at load time never survive a "clear"; the error is
+    /// returned so callers can avoid claiming success.
+    pub fn clear(&self) -> io::Result<()> {
+        self.entries.borrow_mut().clear();
 
-            if entries.is_empty() {
-                false
-            } else {
-                entries.clear();
-                true
-            }
-        };
+        let result = self.save();
 
-        if changed {
-            self.persist_and_notify();
-        }
+        self.notify();
+
+        result
     }
 
     /// Deletes every entry older than `max_age_secs`. Returns how many were
@@ -182,7 +194,10 @@ impl HistoryManager {
     }
 
     pub fn subscribe(&self, callback: &Rc<dyn Fn()>) {
-        self.listeners.borrow_mut().push(Rc::downgrade(callback));
+        let mut listeners = self.listeners.borrow_mut();
+
+        listeners.retain(|listener| listener.strong_count() > 0);
+        listeners.push(Rc::downgrade(callback));
     }
 
     fn persist_and_notify(&self) {
@@ -218,6 +233,11 @@ impl HistoryManager {
     }
 
     fn save(&self) -> io::Result<()> {
+        // Ephemeral managers (private windows) deliberately never persist.
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+
         let entries = self.entries.borrow();
 
         let store = HistoryStore {
@@ -226,17 +246,17 @@ impl HistoryManager {
 
         let contents = toml::to_string_pretty(&store).map_err(io::Error::other)?;
 
-        crate::paths::atomic_write(&self.path, &contents)
+        crate::paths::atomic_write(path, &contents)
     }
 }
 
 fn sanitize_title(title: String, url: &str) -> String {
-    let title = title.trim();
+    let collapsed: String = title.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    if title.is_empty() {
+    if collapsed.trim().is_empty() {
         url.to_string()
     } else {
-        title.to_string()
+        collapsed
     }
 }
 
@@ -247,9 +267,13 @@ mod tests {
     fn test_manager(name: &str) -> HistoryManager {
         HistoryManager {
             entries: Rc::new(RefCell::new(Vec::new())),
-            path: std::env::temp_dir().join(format!("axys-history-test-{name}.toml")),
+            path: Some(std::env::temp_dir().join(format!("axys-history-test-{name}.toml"))),
             listeners: Rc::new(RefCell::new(Vec::new())),
         }
+    }
+
+    fn test_path(manager: &HistoryManager) -> &std::path::Path {
+        manager.path.as_deref().expect("test manager persists")
     }
 
     fn entry_at(url: &str, visited_at: u64) -> HistoryEntry {
@@ -275,7 +299,7 @@ mod tests {
 
         assert_eq!(removed, 1);
 
-        let remaining = manager.entries();
+        let remaining = manager.search_limited("", usize::MAX);
 
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].url, "https://new.example");
@@ -288,9 +312,95 @@ mod tests {
         manager.entries.borrow_mut().push(entry_at("https://a.example", 1));
         manager.entries.borrow_mut().push(entry_at("https://b.example", 2));
 
-        manager.clear();
+        assert!(manager.clear().is_ok());
 
-        assert!(manager.entries().is_empty());
+        assert!(manager.search_limited("", usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn clear_wipes_unparsed_file_and_reports_write_errors() {
+        // A corrupt file loads as empty in memory but still holds old URLs
+        // on disk: clearing must overwrite it, not skip the write.
+        let manager = test_manager("clear-corrupt");
+
+        let path = test_path(&manager).to_path_buf();
+
+        fs::write(&path, "entries = [corrupt https://secret.example").unwrap();
+
+        assert!(manager.clear().is_ok());
+
+        let text = fs::read_to_string(&path).unwrap();
+
+        assert!(!text.contains("secret.example"));
+
+        let _ = fs::remove_file(&path);
+
+        // An unwritable location must surface as an error, not success.
+        let broken = HistoryManager {
+            entries: Rc::new(RefCell::new(Vec::new())),
+            path: Some(PathBuf::from("/proc/axys-nonexistent/history.toml")),
+            listeners: Rc::new(RefCell::new(Vec::new())),
+        };
+
+        assert!(broken.clear().is_err());
+    }
+
+    #[test]
+    fn history_persists_across_reload() {
+        let path = std::env::temp_dir().join("axys-history-persist-test.toml");
+
+        let _ = fs::remove_file(&path);
+
+        let manager = HistoryManager::load_from(path.clone());
+
+        manager.add_visit("Example", "https://example.com/page");
+        manager.add_visit("Other", "https://other.example/x");
+
+        // A fresh manager reading the same file must see both visits, newest
+        // first, with their titles intact.
+        let reloaded = HistoryManager::load_from(path.clone());
+
+        let entries = reloaded.search_limited("", usize::MAX);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].url, "https://other.example/x");
+        assert_eq!(entries[0].title, "Other");
+        assert_eq!(entries[1].url, "https://example.com/page");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ephemeral_history_is_never_persisted() {
+        // Private windows use an ephemeral manager: visits are visible for
+        // the session but no history file is ever created or consulted.
+        let manager = HistoryManager::ephemeral();
+
+        assert!(manager.path.is_none());
+
+        manager.add_visit("Secret", "https://private.example/secret");
+
+        let entries = manager.search_limited("", usize::MAX);
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].url, "https://private.example/secret");
+
+        // Saving (via any mutation) is a no-op that cannot fail or write.
+        assert!(manager.clear().is_ok());
+        assert!(manager.search_limited("", usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn ephemeral_and_persistent_history_do_not_share_entries() {
+        let manager = HistoryManager::ephemeral();
+
+        manager.add_visit("Private", "https://private.example/a");
+
+        // The persistent store is a different instance; a private visit must
+        // not leak into it.
+        let persistent = test_manager("isolation");
+
+        assert!(persistent.search_limited("", usize::MAX).is_empty());
     }
 
     #[test]
@@ -310,7 +420,7 @@ mod tests {
             manager.add_visit("title", url);
 
             assert!(
-                manager.entries().is_empty(),
+                manager.search_limited("", usize::MAX).is_empty(),
                 "{url} must not be recorded"
             );
         }

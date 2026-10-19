@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=axysBrowser
+GenericName=Web Browser
+Comment=A lightweight, privacy-focused web browser
+Exec=axysbrowser %U
+Icon=axysbrowser
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=x-scheme-handler/http;x-scheme-handler/https;text/html;application/xhtml+xml;
+StartupNotify=true
+StartupWMClass=axysbrowser

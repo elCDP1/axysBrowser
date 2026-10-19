@@ -9,6 +9,8 @@ use super::logo::build_logo_button;
 pub struct TabBar {
     pub root: Box,
     tabs_box: Box,
+    logo_button: Button,
+    new_button: Button,
     on_select: Rc<dyn Fn(usize)>,
     on_close: Rc<dyn Fn(usize)>,
 }
@@ -65,9 +67,20 @@ impl TabBar {
         Self {
             root,
             tabs_box,
+            logo_button,
+            new_button,
             on_select,
             on_close,
         }
+    }
+
+    /// Re-translates the static tooltips (language change; tab titles
+    /// refresh through [`TabBar::refresh`] already).
+    pub fn refresh_labels(&self) {
+        self.new_button
+            .set_tooltip_text(Some(&rust_i18n::t!("app.new_tab")));
+        self.logo_button
+            .set_tooltip_text(Some(&rust_i18n::t!("about.tooltip")));
     }
 
     pub fn refresh(&self, tabs: &[Tab], active_id: usize) {

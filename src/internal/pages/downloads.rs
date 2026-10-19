@@ -160,18 +160,20 @@ pub fn build_downloads(manager: DownloadManager) -> GtkBox {
 
     page.append(&scroller);
 
-    // Privacy honesty: files downloaded in a private window stay on disk
-    // like everywhere else — closing it only clears this list, and each
-    // private window keeps a separate list that dies with it.
-    let note = Label::new(Some(&rust_i18n::t!("downloads.private_note")));
+    // Privacy honesty, private windows only: files downloaded there stay
+    // on disk like everywhere else — closing the window only clears this
+    // list. Normal windows have no such caveat, so no notice there.
+    if manager.is_private() {
+        let note = Label::new(Some(&rust_i18n::t!("downloads.private_note")));
 
-    note.add_css_class("dim-label");
+        note.add_css_class("dim-label");
 
-    note.set_halign(Align::Start);
+        note.set_halign(Align::Start);
 
-    note.set_wrap(true);
+        note.set_wrap(true);
 
-    page.append(&note);
+        page.append(&note);
+    }
 
     let refresh: Rc<dyn Fn()> = {
         let list = list.clone();
@@ -207,12 +209,16 @@ pub fn build_downloads(manager: DownloadManager) -> GtkBox {
 
     manager.subscribe(&refresh);
 
-    let refresh_keepalive = refresh.clone();
-
+    // `subscribe` only stores a weak reference, so `refresh` needs a strong
+    // owner that lives as long as the page: this controller is owned by the
+    // page and its handler captures `refresh`. Referencing it (rather than
+    // only cloning it) is what keeps the capture, so it is not dead code.
     let keepalive = EventControllerFocus::new();
 
-    keepalive.connect_enter(move |_| {
-        let _ = refresh_keepalive.clone();
+    keepalive.connect_enter({
+        let refresh = refresh.clone();
+
+        move |_| refresh()
     });
 
     page.add_controller(keepalive);

@@ -32,6 +32,10 @@ fn menu_items(private_mode: bool) -> Vec<(&'static str, &'static str)> {
         ("app.reopen_tab", "win.reopen-tab"),
         ("history.title", "win.history"),
         ("app.downloads", "win.downloads"),
+        ("tools.bookmarks", "win.bookmarks"),
+        ("tools.tasks", "win.tasks"),
+        ("tools.view_source", "win.view-source"),
+        ("tools.web_inspector", "win.devtools"),
     ];
 
     // Toggle: inside a private window this item exits back to normal mode.
@@ -114,12 +118,19 @@ impl MenuPanel {
 
             row.set_child(Some(&label));
 
-            let container = self.container.clone();
+            // Weak: `self.container` is an ancestor of this row, so a strong
+            // capture would be a `container -> rows -> row -> container`
+            // cycle that leaks the whole panel.
+            let container = self.container.downgrade();
             let on_close = self.on_close.clone();
 
             row.connect_clicked(move |row| {
                 let _ = row.activate_action(action, None);
-                container.set_visible(false);
+
+                if let Some(container) = container.upgrade() {
+                    container.set_visible(false);
+                }
+
                 on_close();
             });
 
@@ -166,17 +177,29 @@ pub fn build_inline_picker(
 
         row.add_css_class("menu-row");
 
-        let row_list = list.clone();
-        let toggle = toggle.clone();
-        let current = current.clone();
+        // Weak: the row is a child of `list`, so capturing `list` (or the
+        // sibling `toggle`/`current`) strongly here would make a GObject
+        // reference cycle that leaks the whole picker.
+        let row_list = list.downgrade();
+        let toggle = toggle.downgrade();
+        let current = current.downgrade();
         let text = option.clone();
         let on_pick = on_pick.clone();
 
         row.connect_clicked(move |_| {
             on_pick(index);
-            current.set_text(&text);
-            toggle.set_tooltip_text(Some(&text));
-            row_list.set_visible(false);
+
+            if let Some(current) = current.upgrade() {
+                current.set_text(&text);
+            }
+
+            if let Some(toggle) = toggle.upgrade() {
+                toggle.set_tooltip_text(Some(&text));
+            }
+
+            if let Some(row_list) = row_list.upgrade() {
+                row_list.set_visible(false);
+            }
         });
 
         list.append(&row);

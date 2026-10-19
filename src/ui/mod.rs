@@ -3,6 +3,7 @@ pub mod bookmarks;
 pub mod findbar;
 pub mod logo;
 pub mod memprobe;
+pub mod memsmoke;
 pub mod menu;
 pub mod navigation;
 pub mod shortcuts;

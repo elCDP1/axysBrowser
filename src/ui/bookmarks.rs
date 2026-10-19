@@ -135,6 +135,8 @@ impl BookmarkBar {
 
                     let mut used = 0;
 
+                    let mut overflowing = false;
+
                     for button in &buttons {
                         let button_width = button.width();
 
@@ -142,10 +144,15 @@ impl BookmarkBar {
                             continue;
                         }
 
-                        if used + button_width + spacing <= width {
-                            used += button_width + spacing;
-                        } else {
+                        // Hide a contiguous suffix (Chromium-like): once one
+                        // item no longer fits, every later one overflows too,
+                        // instead of leaving narrow items floating after the
+                        // hidden ones.
+                        if overflowing || used + button_width + spacing > width {
+                            overflowing = true;
                             button.set_visible(false);
+                        } else {
+                            used += button_width + spacing;
                         }
                     }
 
@@ -250,6 +257,10 @@ impl BookmarkBar {
             let on_open = on_open.clone();
 
             Rc::new(move || {
+                // Static tooltip follows the UI language (titles come from
+                // the bookmarks themselves).
+                overflow_button.set_tooltip_text(Some(&rust_i18n::t!("bookmarks.more")));
+
                 while let Some(child) = items.first_child() {
                     items.remove(&child);
                 }
@@ -317,18 +328,26 @@ impl BookmarkBar {
         state.bookmarks.subscribe(&refresh);
 
         {
-            let schedule_reflow = schedule_reflow.clone();
+            // Weak: `schedule_reflow` captures `items` (its own child), so a
+            // strong capture here would be an `items -> handler ->
+            // schedule_reflow -> items` cycle that keeps the bar (and the
+            // `navigate_tab` it holds) alive after the window closes.
+            let schedule_reflow = Rc::downgrade(&schedule_reflow);
 
             items.connect_notify_local(Some("width"), move |_, _| {
-                schedule_reflow();
+                if let Some(schedule_reflow) = schedule_reflow.upgrade() {
+                    schedule_reflow();
+                }
             });
         }
 
         {
-            let schedule_reflow = schedule_reflow.clone();
+            let schedule_reflow = Rc::downgrade(&schedule_reflow);
 
             root.connect_notify_local(Some("width"), move |_, _| {
-                schedule_reflow();
+                if let Some(schedule_reflow) = schedule_reflow.upgrade() {
+                    schedule_reflow();
+                }
             });
         }
 
@@ -354,6 +373,9 @@ impl BookmarkBar {
 }
 
 fn load_bookmark_icon(bookmark: &Bookmark) -> Image {
+    // Favicons are read from disk on each bar refresh. Refreshes only happen
+    // on bookmark-data changes (never on resize, which only reflows), so a
+    // cache would buy nothing and could serve a stale icon after an edit.
     if let Some(path) = bookmark.favicon_path.as_ref()
         && let Ok(texture) = gdk::Texture::from_filename(path)
     {

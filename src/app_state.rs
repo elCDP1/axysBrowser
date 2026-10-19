@@ -21,6 +21,68 @@ use std::rc::{Rc, Weak};
 
 use webkit6::{CookiePersistentStorage, NetworkSession};
 
+/// Removes a directory's contents (the directory itself is recreated).
+/// A missing directory counts as already clean.
+fn wipe_dir(dir: &std::path::Path) -> bool {
+    if dir.exists()
+        && let Err(error) = fs::remove_dir_all(dir)
+    {
+        eprintln!("Failed to clear {}: {error}", dir.display());
+        return false;
+    }
+
+    if let Err(error) = fs::create_dir_all(dir) {
+        eprintln!("Failed to recreate {}: {error}", dir.display());
+        return false;
+    }
+
+    true
+}
+
+type DoneCallback = Rc<dyn Fn(bool)>;
+
+/// Aggregates several (possibly asynchronous) steps into one verdict:
+/// the callback fires exactly once, when the last step finished, with
+/// `true` only if no step failed.
+#[derive(Clone)]
+struct Completion {
+    pending: Rc<Cell<usize>>,
+    failed: Rc<Cell<bool>>,
+    done: Rc<RefCell<Option<DoneCallback>>>,
+}
+
+impl Completion {
+    fn new(done: Option<DoneCallback>) -> Self {
+        Self {
+            pending: Rc::new(Cell::new(0)),
+            failed: Rc::new(Cell::new(false)),
+            done: Rc::new(RefCell::new(done)),
+        }
+    }
+
+    fn begin(&self) {
+        self.pending.set(self.pending.get() + 1);
+    }
+
+    fn fail(&self) {
+        self.failed.set(true);
+    }
+
+    fn finish(&self, ok: bool) {
+        if !ok {
+            self.failed.set(true);
+        }
+
+        let left = self.pending.get().saturating_sub(1);
+
+        self.pending.set(left);
+
+        if left == 0 && let Some(callback) = self.done.borrow_mut().take() {
+            callback(!self.failed.get());
+        }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -224,15 +286,21 @@ impl AppState {
     }
 
     pub fn subscribe_language(&self, callback: &Rc<dyn Fn()>) {
-        self.language_listeners
-            .borrow_mut()
-            .push(Rc::downgrade(callback));
+        let mut listeners = self.language_listeners.borrow_mut();
+
+        // Drop dead entries eagerly: windows are opened and closed over a
+        // long session, and this list only got pruned while notifying, so a
+        // window closed right after opening could linger until the next
+        // language change.
+        listeners.retain(|listener| listener.strong_count() > 0);
+        listeners.push(Rc::downgrade(callback));
     }
 
     pub fn subscribe_settings(&self, callback: &Rc<dyn Fn()>) {
-        self.settings_listeners
-            .borrow_mut()
-            .push(Rc::downgrade(callback));
+        let mut listeners = self.settings_listeners.borrow_mut();
+
+        listeners.retain(|listener| listener.strong_count() > 0);
+        listeners.push(Rc::downgrade(callback));
     }
 
     fn notify_settings_changed(&self) {
@@ -339,114 +407,102 @@ impl AppState {
     /// Real "clear browsing data": history, all cookies, favicon cache,
     /// persistent website data (IndexedDB, local storage, DOM caches, …)
     /// and the HTTP disk cache. Open tabs are left alone (sites log out on
-    /// next reload), and bookmarks are never touched. `on_done` fires once
-    /// every asynchronous step finished, reporting success only when ALL
-    /// of them succeeded (pass `None` to skip the report).
-    pub fn clear_browsing_data(&self, on_done: Option<Rc<dyn Fn(bool)>>) {
-        self.history.clear();
+    /// next reload), and bookmarks and downloaded files are never touched.
+    /// `on_done` fires once every step finished, reporting success only
+    /// when ALL of them succeeded — including when a required manager is
+    /// missing, because then nothing was really wiped (pass `None` to skip
+    /// the report).
+    /// It acts on the given `session`/`history` so a private window clears
+    /// only its own ephemeral data (and never the profile's on-disk cache).
+    /// Normal windows pass the profile session/history and `true`.
+    pub fn clear_browsing_data(
+        &self,
+        session: &NetworkSession,
+        history: &HistoryManager,
+        wipe_disk_cache: bool,
+        on_done: Option<Rc<dyn Fn(bool)>>,
+    ) {
+        let completion = Completion::new(on_done);
 
-        let pending = Rc::new(Cell::new(0usize));
-        let failed = Rc::new(Cell::new(false));
-        let done = Rc::new(RefCell::new(on_done));
+        // Setup token: keeps the aggregate open until every step below has
+        // been registered, so a step finishing synchronously cannot report
+        // success early.
+        completion.begin();
 
-        let finish_one = Rc::new({
-            let pending = pending.clone();
-            let failed = failed.clone();
-            let done = done.clone();
+        if let Err(error) = history.clear() {
+            eprintln!("Failed to clear browsing history: {error}");
+            completion.fail();
+        }
 
-            move |ok: bool| {
-                if !ok {
-                    failed.set(true);
-                }
+        if let Some(cookie_manager) = session.cookie_manager() {
+            completion.begin();
 
-                let left = pending.get().saturating_sub(1);
-                pending.set(left);
-
-                if left == 0 {
-                    if let Some(callback) = done.borrow_mut().take() {
-                        callback(!failed.get());
-                    }
-                }
-            }
-        });
-
-        if let Some(cookie_manager) = self.network_session.cookie_manager() {
-            pending.set(pending.get() + 1);
-
-            let pending = pending.clone();
-            let finish_one = finish_one.clone();
+            let completion = completion.clone();
 
             cookie_manager.clone().all_cookies(
                 None::<&webkit6::gio::Cancellable>,
                 move |result| match result {
                     Ok(cookies) => {
                         for cookie in cookies {
-                            pending.set(pending.get() + 1);
+                            completion.begin();
 
-                            let finish_one = finish_one.clone();
+                            let completion = completion.clone();
 
                             cookie_manager.delete_cookie(
                                 &cookie,
                                 None::<&webkit6::gio::Cancellable>,
                                 move |result| {
-                                    if let Err(error) = result {
+                                    if let Err(error) = &result {
                                         eprintln!("Failed to delete cookie: {error}");
-                                        finish_one(false);
-                                    } else {
-                                        finish_one(true);
                                     }
+
+                                    completion.finish(result.is_ok());
                                 },
                             );
                         }
 
-                        finish_one(true);
+                        completion.finish(true);
                     }
                     Err(error) => {
                         eprintln!("Failed to list cookies: {error}");
-                        finish_one(false);
+                        completion.finish(false);
                     }
                 },
             );
+        } else {
+            eprintln!("No cookie manager: cookies could not be cleared");
+            completion.fail();
         }
 
-        if let Some(data_manager) = self.network_session.website_data_manager()
-            && let Some(favicons) = data_manager.favicon_database()
-        {
-            favicons.clear();
-        }
+        if let Some(data_manager) = session.website_data_manager() {
+            if let Some(favicons) = data_manager.favicon_database() {
+                favicons.clear();
+            }
 
-        // Everything else the sites persisted: IndexedDB, local storage,
-        // DOM/ServiceWorker caches, … (cookies are deleted above).
-        if let Some(data_manager) = self.network_session.website_data_manager() {
-            pending.set(pending.get() + 1);
+            // Everything else the sites persisted: IndexedDB, local storage,
+            // DOM/ServiceWorker caches, … The HTTP disk cache directory is
+            // wiped only after WebKit finished, so the two never race.
+            completion.begin();
 
-            let finish_one = finish_one.clone();
+            let completion = completion.clone();
 
             crate::browser::engine::BrowserEngine::clear_website_data(
                 &data_manager,
                 webkit6::WebsiteDataTypes::ALL,
-                Some(Rc::new(move |ok| finish_one(ok))),
+                Some(Rc::new(move |ok| {
+                    let wiped =
+                        !wipe_disk_cache || wipe_dir(&crate::browser::engine::web_cache_dir());
+
+                    completion.finish(ok && wiped);
+                })),
             );
+        } else {
+            eprintln!("No website data manager: website data could not be cleared");
+            completion.fail();
         }
 
-        let cache = crate::browser::engine::web_cache_dir();
-
-        if cache.exists() {
-            if let Err(error) = fs::remove_dir_all(&cache) {
-                eprintln!("Failed to clear disk cache: {error}");
-                failed.set(true);
-            } else if let Err(error) = fs::create_dir_all(&cache) {
-                eprintln!("Failed to recreate cache directory: {error}");
-                failed.set(true);
-            }
-        }
-
-        // Fully synchronous path (no managers): report immediately.
-        if pending.get() == 0 {
-            if let Some(callback) = done.borrow_mut().take() {
-                callback(!failed.get());
-            }
-        }
+        // Release the setup token; reports now if everything already ended.
+        completion.finish(true);
     }
 
     pub fn set_language(&self, language: &str) {
@@ -463,5 +519,84 @@ impl AppState {
         self.save();
 
         self.notify_language_changed();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    type Log = Rc<RefCell<Vec<bool>>>;
+
+    fn recorder() -> (Log, DoneCallback) {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let sink = log.clone();
+
+        (log, Rc::new(move |ok| sink.borrow_mut().push(ok)))
+    }
+
+    #[test]
+    fn completion_reports_success_once_after_all_steps() {
+        let (log, callback) = recorder();
+        let completion = Completion::new(Some(callback));
+
+        completion.begin(); // setup token
+        completion.begin();
+        completion.begin();
+
+        completion.finish(true);
+        completion.finish(true);
+        assert!(log.borrow().is_empty(), "must wait for every step");
+
+        completion.finish(true); // releases the setup token
+        assert_eq!(*log.borrow(), vec![true]);
+
+        completion.begin();
+        completion.finish(true);
+        assert_eq!(log.borrow().len(), 1, "callback is one-shot");
+    }
+
+    #[test]
+    fn completion_reports_failure_if_any_step_fails() {
+        let (log, callback) = recorder();
+        let completion = Completion::new(Some(callback));
+
+        completion.begin();
+        completion.begin();
+        completion.fail(); // e.g. a missing WebsiteDataManager
+        completion.finish(true);
+        completion.finish(true);
+
+        assert_eq!(*log.borrow(), vec![false]);
+    }
+
+    #[test]
+    fn completion_with_only_the_setup_token_reports_success() {
+        let (log, callback) = recorder();
+        let completion = Completion::new(Some(callback));
+
+        completion.begin();
+        completion.finish(true);
+
+        assert_eq!(*log.borrow(), vec![true]);
+    }
+
+    #[test]
+    fn wipe_dir_empties_and_recreates() {
+        let dir = std::env::temp_dir().join("axys-wipe-dir-test");
+
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/file"), "x").unwrap();
+
+        assert!(wipe_dir(&dir));
+        assert!(dir.is_dir());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(wipe_dir(&dir), "missing dir counts as clean");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

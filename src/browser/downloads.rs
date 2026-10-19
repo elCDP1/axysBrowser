@@ -76,16 +76,15 @@ pub fn format_speed(bps: f64) -> String {
 type DownloadListener = Weak<dyn Fn()>;
 type DownloadListeners = Rc<RefCell<Vec<DownloadListener>>>;
 
-/// Tracks downloads started in any `NetworkSession` this manager watches
-/// (normal browsing and, separately, each private window's ephemeral
-/// session). Every download prompts the user for a destination via a
-/// native GTK save dialog (like "Save As" in Chromium), sends a desktop
-/// notification when it finishes, and can be cancelled mid-flight. Shared
-/// via `AppState`, so every open `axys://downloads` page and the toolbar's
-/// Per-window download tracking. Normal windows share the profile-wide
-/// manager (one list everywhere); each private window gets its own
-/// manager, so private downloads never appear in normal windows and die
-/// with the private window.
+/// Tracks downloads started in any `NetworkSession` this manager watches.
+/// Every download prompts the user for a destination via a native GTK save
+/// dialog (like "Save As" in Chromium), sends a desktop notification when
+/// it finishes, and can be cancelled mid-flight.
+///
+/// Per-window tracking: normal windows share the profile-wide manager (one
+/// list everywhere); each private window gets its own manager, so private
+/// downloads never appear in normal windows and die with the private
+/// window.
 #[derive(Clone)]
 pub struct DownloadManager {
     entries: Rc<RefCell<Vec<DownloadEntry>>>,
@@ -95,6 +94,8 @@ pub struct DownloadManager {
     /// Whether finished downloads pop a desktop notification (off in
     /// private windows: the filename would linger in the shell).
     announce: Rc<std::cell::Cell<bool>>,
+    /// True for a private window's own manager.
+    private: Rc<std::cell::Cell<bool>>,
 }
 
 impl DownloadManager {
@@ -105,12 +106,19 @@ impl DownloadManager {
             next_id: Rc::new(RefCell::new(1)),
             application,
             announce: Rc::new(std::cell::Cell::new(true)),
+            private: Rc::new(std::cell::Cell::new(false)),
         }
     }
 
-    /// Disables (or re-enables) the finished-download desktop toast.
-    pub fn set_announce(&self, enabled: bool) {
-        self.announce.set(enabled);
+    /// Marks this manager as a private window's: toasts are muted and the
+    /// downloads page shows the "files stay on disk" notice.
+    pub fn set_private(&self) {
+        self.private.set(true);
+        self.announce.set(false);
+    }
+
+    pub fn is_private(&self) -> bool {
+        self.private.get()
     }
 
     pub fn entries(&self) -> Vec<DownloadEntry> {
@@ -122,7 +130,10 @@ impl DownloadManager {
     /// alive itself (e.g. by attaching it to the page/toolbar widget) for
     /// as long as it wants updates.
     pub fn subscribe(&self, callback: &Rc<dyn Fn()>) {
-        self.listeners.borrow_mut().push(Rc::downgrade(callback));
+        let mut listeners = self.listeners.borrow_mut();
+
+        listeners.retain(|weak| weak.strong_count() > 0);
+        listeners.push(Rc::downgrade(callback));
     }
 
     fn notify(&self) {
@@ -180,7 +191,7 @@ impl DownloadManager {
 
             manager.entries.borrow_mut().push(DownloadEntry {
                 id,
-                filename: "Download".to_string(),
+                filename: rust_i18n::t!("downloads.untitled").to_string(),
                 path: PathBuf::new(),
                 progress: 0.0,
                 status: DownloadStatus::InProgress,
@@ -193,10 +204,12 @@ impl DownloadManager {
                 let manager = manager.clone();
 
                 download.connect_decide_destination(move |download, suggested_filename| {
-                    let default_name = if suggested_filename.trim().is_empty() {
-                        "download".to_string()
+                    let sanitized = sanitize_download_name(suggested_filename);
+
+                    let default_name = if sanitized.is_empty() {
+                        rust_i18n::t!("downloads.default_name").to_string()
                     } else {
-                        suggested_filename.to_string()
+                        sanitized
                     };
 
                     let dialog = gtk::FileDialog::builder()
@@ -314,14 +327,26 @@ impl DownloadManager {
                         return;
                     }
 
+                    // Process-wide counter: normal and private managers
+                    // restart their entry ids independently, so reusing the
+                    // entry id here would replace unrelated notifications.
+                    static NOTIFY_ID: std::sync::atomic::AtomicU64 =
+                        std::sync::atomic::AtomicU64::new(1);
+
+                    let tag = NOTIFY_ID.fetch_add(
+                        1,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+
                     let notification =
                         gio::Notification::new(&rust_i18n::t!("downloads.download_complete"));
 
                     notification.set_body(Some(&filename));
 
-                    manager
-                        .application
-                        .send_notification(Some(&format!("axys-download-{id}")), &notification);
+                    manager.application.send_notification(
+                        Some(&format!("axys-download-{tag}")),
+                        &notification,
+                    );
                 });
             }
 
@@ -383,9 +408,46 @@ impl DownloadManager {
     }
 }
 
+/// Sanitises a server-suggested filename before using it as the save
+/// dialog's initial name: strips directory components (a remote name can
+/// contain `../` or be an absolute path), control characters, and caps the
+/// length. Returns an empty string when nothing usable remains.
+fn sanitize_download_name(suggested: &str) -> String {
+    let base = Path::new(suggested)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(suggested);
+
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
+
+    let cleaned = cleaned.trim();
+
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        return String::new();
+    }
+
+    cleaned.chars().take(255).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn private_flag_defaults_off_and_mutes_toasts() {
+        let manager = DownloadManager::new(gtk::Application::new(
+            None::<&str>,
+            gtk::gio::ApplicationFlags::empty(),
+        ));
+
+        assert!(!manager.is_private());
+        assert!(manager.announce.get());
+
+        manager.set_private();
+
+        assert!(manager.is_private());
+        assert!(!manager.announce.get());
+    }
 
     #[test]
     fn formats_byte_counts() {
@@ -402,5 +464,37 @@ mod tests {
         assert_eq!(format_speed(-5.0), "");
         assert_eq!(format_speed(f64::INFINITY), "");
         assert_eq!(format_speed(1536.0), "1.5 KB/s");
+    }
+
+    #[test]
+    fn sanitize_name_keeps_plain_name() {
+        assert_eq!(sanitize_download_name("report.pdf"), "report.pdf");
+    }
+
+    #[test]
+    fn sanitize_name_strips_directories() {
+        assert_eq!(sanitize_download_name("/etc/passwd"), "passwd");
+        assert_eq!(sanitize_download_name("../../secret.txt"), "secret.txt");
+        assert_eq!(sanitize_download_name("a/b/c.png"), "c.png");
+    }
+
+    #[test]
+    fn sanitize_name_rejects_dot_entries() {
+        assert_eq!(sanitize_download_name("."), "");
+        assert_eq!(sanitize_download_name(".."), "");
+        assert_eq!(sanitize_download_name(""), "");
+        assert_eq!(sanitize_download_name("   "), "");
+    }
+
+    #[test]
+    fn sanitize_name_removes_control_characters() {
+        assert_eq!(sanitize_download_name("bad\u{0}name\n.txt"), "badname.txt");
+    }
+
+    #[test]
+    fn sanitize_name_caps_length() {
+        let long = "a".repeat(500);
+
+        assert_eq!(sanitize_download_name(&long).chars().count(), 255);
     }
 }

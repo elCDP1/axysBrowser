@@ -53,6 +53,9 @@ jobs:
       - name: Memory smoke under Xvfb
         run: xvfb-run -a bash .github/mem-smoke.sh
 
+      - name: Memory smoke under Xvfb (sandbox enabled)
+        run: xvfb-run -a bash .github/mem-smoke.sh strict
+
   audit:
     runs-on: ubuntu-24.04
 

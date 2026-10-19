@@ -18,6 +18,9 @@ pub struct FindBar {
     pub container: Box,
     entry: Entry,
     count: Label,
+    find_prev: Button,
+    find_next: Button,
+    find_close: Button,
     current_web_view: Rc<RefCell<Option<WebView>>>,
     hooked: Rc<RefCell<Vec<FindController>>>,
 }
@@ -37,20 +40,34 @@ fn ensure_hooked(
     let known = hooked.borrow().iter().any(|known| known == &find);
 
     if !known {
-        let count_ok = count.clone();
-        let entry_ok = entry.clone();
+        // Weak: these handlers live on the FindController, which `hooked`
+        // (reachable from the entry) keeps alive; holding `count`/`entry`
+        // strongly would form a cycle that leaks the controller (and the
+        // WebView it pins) for good.
+        let count_ok = count.downgrade();
+        let entry_ok = entry.downgrade();
 
         find.connect_found_text(move |_, matches| {
-            count_ok.set_text(&matches.to_string());
-            entry_ok.remove_css_class("error");
+            if let Some(count) = count_ok.upgrade() {
+                count.set_text(&matches.to_string());
+            }
+
+            if let Some(entry) = entry_ok.upgrade() {
+                entry.remove_css_class("error");
+            }
         });
 
-        let count_fail = count.clone();
-        let entry_fail = entry.clone();
+        let count_fail = count.downgrade();
+        let entry_fail = entry.downgrade();
 
         find.connect_failed_to_find_text(move |_| {
-            count_fail.set_text("0");
-            entry_fail.add_css_class("error");
+            if let Some(count) = count_fail.upgrade() {
+                count.set_text("0");
+            }
+
+            if let Some(entry) = entry_fail.upgrade() {
+                entry.add_css_class("error");
+            }
         });
 
         hooked.borrow_mut().push(find.clone());
@@ -59,26 +76,34 @@ fn ensure_hooked(
     Some(find)
 }
 
-fn search_current(bar: &FindBar, text: &str) {
-    let Some(view) = bar.current_web_view.borrow().as_ref().cloned() else {
+/// Runs a query against the active view. Takes the pieces instead of the
+/// whole bar so signal handlers can avoid capturing it and forming cycles.
+fn search_current(
+    current_web_view: &Rc<RefCell<Option<WebView>>>,
+    hooked: &Rc<RefCell<Vec<FindController>>>,
+    count: &Label,
+    entry: &Entry,
+    text: &str,
+) {
+    let Some(view) = current_web_view.borrow().as_ref().cloned() else {
         return;
     };
 
-    let Some(find) = ensure_hooked(&bar.hooked, &view, &bar.count, &bar.entry) else {
+    let Some(find) = ensure_hooked(hooked, &view, count, entry) else {
         return;
     };
 
     if text.is_empty() {
         find.search_finish();
-        bar.count.set_text("");
-        bar.entry.remove_css_class("error");
+        count.set_text("");
+        entry.remove_css_class("error");
         return;
     }
 
     find.search(text, FindOptions::WRAP_AROUND.bits(), 500);
 
     // The match count arrives async via found-text.
-    bar.entry.remove_css_class("error");
+    entry.remove_css_class("error");
 }
 
 impl FindBar {
@@ -124,16 +149,30 @@ impl FindBar {
             container,
             entry,
             count,
+            find_prev: prev.clone(),
+            find_next: next.clone(),
+            find_close: close.clone(),
             current_web_view,
             hooked: Rc::new(RefCell::new(Vec::new())),
         };
 
         {
-            let bar = bar.clone();
+            // No `bar` capture: the entry would then hold itself through the
+            // handler (a permanent leak). Keep the entry weak instead.
+            let current_web_view = bar.current_web_view.clone();
+            let hooked = bar.hooked.clone();
+            let count = bar.count.clone();
+            let entry_weak = bar.entry.downgrade();
             let changed_entry = bar.entry.clone();
 
-            changed_entry.connect_changed(move |entry| {
-                search_current(&bar, entry.text().as_str());
+            changed_entry.connect_changed(move |_| {
+                let Some(entry) = entry_weak.upgrade() else {
+                    return;
+                };
+
+                let text = entry.text().to_string();
+
+                search_current(&current_web_view, &hooked, &count, &entry, &text);
             });
         }
 
@@ -175,10 +214,22 @@ impl FindBar {
         }
 
         {
-            let bar = bar.clone();
+            // Weak container: `close` is a child of `bar.container`, so a
+            // strong capture would be `container -> close -> handler ->
+            // container`, leaking the bar (and its FindControllers) forever.
+            let container = bar.container.downgrade();
+            let current_web_view = bar.current_web_view.clone();
 
             close.connect_clicked(move |_| {
-                bar.hide();
+                if let Some(container) = container.upgrade() {
+                    container.set_visible(false);
+                }
+
+                if let Some(view) = current_web_view.borrow().as_ref()
+                    && let Some(find) = view.find_controller()
+                {
+                    find.search_finish();
+                }
             });
         }
 
@@ -225,11 +276,28 @@ impl FindBar {
         self.container.is_visible()
     }
 
-    /// Forgets every hooked controller. Call when a tab closes: controllers
-    /// hold their views alive, so keeping dead ones would leak whole tabs.
-    /// They are re-hooked lazily on the next search.
-    pub fn forget_hooks(&self) {
-        self.hooked.borrow_mut().clear();
+    /// Re-translates placeholder and tooltips (language change; the bar
+    /// itself is built once per window).
+    pub fn refresh_labels(&self) {
+        self.entry
+            .set_placeholder_text(Some(&rust_i18n::t!("find.title")));
+        self.find_prev
+            .set_tooltip_text(Some(&rust_i18n::t!("find.previous")));
+        self.find_next
+            .set_tooltip_text(Some(&rust_i18n::t!("find.next")));
+        self.find_close
+            .set_tooltip_text(Some(&rust_i18n::t!("find.close")));
+    }
+
+    /// Forgets the controller hooked for `view`. Call when *that* tab
+    /// closes: controllers hold their views alive, so keeping dead ones
+    /// would leak whole tabs. Only this view's controller is dropped — an
+    /// open find bar in another tab must keep updating. It is re-hooked
+    /// lazily on the next search.
+    pub fn forget_hook(&self, view: &WebView) {
+        if let Some(find) = view.find_controller() {
+            self.hooked.borrow_mut().retain(|known| known != &find);
+        }
     }
 
     /// Re-runs the current query in `view` (call on tab switch while open).
@@ -246,7 +314,7 @@ impl FindBar {
         }
 
         if ensure_hooked(&self.hooked, view, &self.count, &self.entry).is_some() {
-            search_current(self, &text);
+            search_current(&self.current_web_view, &self.hooked, &self.count, &self.entry, &text);
         }
     }
 }

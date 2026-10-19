@@ -1,6 +1,6 @@
 [package]
 name = "axysbrowser"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 rust-version = "1.92"
 description = "A lightweight, privacy-focused Linux web browser built with Rust, GTK4 and WebKitGTK"
@@ -14,3 +14,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 url = "2"
 rust-i18n = "4.2"
+
+[profile.release]
+strip = true
+lto = "thin"

@@ -73,7 +73,12 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
         .mode(0o700)
         .create(parent)?;
 
-    let temporary = path.with_extension("tmp");
+    // Unique per filename (not just per extension) and per process, so
+    // `foo.toml` and `foo.json` never share a temp file.
+    let temporary = match path.file_name().and_then(|name| name.to_str()) {
+        Some(name) => path.with_file_name(format!(".{name}.{}.tmp", std::process::id())),
+        None => path.with_extension("tmp"),
+    };
 
     {
         let mut file = fs::OpenOptions::new()
@@ -84,7 +89,20 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
             .open(&temporary)?;
 
         file.write_all(contents.as_bytes())?;
+
+        // Flush to disk before the rename: otherwise a crash right after
+        // the rename could leave the real file pointing at zero/partial
+        // contents, silently losing history/bookmarks/permissions.
+        file.sync_all()?;
     }
 
-    fs::rename(temporary, path)
+    fs::rename(&temporary, path)?;
+
+    // Best effort: also persist the directory entry (a failed directory
+    // fsync must not fail the save on filesystems that don't support it).
+    if let Ok(directory) = fs::File::open(parent) {
+        let _ = directory.sync_all();
+    }
+
+    Ok(())
 }
