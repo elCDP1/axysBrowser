@@ -314,7 +314,13 @@ impl FindBar {
         }
 
         if ensure_hooked(&self.hooked, view, &self.count, &self.entry).is_some() {
-            search_current(&self.current_web_view, &self.hooked, &self.count, &self.entry, &text);
+            search_current(
+                &self.current_web_view,
+                &self.hooked,
+                &self.count,
+                &self.entry,
+                &text,
+            );
         }
     }
 }

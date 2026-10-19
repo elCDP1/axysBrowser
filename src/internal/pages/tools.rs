@@ -9,8 +9,6 @@ use crate::browser::history::HistoryManager;
 /// it is invoked from here or from the hamburger menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToolAction {
-    ViewSource,
-    DevTools,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -156,34 +154,17 @@ pub fn build_tools(deps: ToolsDeps) -> ScrolledWindow {
         ToolAction::OpenBookmarks,
         &on_tool,
     ));
-    browser_row.append(&tool_button(
-        "tools.tasks",
-        ToolAction::OpenTasks,
-        &on_tool,
-    ));
+    browser_row.append(&tool_button("tools.tasks", ToolAction::OpenTasks, &on_tool));
 
     page.append(&browser_row);
 
     /*
-     * Page-scoped tools acting on the active tab.
+     * Zoom for the active tab's page. View source and the inspector are not
+     * listed here on purpose: this is a local `axys://` page, so those
+     * actions belong to the web content itself (hamburger menu and the
+     * WebView's right-click menu), not to a page about the browser.
      */
     page.append(&section_title("tools.page"));
-
-    let page_row = Box::new(Orientation::Horizontal, 8);
-
-    page_row.append(&tool_button(
-        "tools.view_source",
-        ToolAction::ViewSource,
-        &on_tool,
-    ));
-
-    page_row.append(&tool_button(
-        "tools.web_inspector",
-        ToolAction::DevTools,
-        &on_tool,
-    ));
-
-    page.append(&page_row);
 
     let zoom_row = Box::new(Orientation::Horizontal, 8);
 

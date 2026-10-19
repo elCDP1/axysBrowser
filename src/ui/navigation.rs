@@ -31,12 +31,7 @@ pub fn address_text_for(uri: &str) -> &str {
 /// forever. A page that already committed is never replaced (slow
 /// subresources are normal), and a watchdog from an older navigation
 /// (different serial or URI) never kills a newer load.
-pub fn begin_web_load(
-    tabs: &Rc<RefCell<Vec<Tab>>>,
-    id: usize,
-    web_view: &WebView,
-    target: &str,
-) {
+pub fn begin_web_load(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize, web_view: &WebView, target: &str) {
     let serial = {
         let mut tabs = tabs.borrow_mut();
 
@@ -62,9 +57,11 @@ pub fn begin_web_load(
                 return;
             };
 
-            let stuck = tabs.borrow().iter().find(|tab| tab.id == id).is_some_and(
-                |tab| tab.nav_serial == serial && !tab.committed && tab.uri == target,
-            );
+            let stuck = tabs
+                .borrow()
+                .iter()
+                .find(|tab| tab.id == id)
+                .is_some_and(|tab| tab.nav_serial == serial && !tab.committed && tab.uri == target);
 
             if stuck && view.is_loading() {
                 eprintln!("Load timed out: {target}");

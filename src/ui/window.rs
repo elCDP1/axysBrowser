@@ -1,13 +1,13 @@
 use gtk::prelude::*;
 use gtk::{
-    Application, ApplicationWindow, Box, Orientation, Stack,
-    StackTransitionType, gdk, gio, glib::Propagation, style_context_add_provider_for_display,
+    Application, ApplicationWindow, Box, Orientation, Stack, StackTransitionType, gdk, gio,
+    glib::Propagation, style_context_add_provider_for_display,
 };
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use webkit6::{LoadEvent, NetworkSession, WebView, prelude::WebViewExt};
+use webkit6::{ContextMenuItem, LoadEvent, NetworkSession, WebView, prelude::WebViewExt};
 
 use crate::app_state::AppState;
 use crate::browser::address::{SearchConfig, resolve_input};
@@ -227,9 +227,10 @@ fn build_browser_window(
         Rc::new(move || {
             let any_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
                 toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
-            }) || bookmark_bar_slot.borrow().as_ref().is_some_and(|bar| {
-                bar.overflow_panel.is_visible()
-            });
+            }) || bookmark_bar_slot
+                .borrow()
+                .as_ref()
+                .is_some_and(|bar| bar.overflow_panel.is_visible());
 
             catcher.set_visible(any_open);
         })
@@ -341,7 +342,9 @@ fn build_browser_window(
                     return;
                 }
 
-                let Some(new_tab) = new_tab_slot.upgrade().and_then(|slot| slot.borrow().clone())
+                let Some(new_tab) = new_tab_slot
+                    .upgrade()
+                    .and_then(|slot| slot.borrow().clone())
                 else {
                     return;
                 };
@@ -411,9 +414,10 @@ fn build_browser_window(
         })
     };
 
-    // Page-scoped tools work on the active tab when it holds a real page,
-    // and otherwise on the last web page that loaded in this window (so
-    // "View source" / zoom still do something useful from the Tools page).
+    // Page-scoped tools (view source, inspector, zoom) work on the active
+    // tab when it holds a real page, and otherwise on the last web page that
+    // loaded in this window. They are reachable from the hamburger menu and
+    // the WebView's right-click menu, not from the local Tools page.
     let target_view: Rc<dyn Fn() -> Option<WebView>> = {
         let current_web_view = current_web_view.clone();
         let last_web_view = last_web_view.clone();
@@ -425,7 +429,10 @@ fn build_browser_window(
                 return Some(view.clone());
             }
 
-            last_web_view.borrow().as_ref().and_then(|weak| weak.upgrade())
+            last_web_view
+                .borrow()
+                .as_ref()
+                .and_then(|weak| weak.upgrade())
         })
     };
 
@@ -471,8 +478,6 @@ fn build_browser_window(
             };
 
             let name = match action {
-                ToolAction::ViewSource => "win.view-source",
-                ToolAction::DevTools => "win.devtools",
                 ToolAction::ZoomIn => "win.zoom-in",
                 ToolAction::ZoomOut => "win.zoom-out",
                 ToolAction::ZoomReset => "win.zoom-reset",
@@ -934,6 +939,42 @@ fn build_browser_window(
                 permissions,
             );
 
+            // WebKit's default menu already contains the usual navigation,
+            // link/image and "Inspect Element" entries (the latter when
+            // developer extras are enabled). Append the Chromium-style
+            // "View page source" entry instead of replacing that menu.
+            {
+                let web_view_weak = web_view.downgrade();
+
+                web_view.connect_context_menu(move |_, menu, _hit_test| {
+                    let Some(web_view) = web_view_weak.upgrade() else {
+                        return false;
+                    };
+
+                    let action = gio::SimpleAction::new("view-source", None);
+
+                    {
+                        let web_view = web_view.downgrade();
+
+                        action.connect_activate(move |_, _| {
+                            if let Some(web_view) = web_view.upgrade() {
+                                let _ = web_view.activate_action("win.view-source", None);
+                            }
+                        });
+                    }
+
+                    menu.append(&ContextMenuItem::new_separator());
+                    menu.append(&ContextMenuItem::from_gaction(
+                        &action,
+                        &rust_i18n::t!("tools.view_source"),
+                        None,
+                    ));
+
+                    // false: let WebKit show its default menu with our item.
+                    false
+                });
+            }
+
             if private_mode
                 && let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view)
             {
@@ -1139,9 +1180,7 @@ fn build_browser_window(
                     // or control runs that would blow up the tab button.
                     let title = view
                         .title()
-                        .map(|title| {
-                            title.split_whitespace().collect::<Vec<_>>().join(" ")
-                        })
+                        .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
                         .filter(|title| !title.trim().is_empty())
                         .unwrap_or_else(|| {
                             if private_mode {
@@ -1403,17 +1442,12 @@ fn build_browser_window(
 
         let launcher = gtk::FileLauncher::new(Some(&file));
 
-        launcher.launch(
-            None::<&gtk::Window>,
-            gio::Cancellable::NONE,
-            |result| {
-                if let Err(error) = result {
-                    eprintln!("Could not open downloads folder: {error}");
-                }
-            },
-        );
+        launcher.launch(None::<&gtk::Window>, gio::Cancellable::NONE, |result| {
+            if let Err(error) = result {
+                eprintln!("Could not open downloads folder: {error}");
+            }
+        });
     });
-
 
     let reopen_closed_tab: Rc<dyn Fn()> = {
         let closed_tabs = closed_tabs.clone();
@@ -1550,10 +1584,7 @@ fn build_browser_window(
     content_overlay.add_overlay(&catcher);
 
     if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-        for panel in [
-            &toolbar.menu_panel.container,
-            &toolbar.downloads_panel,
-        ] {
+        for panel in [&toolbar.menu_panel.container, &toolbar.downloads_panel] {
             panel.set_halign(gtk::Align::End);
             panel.set_valign(gtk::Align::Start);
             panel.set_margin_top(4);
@@ -1606,11 +1637,7 @@ fn build_browser_window(
                 return false;
             };
 
-            if let Some(input) = text
-                .lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-            {
+            if let Some(input) = text.lines().map(str::trim).find(|line| !line.is_empty()) {
                 let Some(nav) = nav_urls.upgrade() else {
                     return false;
                 };
@@ -1628,10 +1655,8 @@ fn build_browser_window(
         let nav_files = Rc::downgrade(&navigate_tab);
         let id_files = active_id.clone();
 
-        let drop_files = gtk::DropTarget::new(
-            gtk::gio::File::static_type(),
-            gtk::gdk::DragAction::COPY,
-        );
+        let drop_files =
+            gtk::DropTarget::new(gtk::gio::File::static_type(), gtk::gdk::DragAction::COPY);
 
         drop_files.connect_drop(move |_, value, _, _| {
             let Ok(file) = value.get::<gtk::gio::File>() else {

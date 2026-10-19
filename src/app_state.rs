@@ -77,7 +77,9 @@ impl Completion {
 
         self.pending.set(left);
 
-        if left == 0 && let Some(callback) = self.done.borrow_mut().take() {
+        if left == 0
+            && let Some(callback) = self.done.borrow_mut().take()
+        {
             callback(!self.failed.get());
         }
     }
@@ -188,8 +190,7 @@ impl AppState {
 
         search.default_engine = settings.search_engine.clone();
 
-        let network_session =
-            BrowserEngine::create_network_session(settings.tracking_prevention);
+        let network_session = BrowserEngine::create_network_session(settings.tracking_prevention);
 
         /*
          * WebKit does not persist cookies automatically.
@@ -439,36 +440,38 @@ impl AppState {
 
             let completion = completion.clone();
 
-            cookie_manager.clone().all_cookies(
-                None::<&webkit6::gio::Cancellable>,
-                move |result| match result {
-                    Ok(cookies) => {
-                        for cookie in cookies {
-                            completion.begin();
+            cookie_manager
+                .clone()
+                .all_cookies(
+                    None::<&webkit6::gio::Cancellable>,
+                    move |result| match result {
+                        Ok(cookies) => {
+                            for cookie in cookies {
+                                completion.begin();
 
-                            let completion = completion.clone();
+                                let completion = completion.clone();
 
-                            cookie_manager.delete_cookie(
-                                &cookie,
-                                None::<&webkit6::gio::Cancellable>,
-                                move |result| {
-                                    if let Err(error) = &result {
-                                        eprintln!("Failed to delete cookie: {error}");
-                                    }
+                                cookie_manager.delete_cookie(
+                                    &cookie,
+                                    None::<&webkit6::gio::Cancellable>,
+                                    move |result| {
+                                        if let Err(error) = &result {
+                                            eprintln!("Failed to delete cookie: {error}");
+                                        }
 
-                                    completion.finish(result.is_ok());
-                                },
-                            );
+                                        completion.finish(result.is_ok());
+                                    },
+                                );
+                            }
+
+                            completion.finish(true);
                         }
-
-                        completion.finish(true);
-                    }
-                    Err(error) => {
-                        eprintln!("Failed to list cookies: {error}");
-                        completion.finish(false);
-                    }
-                },
-            );
+                        Err(error) => {
+                            eprintln!("Failed to list cookies: {error}");
+                            completion.finish(false);
+                        }
+                    },
+                );
         } else {
             eprintln!("No cookie manager: cookies could not be cleared");
             completion.fail();
@@ -598,5 +601,45 @@ mod tests {
         assert!(wipe_dir(&dir), "missing dir counts as clean");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn user_settings_defaults_are_stable() {
+        let settings = UserSettings::default();
+
+        assert!(settings.dark_mode);
+        assert_eq!(settings.search_engine, "brave");
+        assert!(settings.developer_tools);
+        assert!(settings.hardware_acceleration);
+        assert!(settings.tracking_prevention);
+        assert_eq!(settings.cookie_policy, "no-third-party");
+        assert_eq!(settings.language, "en");
+    }
+
+    #[test]
+    fn partial_settings_file_fills_in_defaults() {
+        let settings: UserSettings =
+            toml::from_str("dark_mode = false\nlanguage = \"es-ES\"").unwrap();
+
+        assert!(!settings.dark_mode);
+        assert_eq!(settings.language, "es-ES");
+
+        // Anything omitted must come from the defaults, not from `false`/"".
+        assert!(settings.developer_tools);
+        assert!(settings.hardware_acceleration);
+        assert!(settings.tracking_prevention);
+        assert_eq!(settings.search_engine, "brave");
+        assert_eq!(settings.cookie_policy, "no-third-party");
+    }
+
+    #[test]
+    fn empty_settings_file_is_all_defaults() {
+        let settings: UserSettings = toml::from_str("").unwrap();
+        let defaults = UserSettings::default();
+
+        assert_eq!(settings.dark_mode, defaults.dark_mode);
+        assert_eq!(settings.search_engine, defaults.search_engine);
+        assert_eq!(settings.cookie_policy, defaults.cookie_policy);
+        assert_eq!(settings.language, defaults.language);
     }
 }

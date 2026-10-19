@@ -1,10 +1,16 @@
 [package]
 name = "axysbrowser"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2024"
 rust-version = "1.92"
 description = "A lightweight, privacy-focused Linux web browser built with Rust, GTK4 and WebKitGTK"
 license-file = "LICENSE"
+readme = "README.md"
+repository = "https://github.com/elCDP1/axysBrowser"
+homepage = "https://github.com/elCDP1/axysBrowser"
+authors = ["elCDP1"]
+keywords = ["browser", "gtk4", "webkitgtk", "privacy", "linux"]
+categories = ["gui"]
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
@@ -18,3 +24,4 @@ rust-i18n = "4.2"
 [profile.release]
 strip = true
 lto = "thin"
+codegen-units = 1

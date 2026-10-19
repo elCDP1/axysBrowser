@@ -49,9 +49,7 @@ impl PermissionKind {
             || lower.contains("microphone")
         {
             Self::Media
-        } else if lower.contains("display")
-            || lower.contains("screen")
-            || lower.contains("capture")
+        } else if lower.contains("display") || lower.contains("screen") || lower.contains("capture")
         {
             Self::ScreenShare
         } else if lower.contains("mediakey") || lower.contains("keysystem") || lower.contains("drm")
@@ -352,7 +350,12 @@ mod tests {
         );
         // Other request types are unaffected by the flags.
         assert_eq!(
-            PermissionKind::classify_request("WebKitGeolocationPermissionRequest", true, true, true),
+            PermissionKind::classify_request(
+                "WebKitGeolocationPermissionRequest",
+                true,
+                true,
+                true
+            ),
             PermissionKind::Geolocation
         );
     }
@@ -417,7 +420,10 @@ mod tests {
     fn ephemeral_manager_remembers_in_memory_only() {
         let manager = PermissionManager::ephemeral();
 
-        assert_eq!(manager.remembered("example.com", PermissionKind::Media), None);
+        assert_eq!(
+            manager.remembered("example.com", PermissionKind::Media),
+            None
+        );
 
         manager.remember("example.com", PermissionKind::Media, true);
 
@@ -461,5 +467,99 @@ mod tests {
         assert_eq!(kinds.get("media"), None);
         assert_eq!(kinds.get("camera"), Some(&true));
         assert_eq!(kinds.get("microphone"), Some(&true));
+    }
+
+    #[test]
+    fn classifies_capture_drm_and_pointer_lock() {
+        assert_eq!(
+            PermissionKind::classify("WebKitScreenCapturePermissionRequest"),
+            PermissionKind::ScreenShare
+        );
+        assert_eq!(
+            PermissionKind::classify("WebKitDisplayCapturePermissionRequest"),
+            PermissionKind::ScreenShare
+        );
+        assert_eq!(
+            PermissionKind::classify("WebKitMediaKeySystemPermissionRequest"),
+            PermissionKind::Drm
+        );
+        assert_eq!(
+            PermissionKind::classify("WebKitPointerLockPermissionRequest"),
+            PermissionKind::PointerLock
+        );
+    }
+
+    #[test]
+    fn promptable_kinds_are_exactly_the_sensitive_ones() {
+        for kind in [
+            PermissionKind::Notification,
+            PermissionKind::Geolocation,
+            PermissionKind::Camera,
+            PermissionKind::Microphone,
+            PermissionKind::Media,
+            PermissionKind::ScreenShare,
+            PermissionKind::Drm,
+        ] {
+            assert!(kind.needs_prompt(), "{kind:?}");
+        }
+
+        assert!(!PermissionKind::PointerLock.needs_prompt());
+        assert!(!PermissionKind::Other.needs_prompt());
+    }
+
+    #[test]
+    fn every_kind_has_a_unique_label_key() {
+        let kinds = [
+            PermissionKind::Notification,
+            PermissionKind::Geolocation,
+            PermissionKind::Camera,
+            PermissionKind::Microphone,
+            PermissionKind::Media,
+            PermissionKind::ScreenShare,
+            PermissionKind::Drm,
+            PermissionKind::PointerLock,
+            PermissionKind::Other,
+        ];
+
+        let mut keys: Vec<&str> = kinds.iter().map(|kind| kind.label_key()).collect();
+
+        keys.sort_unstable();
+        keys.dedup();
+
+        assert_eq!(keys.len(), kinds.len(), "label keys must be unique");
+        assert!(kinds.iter().all(|kind| !kind.label_key().is_empty()));
+    }
+
+    #[test]
+    fn generic_origin_is_never_recorded_or_consulted() {
+        let manager = PermissionManager::ephemeral();
+
+        manager.remember(GENERIC_ORIGIN, PermissionKind::Notification, true);
+
+        assert_eq!(manager.decision_count(), 0);
+        assert_eq!(
+            manager.remembered(GENERIC_ORIGIN, PermissionKind::Notification),
+            None
+        );
+    }
+
+    #[test]
+    fn combined_media_needs_camera_and_microphone_to_agree() {
+        let origin = "https://meet.example:8443";
+
+        let manager = PermissionManager::ephemeral();
+
+        manager.remember(origin, PermissionKind::Camera, true);
+        manager.remember(origin, PermissionKind::Microphone, false);
+
+        assert_eq!(manager.remembered(origin, PermissionKind::Media), None);
+        assert_eq!(
+            manager.remembered(origin, PermissionKind::Camera),
+            Some(true)
+        );
+        assert_eq!(
+            manager.remembered(origin, PermissionKind::Microphone),
+            Some(false)
+        );
     }
 }

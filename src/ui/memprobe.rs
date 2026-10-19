@@ -184,11 +184,31 @@ mod tests {
     #[test]
     fn tree_includes_root_and_all_descendants_only() {
         let table = vec![
-            Proc { pid: 1, ppid: 0, comm: "init".into() },
-            Proc { pid: 10, ppid: 1, comm: "axysbrowser".into() },
-            Proc { pid: 11, ppid: 10, comm: "bwrap".into() },
-            Proc { pid: 12, ppid: 11, comm: "WebKitWebProces".into() },
-            Proc { pid: 20, ppid: 1, comm: "other".into() },
+            Proc {
+                pid: 1,
+                ppid: 0,
+                comm: "init".into(),
+            },
+            Proc {
+                pid: 10,
+                ppid: 1,
+                comm: "axysbrowser".into(),
+            },
+            Proc {
+                pid: 11,
+                ppid: 10,
+                comm: "bwrap".into(),
+            },
+            Proc {
+                pid: 12,
+                ppid: 11,
+                comm: "WebKitWebProces".into(),
+            },
+            Proc {
+                pid: 20,
+                ppid: 1,
+                comm: "other".into(),
+            },
         ];
 
         let pids: Vec<u32> = tree_of(&table, 10).iter().map(|p| p.pid).collect();

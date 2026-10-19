@@ -1,16 +1,34 @@
 # axysBrowser
 
+[![CI](https://github.com/elCDP1/axysBrowser/actions/workflows/ci.yml/badge.svg)](https://github.com/elCDP1/axysBrowser/actions/workflows/ci.yml)
+![Rust](https://img.shields.io/badge/rust-1.92%2B-orange)
+![Platform](https://img.shields.io/badge/platform-Linux-blue)
+[![License](https://img.shields.io/badge/license-AXYS%20Attribution%201.0-lightgrey)](LICENSE)
+
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
 > Status: `1.0.4`. Linux only (a Windows build is experimental and not working yet).
 
+## Contents
+
+- [Features](#features)
+- [Build](#build)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [Project structure](#project-structure)
+- [Data locations](#data-locations)
+- [Testing](#testing)
+- [Troubleshooting (WSL)](#troubleshooting-wsl)
+- [Contributing](#contributing)
+- [License](#license)
+
 ## Features
 
 - Tabs, bookmarks bar, history (with age-based cleanup), downloads manager
 - Tools page: bookmarks manager (`axys://bookmarks`), task manager
-  (open tabs + browser memory), view page source, Web Inspector, zoom
-  controls and "open downloads folder"
+  (open tabs + browser memory), zoom controls and "open downloads folder"
+- Right-click menu on web content: WebKit's standard actions plus
+  "View page source" (and "Inspect Element" when developer tools are on)
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
 - Private downloads keep a separate list that dies with the window (files stay on disk, like other browsers)
 - Per-site permissions (notifications, camera, mic, location) with allow/block prompts
@@ -67,6 +85,28 @@ xdg-settings set default-web-browser axysbrowser.desktop
 | Ctrl+D | Bookmark page |
 | Ctrl+H / Ctrl+J | History / downloads |
 
+## Project structure
+
+```
+src/
+  main.rs            entry point (exit code from the GTK application)
+  app.rs             GtkApplication wiring, CLI / HANDLES_OPEN
+  app_state.rs       shared, thread-safe application state
+  config.rs          settings load/save
+  paths.rs           XDG directories, atomic file writes
+  theme.rs           CSS
+  browser/           engine, tabs, history, bookmarks, downloads, permissions
+  internal/
+    pages/           built-in pages (newtab, history, downloads, bookmarks,
+                     settings, tasks, tools, welcome)
+    router.rs        axys:// scheme routing
+  ui/                window, toolbar, menus, shortcuts, find bar, smokes
+locales/             en / es translations
+config/              default settings
+assets/              desktop entry
+.github/             CI workflows and Xvfb smoke scripts
+```
+
 ## Data locations
 
 Settings, bookmarks and history live in `$XDG_CONFIG_HOME/axysbrowser`
@@ -77,6 +117,7 @@ caches in `~/.cache/axysbrowser`.
 
 ```sh
 cargo test --locked                      # unit tests
+cargo fmt --all --check                  # formatting
 cargo clippy --locked --all-targets -- -D warnings
 xvfb-run -a bash .github/gui-smoke.sh    # startup under Xvfb
 xvfb-run -a bash .github/mem-smoke.sh    # open/close tabs, assert WebViews free
@@ -94,6 +135,13 @@ Fractional Windows display scaling (125 %, 150 %) can clip 1–2 px rows of
 text and misplace popup menus through the WSLg link. If that happens,
 either switch Windows to 100 % scaling or live with it — the browser
 cannot work around the compositor from inside.
+
+## Contributing
+
+Issues and pull requests are welcome. Before opening a PR, please make
+sure it passes the checks in [Testing](#testing) (formatting, unit tests
+and clippy with `-D warnings`). See [CONTRIBUTING.md](CONTRIBUTING.md) for
+details.
 
 ## License
 

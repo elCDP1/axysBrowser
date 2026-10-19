@@ -121,7 +121,14 @@ impl HistoryManager {
         let query = query.trim().to_ascii_lowercase();
 
         if query.is_empty() {
-            return self.entries.borrow().iter().rev().take(limit).cloned().collect();
+            return self
+                .entries
+                .borrow()
+                .iter()
+                .rev()
+                .take(limit)
+                .cloned()
+                .collect();
         }
 
         self.entries
@@ -292,8 +299,14 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
 
-        manager.entries.borrow_mut().push(entry_at("https://old.example", now - 100_000));
-        manager.entries.borrow_mut().push(entry_at("https://new.example", now - 10));
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://old.example", now - 100_000));
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://new.example", now - 10));
 
         let removed = manager.remove_older_than(3_600);
 
@@ -309,8 +322,14 @@ mod tests {
     fn clear_empties_everything() {
         let manager = test_manager("clear");
 
-        manager.entries.borrow_mut().push(entry_at("https://a.example", 1));
-        manager.entries.borrow_mut().push(entry_at("https://b.example", 2));
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://a.example", 1));
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://b.example", 2));
 
         assert!(manager.clear().is_ok());
 

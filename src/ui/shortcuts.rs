@@ -98,10 +98,7 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                                 // Same toggle as the menu item: entering
                                 // private mode, or leaving it when active.
                                 if private_mode {
-                                    build_window(
-                                        &app_for_shortcuts,
-                                        state_for_shortcuts.clone(),
-                                    );
+                                    build_window(&app_for_shortcuts, state_for_shortcuts.clone());
 
                                     if let Some(window) = window_weak.upgrade() {
                                         window.close();
@@ -225,10 +222,7 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                                     None::<&gio::Cancellable>,
                                     move |result| {
                                         if let Ok(file) = result {
-                                            navigate_tab(
-                                                active_id.get(),
-                                                file.uri().to_string(),
-                                            );
+                                            navigate_tab(active_id.get(), file.uri().to_string());
                                         }
                                     },
                                 );
@@ -394,9 +388,10 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
             if key == gdk::Key::Escape {
                 let panels_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
                     toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
-                }) || bookmark_bar_slot.borrow().as_ref().is_some_and(|bar| {
-                    bar.overflow_panel.is_visible()
-                });
+                }) || bookmark_bar_slot
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|bar| bar.overflow_panel.is_visible());
 
                 if panels_open {
                     if let Some(toolbar) = toolbar_slot.borrow().as_ref() {

@@ -106,3 +106,71 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_dir(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("axys-paths-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn atomic_write_creates_parent_and_uses_owner_only_modes() {
+        let dir = unique_dir("create");
+        let _ = fs::remove_dir_all(&dir);
+
+        let path = dir.join("nested").join("settings.toml");
+
+        atomic_write(&path, "hello").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+
+        let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(file_mode, 0o600, "data files must not be world-readable");
+
+        let dir_mode = fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(dir_mode, 0o700);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_overwrites_and_leaves_no_temp_file() {
+        let dir = unique_dir("overwrite");
+        let _ = fs::remove_dir_all(&dir);
+
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("data.toml");
+
+        fs::write(&path, "old").unwrap();
+
+        atomic_write(&path, "new").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new");
+
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_rejects_paths_without_a_parent() {
+        assert!(atomic_write(Path::new(""), "x").is_err());
+    }
+}

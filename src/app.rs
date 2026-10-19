@@ -102,8 +102,8 @@ pub fn run() -> gtk::glib::ExitCode {
                 // as a bare word resolved `axys://tasks` to a bogus URL.
                 let is_internal = uri.to_ascii_lowercase().starts_with("axys://");
 
-                let is_existing_file = uri.starts_with("file://")
-                    && file.query_exists(None::<&gtk::gio::Cancellable>);
+                let is_existing_file =
+                    uri.starts_with("file://") && file.query_exists(None::<&gtk::gio::Cancellable>);
 
                 let target = if is_web || is_internal || is_existing_file {
                     Some(uri)

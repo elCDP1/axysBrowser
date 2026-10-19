@@ -189,7 +189,10 @@ async fn run(ctx: SmokeContext, url: String) {
     // window's WebViews survived; this checks they are really freed.
     let window_ids: Vec<usize> = (0..2).map(|_| (ctx.new_tab)(Some(&url))).collect();
 
-    wait_until(LOAD_TIMEOUT, || loaded_count(&ctx.tabs, &window_ids) == window_ids.len()).await;
+    wait_until(LOAD_TIMEOUT, || {
+        loaded_count(&ctx.tabs, &window_ids) == window_ids.len()
+    })
+    .await;
 
     let window_loaded = loaded_count(&ctx.tabs, &window_ids);
 
@@ -204,7 +207,10 @@ async fn run(ctx: SmokeContext, url: String) {
 
     (ctx.close_window)();
 
-    wait_until(EXIT_TIMEOUT, || freed_count(&window_weaks) == window_weaks.len()).await;
+    wait_until(EXIT_TIMEOUT, || {
+        freed_count(&window_weaks) == window_weaks.len()
+    })
+    .await;
 
     let window_freed = freed_count(&window_weaks);
 

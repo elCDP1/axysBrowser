@@ -22,11 +22,7 @@ fn favicon(bookmark: &Bookmark) -> Image {
     image
 }
 
-fn build_row(
-    bookmark: &Bookmark,
-    manager: &BookmarkManager,
-    on_open: &Rc<dyn Fn(String)>,
-) -> Box {
+fn build_row(bookmark: &Bookmark, manager: &BookmarkManager, on_open: &Rc<dyn Fn(String)>) -> Box {
     let row = Box::new(Orientation::Horizontal, 10);
 
     row.set_hexpand(true);

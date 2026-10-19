@@ -7,9 +7,9 @@ use crate::browser::history::HistoryManager;
 
 use super::pages::{
     about::build_about, bookmarks::build_bookmarks, downloads::build_downloads,
-    history::build_history, newtab::build_newtab, privacy::build_privacy,
-    settings::build_settings, tasks::build_tasks, tasks::TabRow, tasks::TaskDeps,
-    tools::build_tools, tools::ToolAction, tools::ToolsDeps, welcome::build_welcome,
+    history::build_history, newtab::build_newtab, privacy::build_privacy, settings::build_settings,
+    tasks::TabRow, tasks::TaskDeps, tasks::build_tasks, tools::ToolAction, tools::ToolsDeps,
+    tools::build_tools, welcome::build_welcome,
 };
 
 pub fn page_name(uri: &str) -> Option<&'static str> {
@@ -90,9 +90,7 @@ pub fn route(
 
         "axys://about" => Some(build_about().upcast()),
 
-        "axys://settings" => {
-            Some(build_settings(state, on_clear_browsing_data).upcast())
-        }
+        "axys://settings" => Some(build_settings(state, on_clear_browsing_data).upcast()),
 
         "axys://tools" => Some(
             build_tools(ToolsDeps {
@@ -118,10 +116,60 @@ pub fn route(
 
         "axys://history" => Some(build_history(history, on_search).upcast()),
 
-        "axys://bookmarks" => {
-            Some(build_bookmarks(state.bookmarks.clone(), on_search).upcast())
-        }
+        "axys://bookmarks" => Some(build_bookmarks(state.bookmarks.clone(), on_search).upcast()),
 
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PAGES: [(&str, &str); 10] = [
+        ("axys://", "newtab"),
+        ("axys://newtab", "newtab"),
+        ("axys://welcome", "welcome"),
+        ("axys://privacy", "privacy"),
+        ("axys://about", "about"),
+        ("axys://settings", "settings"),
+        ("axys://tools", "tools"),
+        ("axys://downloads", "downloads"),
+        ("axys://history", "history"),
+        ("axys://tasks", "tasks"),
+    ];
+
+    #[test]
+    fn maps_every_known_internal_page() {
+        for (uri, name) in PAGES {
+            assert_eq!(page_name(uri), Some(name), "{uri}");
+        }
+
+        assert_eq!(page_name("axys://bookmarks"), Some("bookmarks"));
+    }
+
+    #[test]
+    fn rejects_unknown_and_external_uris() {
+        for uri in [
+            "axys://nope",
+            "axys://tasks/",
+            "AXYS://tasks",
+            "https://example.com",
+            "file:///tmp/page.html",
+            "",
+        ] {
+            assert_eq!(page_name(uri), None, "{uri}");
+        }
+    }
+
+    #[test]
+    fn every_internal_page_has_a_non_empty_title() {
+        for (uri, _) in PAGES {
+            let title = page_title(uri);
+            assert!(!title.trim().is_empty(), "{uri}");
+        }
+
+        // Unknown internal pages fall back to the new-tab title.
+        assert_eq!(page_title("axys://nope"), page_title("axys://"));
     }
 }

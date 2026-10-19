@@ -107,7 +107,10 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
         ("zoom-in", actions.zoom_in.clone()),
         ("zoom-out", actions.zoom_out.clone()),
         ("zoom-reset", actions.zoom_reset.clone()),
-        ("open-downloads-folder", actions.open_downloads_folder.clone()),
+        (
+            "open-downloads-folder",
+            actions.open_downloads_folder.clone(),
+        ),
     ] {
         let action = gio::SimpleAction::new(name, None);
 

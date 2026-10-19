@@ -55,10 +55,7 @@ fn stat(label: &str) -> (Box, Label) {
     (column, value)
 }
 
-fn build_tab_list(
-    rows: &[TabRow],
-    on_close_tab: &Rc<dyn Fn(usize)>,
-) -> Box {
+fn build_tab_list(rows: &[TabRow], on_close_tab: &Rc<dyn Fn(usize)>) -> Box {
     let list = Box::new(Orientation::Vertical, 6);
 
     list.set_hexpand(true);
@@ -150,8 +147,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
 
     let (memory_column, memory_value) = stat(&rust_i18n::t!("tools.tasks_memory"));
 
-    let (process_column, process_value) =
-        stat(&rust_i18n::t!("tools.tasks_processes"));
+    let (process_column, process_value) = stat(&rust_i18n::t!("tools.tasks_processes"));
 
     stats.append(&memory_column);
     stats.append(&process_column);

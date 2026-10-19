@@ -333,20 +333,16 @@ impl DownloadManager {
                     static NOTIFY_ID: std::sync::atomic::AtomicU64 =
                         std::sync::atomic::AtomicU64::new(1);
 
-                    let tag = NOTIFY_ID.fetch_add(
-                        1,
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                    let tag = NOTIFY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
                     let notification =
                         gio::Notification::new(&rust_i18n::t!("downloads.download_complete"));
 
                     notification.set_body(Some(&filename));
 
-                    manager.application.send_notification(
-                        Some(&format!("axys-download-{tag}")),
-                        &notification,
-                    );
+                    manager
+                        .application
+                        .send_notification(Some(&format!("axys-download-{tag}")), &notification);
                 });
             }
 
@@ -496,5 +492,23 @@ mod tests {
         let long = "a".repeat(500);
 
         assert_eq!(sanitize_download_name(&long).chars().count(), 255);
+    }
+
+    #[test]
+    fn sanitize_name_keeps_unicode_and_spaces() {
+        assert_eq!(
+            sanitize_download_name("évidence — café.txt"),
+            "évidence — café.txt"
+        );
+    }
+
+    #[test]
+    fn formats_byte_counts_at_unit_boundaries() {
+        assert_eq!(format_bytes(1023), "1023 B");
+        assert_eq!(format_bytes(1024), "1.0 KB");
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
+        assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1024.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GB");
     }
 }

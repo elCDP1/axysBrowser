@@ -36,8 +36,10 @@ pub struct BookmarkManager {
 
 impl BookmarkManager {
     pub fn load() -> Self {
-        let path = Self::storage_path();
+        Self::load_from(Self::storage_path())
+    }
 
+    fn load_from(path: PathBuf) -> Self {
         let bookmarks = fs::read_to_string(&path)
             .ok()
             .and_then(|contents| {
@@ -167,9 +169,13 @@ impl BookmarkManager {
         };
 
         // Reject when the target URL already belongs to another bookmark.
-        if self.bookmarks.borrow().iter().enumerate().any(|(i, bookmark)| {
-            i != index && Self::same_url(&bookmark.url, &new_url)
-        }) {
+        if self
+            .bookmarks
+            .borrow()
+            .iter()
+            .enumerate()
+            .any(|(i, bookmark)| i != index && Self::same_url(&bookmark.url, &new_url))
+        {
             return false;
         }
 
@@ -338,6 +344,24 @@ fn sanitize_title(title: String, url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::BookmarkManager;
+    use std::cell::RefCell;
+    use std::fs;
+    use std::rc::Rc;
+
+    fn test_manager(name: &str) -> BookmarkManager {
+        let path = std::env::temp_dir().join(format!(
+            "axys-bookmarks-test-{}-{name}.toml",
+            std::process::id()
+        ));
+
+        let _ = fs::remove_file(&path);
+
+        BookmarkManager {
+            bookmarks: Rc::new(RefCell::new(Vec::new())),
+            path,
+            listeners: Rc::new(RefCell::new(Vec::new())),
+        }
+    }
 
     #[test]
     fn same_url_ignores_one_trailing_slash() {
@@ -374,5 +398,103 @@ mod tests {
     #[test]
     fn same_url_distinguishes_different_urls() {
         assert!(!BookmarkManager::same_url("https://a.com", "https://b.com"));
+    }
+
+    #[test]
+    fn add_rejects_non_web_urls() {
+        let manager = test_manager("reject");
+
+        for url in [
+            "file:///etc/passwd",
+            "axys://newtab",
+            "ftp://example.com/x",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                !manager.add_with_favicon("title", url, None),
+                "{url} must not be bookmarkable"
+            );
+        }
+
+        assert!(manager.entries().is_empty());
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn add_deduplicates_after_normalization_and_persists() {
+        let manager = test_manager("dedupe");
+
+        assert!(manager.add_with_favicon("Example", "https://example.com", None));
+
+        // Same URL modulo trailing slash and case: rejected, not duplicated.
+        assert!(!manager.add_with_favicon("Again", "HTTPS://Example.com/", None));
+
+        assert_eq!(manager.entries().len(), 1);
+
+        // The bookmark was written to disk and can be loaded back.
+        let reloaded = BookmarkManager::load_from(manager.path.clone());
+
+        assert_eq!(reloaded.entries().len(), 1);
+        assert_eq!(reloaded.entries()[0].title, "Example");
+        assert_eq!(reloaded.entries()[0].url, "https://example.com");
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn add_falls_back_to_the_url_when_the_title_is_blank() {
+        let manager = test_manager("title");
+
+        assert!(manager.add_with_favicon("   ", "https://example.com/page", None));
+
+        assert_eq!(manager.entries()[0].title, "https://example.com/page");
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn update_moves_the_url_and_rejects_collisions() {
+        let manager = test_manager("update");
+
+        manager.add_with_favicon("A", "https://a.example/x", None);
+        manager.add_with_favicon("B", "https://b.example/y", None);
+
+        assert!(manager.update_with_favicon(
+            "https://a.example/x",
+            "A2",
+            "https://a.example/z",
+            None
+        ));
+
+        assert!(manager.get("https://a.example/z").is_some());
+        assert!(manager.get("https://a.example/x").is_none());
+
+        // Moving B onto A2's URL would create a duplicate: rejected, and
+        // B stays where it was.
+        assert!(!manager.update_with_favicon(
+            "https://b.example/y",
+            "B",
+            "https://a.example/z",
+            None
+        ));
+
+        assert!(manager.get("https://b.example/y").is_some());
+        assert_eq!(manager.entries().len(), 2);
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn remove_matches_after_normalization() {
+        let manager = test_manager("remove");
+
+        manager.add_with_favicon("A", "https://a.example/", None);
+
+        assert!(manager.remove("HTTPS://A.example"));
+        assert!(!manager.contains("https://a.example/"));
+        assert!(manager.entries().is_empty());
+
+        let _ = fs::remove_file(&manager.path);
     }
 }

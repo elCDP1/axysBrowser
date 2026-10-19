@@ -65,9 +65,7 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return lower;
     }
 
-    if lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("file://")
+    if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("file://")
     {
         // Normalise only the scheme to lower case: `HTTPS://x` would
         // otherwise be dropped by the navigation guard, which is
@@ -78,7 +76,11 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return format!("{}{}", &lower[..scheme_len], &input[scheme_len..]);
     }
 
-    if !input.contains(' ') && (lower == "localhost" || lower.starts_with("localhost:") || lower.starts_with("localhost/")) {
+    if !input.contains(' ')
+        && (lower == "localhost"
+            || lower.starts_with("localhost:")
+            || lower.starts_with("localhost/"))
+    {
         return format!("http://{input}");
     }
 
@@ -229,10 +231,7 @@ mod tests {
     fn resolves_ipv4_over_http() {
         let config = load_config();
 
-        assert_eq!(
-            resolve_input("192.168.1.1", &config),
-            "http://192.168.1.1"
-        );
+        assert_eq!(resolve_input("192.168.1.1", &config), "http://192.168.1.1");
         assert_eq!(
             resolve_input("127.0.0.1:8080", &config),
             "http://127.0.0.1:8080"

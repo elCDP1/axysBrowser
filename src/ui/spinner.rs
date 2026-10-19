@@ -6,8 +6,8 @@
 //! This spinner advances on a plain main-loop timeout, so it rotates
 //! whenever the UI thread itself is alive.
 
-use gtk::prelude::*;
 use gtk::DrawingArea;
+use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::f64::consts::PI;
 use std::rc::Rc;

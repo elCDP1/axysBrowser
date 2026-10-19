@@ -101,19 +101,15 @@ pub fn build_settings(
         .position(|(id, _)| *id == state.settings.borrow().search_engine)
         .unwrap_or(0);
 
-    let (search, search_options) = build_inline_picker(
-        engine_names,
-        selected,
-        {
-            let state = state.clone();
+    let (search, search_options) = build_inline_picker(engine_names, selected, {
+        let state = state.clone();
 
-            Rc::new(move |picked| {
-                if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
-                    state.set_search_engine(id);
-                }
-            })
-        },
-    );
+        Rc::new(move |picked| {
+            if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
+                state.set_search_engine(id);
+            }
+        })
+    });
 
     search.set_halign(gtk::Align::Start);
 

@@ -65,8 +65,7 @@ impl BookmarkBar {
             let on_panel_toggled = on_panel_toggled.clone();
 
             overflow_button.connect_clicked(move |_| {
-                overflow_panel
-                    .set_visible(!overflow_panel.is_visible());
+                overflow_panel.set_visible(!overflow_panel.is_visible());
                 on_panel_toggled();
             });
         }

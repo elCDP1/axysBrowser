@@ -38,19 +38,15 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
         .position(|(id, _)| *id == current)
         .unwrap_or(0);
 
-    let (search, search_options) = build_inline_picker(
-        names,
-        selected,
-        {
-            let state = state.clone();
+    let (search, search_options) = build_inline_picker(names, selected, {
+        let state = state.clone();
 
-            Rc::new(move |picked| {
-                if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
-                    state.set_search_engine(id);
-                }
-            })
-        },
-    );
+        Rc::new(move |picked| {
+            if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
+                state.set_search_engine(id);
+            }
+        })
+    });
 
     let notice = Label::new(Some(&rust_i18n::t!("welcome.search_note")));
 

@@ -1,8 +1,5 @@
 use gtk::prelude::*;
-use gtk::{
-    Align, Box, Button, CenterBox, Entry, Image, Orientation, Stack,
-    Window,
-};
+use gtk::{Align, Box, Button, CenterBox, Entry, Image, Orientation, Stack, Window};
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::{WebView, prelude::WebViewExt};
@@ -418,8 +415,7 @@ impl Toolbar {
 
                 let favicon = view.favicon();
 
-                let (Some(parent), Some(refresh_star)) =
-                    (parent.upgrade(), refresh_star.upgrade())
+                let (Some(parent), Some(refresh_star)) = (parent.upgrade(), refresh_star.upgrade())
                 else {
                     return;
                 };
@@ -462,11 +458,16 @@ impl Toolbar {
         downloads_button.add_css_class("flat");
         downloads_button.set_visible(false);
 
+        // Live developer-tools state for the hamburger rows. Private windows
+        // never enable WebKit developer extras.
+        let developer_tools: Rc<dyn Fn() -> bool> = {
+            let state = state.clone();
+
+            Rc::new(move || state.settings.borrow().developer_tools && !private_mode)
+        };
+
         // Hamburger panel (rows built by ui::menu).
-        let menu_panel = MenuPanel::new(
-            private_mode,
-            on_panel_toggled.clone(),
-        );
+        let menu_panel = MenuPanel::new(private_mode, developer_tools, on_panel_toggled.clone());
 
         {
             let menu_panel = menu_panel.clone();
@@ -475,8 +476,7 @@ impl Toolbar {
 
             downloads_button.connect_clicked(move |_| {
                 menu_panel.hide();
-                downloads_panel
-                    .set_visible(!downloads_panel.is_visible());
+                downloads_panel.set_visible(!downloads_panel.is_visible());
                 on_panel_toggled();
             });
         }
@@ -680,13 +680,17 @@ impl Toolbar {
 
         state.subscribe_language(&language_refresh);
 
-        // Engine changes (Settings/Welcome) update the placeholder live.
+        // Engine/settings changes update the placeholder and the menu live
+        // (e.g. the inspector row appears/disappears with developer tools).
         let placeholder_refresh: Action = {
             let address = address.clone();
             let search = search.clone();
+            let menu_panel = menu_panel.clone();
 
             Rc::new(move || {
                 update_placeholder(&address, &search);
+
+                menu_panel.rebuild_rows();
             })
         };
 

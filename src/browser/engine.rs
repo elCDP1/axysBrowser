@@ -77,7 +77,10 @@ fn ensure_dirs() -> (String, String) {
 
     for dir in [&website_data, &web_cache] {
         if let Err(error) = std::fs::create_dir_all(dir) {
-            eprintln!("Failed to create browser storage dir {}: {error}", dir.display());
+            eprintln!(
+                "Failed to create browser storage dir {}: {error}",
+                dir.display()
+            );
         }
     }
 
@@ -227,8 +230,7 @@ impl BrowserEngine {
 
         !matches!(
             &lower[..colon],
-            "http" | "https" | "file" | "axys" | "about" | "blank" | "data" | "blob"
-                | "javascript"
+            "http" | "https" | "file" | "axys" | "about" | "blank" | "data" | "blob" | "javascript"
         )
     }
 
@@ -264,11 +266,7 @@ impl BrowserEngine {
         }
     }
 
-    fn wire_policy(
-        view: &WebView,
-        open_in_new_tab: Rc<dyn Fn(String)>,
-        popup_guard: PopupGuard,
-    ) {
+    fn wire_policy(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>, popup_guard: PopupGuard) {
         // Dedupe: window.open() typically fires `create` AND a NewWindow
         // policy decision for the same URL. Opening both would duplicate tabs.
         view.connect_decide_policy(move |_, decision, decision_type| {
@@ -357,11 +355,7 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_popups(
-        view: &WebView,
-        open_in_new_tab: Rc<dyn Fn(String)>,
-        popup_guard: PopupGuard,
-    ) {
+    fn wire_popups(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>, popup_guard: PopupGuard) {
         view.connect_create(move |_, action| {
             if let Some(uri) = action
                 .request()
@@ -396,9 +390,9 @@ impl BrowserEngine {
     fn permission_origin(view: &WebView) -> String {
         use super::permissions::GENERIC_ORIGIN;
 
-        let parsed = view.uri().and_then(|uri| {
-            gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok()
-        });
+        let parsed = view
+            .uri()
+            .and_then(|uri| gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok());
 
         let scheme = parsed
             .as_ref()
@@ -600,9 +594,8 @@ impl BrowserEngine {
                         None => (false, false, false),
                     };
 
-                let kind = PermissionKind::classify_request(
-                    type_name, is_display, is_audio, is_video,
-                );
+                let kind =
+                    PermissionKind::classify_request(type_name, is_display, is_audio, is_video);
 
                 if !kind.needs_prompt() {
                     match kind {
@@ -611,10 +604,7 @@ impl BrowserEngine {
                         // Unknown kinds stay denied so the JS promise
                         // settles instead of hanging the page forever.
                         _ => {
-                            eprintln!(
-                                "Denied unknown web permission: {}",
-                                request.type_().name()
-                            );
+                            eprintln!("Denied unknown web permission: {}", request.type_().name());
                             request.deny();
                         }
                     }
@@ -715,13 +705,19 @@ impl BrowserEngine {
 
                     let dialog = dialog.clone();
 
-                    alert.choose(Some(&parent), None::<&gtk::gio::Cancellable>, move |result| {
-                        if is_confirm {
-                            dialog.confirm_set_confirmed(matches!(result, Ok(index) if index == ok_index));
-                        }
+                    alert.choose(
+                        Some(&parent),
+                        None::<&gtk::gio::Cancellable>,
+                        move |result| {
+                            if is_confirm {
+                                dialog.confirm_set_confirmed(
+                                    matches!(result, Ok(index) if index == ok_index),
+                                );
+                            }
 
-                        dialog.close();
-                    });
+                            dialog.close();
+                        },
+                    );
                 }
                 ScriptDialogType::Prompt => {
                     let fallback = dialog
@@ -853,8 +849,7 @@ impl BrowserEngine {
             }
 
             if !user_data.is_null() {
-                let callback: Box<Rc<dyn Fn(bool)>> =
-                    unsafe { Box::from_raw(user_data as *mut _) };
+                let callback: Box<Rc<dyn Fn(bool)>> = unsafe { Box::from_raw(user_data as *mut _) };
 
                 callback(ok);
             }
@@ -902,11 +897,7 @@ impl BrowserEngine {
 
             Self::mark_error_page(view, &uri);
 
-            view.load_alternate_html(
-                &Self::error_page(&title, &detail, &uri),
-                &uri,
-                None,
-            );
+            view.load_alternate_html(&Self::error_page(&title, &detail, &uri), &uri, None);
         });
 
         view.connect_load_failed(|view, event, failing_uri, error| {
@@ -915,9 +906,7 @@ impl BrowserEngine {
 
             // Policy-change interruptions and user cancellations are part of
             // normal SPA navigation — showing an error page would break them.
-            if lower.contains("interrupt")
-                || lower.contains("cancell")
-                || lower.contains("policy")
+            if lower.contains("interrupt") || lower.contains("cancell") || lower.contains("policy")
             {
                 return false;
             }
@@ -1008,16 +997,32 @@ mod tests {
     fn popup_guard_dedupes_create_plus_policy_pair() {
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
     }
 
     #[test]
     fn popup_guard_dedupes_in_either_order() {
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
     }
 
     #[test]
@@ -1025,15 +1030,27 @@ mod tests {
         // Two real window.open(A) calls must open two tabs.
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
     }
 
     #[test]
     fn popup_guard_allows_different_urls() {
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
         assert!(BrowserEngine::popup_is_fresh(
             &guard,
             "https://example.com/b",
@@ -1045,17 +1062,33 @@ mod tests {
     fn popup_guard_match_is_consumed() {
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
         // A later genuine opening of the same URL still works.
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
     }
 
     #[test]
     fn popup_guard_expires() {
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
 
         let stale = Instant::now()
             .checked_sub(Duration::from_secs(5))
@@ -1065,7 +1098,11 @@ mod tests {
             entry.2 = stale;
         }
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
     }
 
     #[test]
@@ -1076,10 +1113,26 @@ mod tests {
 
         const B: &str = "https://example.com/b";
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(BrowserEngine::popup_is_fresh(&guard, B, PopupSource::Create));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, B, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            B,
+            PopupSource::Create
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            B,
+            PopupSource::Policy
+        ));
     }
 
     #[test]
@@ -1087,9 +1140,25 @@ mod tests {
         // create(A), create(A), policy(A), policy(A) = two real openings.
         let guard = new_popup_guard();
 
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Create));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
-        assert!(!BrowserEngine::popup_is_fresh(&guard, A, PopupSource::Policy));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Create
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
+        assert!(!BrowserEngine::popup_is_fresh(
+            &guard,
+            A,
+            PopupSource::Policy
+        ));
     }
 }
