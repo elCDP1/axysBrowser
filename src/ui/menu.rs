@@ -25,9 +25,11 @@ use gtk::{Align, Box, Button, Image, Label, Orientation};
 use std::rc::Rc;
 
 /// (label i18n key, window action) rows of the hamburger menu, in order.
-/// The inspector row only exists when developer tools are actually enabled
-/// (a dead row that silently does nothing is worse than no row at all).
-fn menu_items(private_mode: bool, developer_tools: bool) -> Vec<(&'static str, &'static str)> {
+///
+/// Page-scoped tools ("View page source", "Inspect Element") are deliberately
+/// absent: they act on web content, not on the browser window, so they live
+/// in the WebView's right-click menu instead.
+fn menu_items(private_mode: bool) -> Vec<(&'static str, &'static str)> {
     let mut items = vec![
         ("app.new_tab", "win.new-tab"),
         ("app.new_window", "win.new-window"),
@@ -35,13 +37,8 @@ fn menu_items(private_mode: bool, developer_tools: bool) -> Vec<(&'static str, &
         ("history.title", "win.history"),
         ("app.downloads", "win.downloads"),
         ("tools.bookmarks", "win.bookmarks"),
-        ("tools.tasks", "win.tasks"),
-        ("tools.view_source", "win.view-source"),
+        ("tools.resources", "win.resources"),
     ];
-
-    if developer_tools {
-        items.push(("tools.web_inspector", "win.devtools"));
-    }
 
     // Toggle: inside a private window this item exits back to normal mode.
     if private_mode {
@@ -65,17 +62,10 @@ pub struct MenuPanel {
     rows: Box,
     on_close: Rc<dyn Fn()>,
     private_mode: bool,
-    /// Read live so the inspector row disappears as soon as the setting is
-    /// turned off (or in a private window, where it is always off).
-    developer_tools: Rc<dyn Fn() -> bool>,
 }
 
 impl MenuPanel {
-    pub fn new(
-        private_mode: bool,
-        developer_tools: Rc<dyn Fn() -> bool>,
-        on_close: Rc<dyn Fn()>,
-    ) -> Self {
+    pub fn new(private_mode: bool, on_close: Rc<dyn Fn()>) -> Self {
         let container = Box::new(Orientation::Vertical, 2);
 
         container.add_css_class("menu-panel");
@@ -91,7 +81,6 @@ impl MenuPanel {
             rows,
             on_close,
             private_mode,
-            developer_tools,
         };
 
         panel.rebuild_rows();
@@ -118,9 +107,7 @@ impl MenuPanel {
             self.rows.remove(&child);
         }
 
-        let developer_tools = (self.developer_tools)();
-
-        for (label_key, action) in menu_items(self.private_mode, developer_tools) {
+        for (label_key, action) in menu_items(self.private_mode) {
             let row = Button::new();
 
             row.add_css_class("menu-row");
@@ -239,21 +226,25 @@ mod tests {
     }
 
     #[test]
-    fn inspector_row_follows_the_developer_tools_setting() {
-        assert!(has_action(&menu_items(false, true), "win.devtools"));
-        assert!(!has_action(&menu_items(false, false), "win.devtools"));
+    fn resources_row_is_available_in_every_window() {
+        assert!(has_action(&menu_items(false), "win.resources"));
+        assert!(has_action(&menu_items(true), "win.resources"));
     }
 
     #[test]
-    fn view_source_is_always_available_from_the_menu() {
-        assert!(has_action(&menu_items(false, false), "win.view-source"));
-        assert!(has_action(&menu_items(true, false), "win.view-source"));
+    fn page_scoped_tools_stay_out_of_the_hamburger_menu() {
+        for private_mode in [false, true] {
+            let items = menu_items(private_mode);
+
+            assert!(!has_action(&items, "win.view-source"));
+            assert!(!has_action(&items, "win.devtools"));
+        }
     }
 
     #[test]
     fn private_mode_swaps_the_privacy_row_label() {
-        let normal = menu_items(false, false);
-        let private = menu_items(true, false);
+        let normal = menu_items(false);
+        let private = menu_items(true);
 
         assert!(
             normal

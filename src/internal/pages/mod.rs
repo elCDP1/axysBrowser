@@ -5,7 +5,7 @@ pub mod downloads;
 pub mod history;
 pub mod newtab;
 pub mod privacy;
+pub mod resources;
 pub mod settings;
-pub mod tasks;
 pub mod tools;
 pub mod welcome;

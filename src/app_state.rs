@@ -366,7 +366,7 @@ impl AppState {
         self.notify_settings_changed();
     }
 
-    /// Hardware acceleration for new tabs (existing ones keep theirs).
+    /// Hardware acceleration for every open tab (applied live).
     pub fn set_hardware_acceleration(&self, enabled: bool) {
         self.settings.borrow_mut().hardware_acceleration = enabled;
 

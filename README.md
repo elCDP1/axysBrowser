@@ -18,15 +18,16 @@ GTK4 and WebKitGTK 6.
 - [Project structure](#project-structure)
 - [Data locations](#data-locations)
 - [Testing](#testing)
-- [Troubleshooting (WSL)](#troubleshooting-wsl)
+- [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 - [License](#license)
 
 ## Features
 
 - Tabs, bookmarks bar, history (with age-based cleanup), downloads manager
-- Tools page: bookmarks manager (`axys://bookmarks`), task manager
-  (open tabs + browser memory), zoom controls and "open downloads folder"
+- Tools page: bookmarks manager (`axys://bookmarks`), resources overview
+  (`axys://resources`: open tabs + browser memory), zoom controls and
+  "open downloads folder"
 - Right-click menu on web content: WebKit's standard actions plus
   "View page source" (and "Inspect Element" when developer tools are on)
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
@@ -98,7 +99,7 @@ src/
   browser/           engine, tabs, history, bookmarks, downloads, permissions
   internal/
     pages/           built-in pages (newtab, history, downloads, bookmarks,
-                     settings, tasks, tools, welcome)
+                     settings, resources, tools, welcome)
     router.rs        axys:// scheme routing
   ui/                window, toolbar, menus, shortcuts, find bar, smokes
 locales/             en / es translations
@@ -130,11 +131,23 @@ its web process exited, that closing a whole window frees its tabs'
 `WebView`s too, and that leftover memory stays below half the growth the
 pages caused.
 
-## Troubleshooting (WSL)
+## Troubleshooting
+
+### WSL
 Fractional Windows display scaling (125 %, 150 %) can clip 1–2 px rows of
 text and misplace popup menus through the WSLg link. If that happens,
 either switch Windows to 100 % scaling or live with it — the browser
 cannot work around the compositor from inside.
+
+### Rendering and GPU
+DMA-BUF (WebKit's GPU compositing path) is enabled by default on Linux and
+disabled automatically under WSL, where it can freeze the browser. If you
+hit freezes on a Mesa/X11 setup, run with `AXYS_DMABUF=0` (or WebKit's own
+`WEBKIT_DISABLE_DMABUF_RENDERER=1`); `AXYS_DMABUF=1` forces it back on.
+
+Hardware acceleration can be toggled in Settings and applies to open tabs
+immediately. If the window chrome itself is slow or glitchy, try GTK's
+software renderer with `GSK_RENDERER=cairo`.
 
 ## Contributing
 

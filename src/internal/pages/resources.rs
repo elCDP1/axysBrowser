@@ -1,4 +1,4 @@
-//! `axys://tasks` — live task manager.
+//! `axys://resources` — live browser resources overview.
 //!
 //! Chromium-inspired: a running list of the open tabs plus the browser's
 //! memory, updated once a second, with a 60-second memory sparkline and the
@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use crate::ui::memprobe;
 
-/// One row of the task manager: an open tab and whether it is the active one.
+/// One row of the resources page: an open tab and whether it is the active one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabRow {
     pub id: usize,
@@ -25,7 +25,7 @@ pub struct TabRow {
     pub active: bool,
 }
 
-pub struct TaskDeps {
+pub struct ResourcesDeps {
     /// Snapshot of the window's open tabs, newest ordering preserved.
     pub tab_rows: Rc<dyn Fn() -> Vec<TabRow>>,
     pub on_close_tab: Rc<dyn Fn(usize)>,
@@ -87,14 +87,14 @@ fn build_tab_list(rows: &[TabRow], on_close_tab: &Rc<dyn Fn(usize)>) -> Box {
         line.append(&info);
 
         if row.active {
-            let active = Label::new(Some(&rust_i18n::t!("tools.tasks_active")));
+            let active = Label::new(Some(&rust_i18n::t!("tools.resources_active")));
 
             active.add_css_class("dim-label");
 
             line.append(&active);
         }
 
-        let close = Button::with_label(&rust_i18n::t!("tools.tasks_close"));
+        let close = Button::with_label(&rust_i18n::t!("tools.resources_close"));
 
         close.add_css_class("flat");
 
@@ -115,8 +115,8 @@ fn build_tab_list(rows: &[TabRow], on_close_tab: &Rc<dyn Fn(usize)>) -> Box {
     list
 }
 
-pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
-    let TaskDeps {
+pub fn build_resources(deps: ResourcesDeps) -> ScrolledWindow {
+    let ResourcesDeps {
         tab_rows,
         on_close_tab,
     } = deps;
@@ -130,7 +130,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
 
     page.set_hexpand(true);
 
-    let title = Label::new(Some(&rust_i18n::t!("tools.tasks")));
+    let title = Label::new(Some(&rust_i18n::t!("tools.resources")));
 
     title.add_css_class("title-1");
 
@@ -145,9 +145,9 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
 
     stats.set_halign(gtk::Align::Start);
 
-    let (memory_column, memory_value) = stat(&rust_i18n::t!("tools.tasks_memory"));
+    let (memory_column, memory_value) = stat(&rust_i18n::t!("tools.resources_memory"));
 
-    let (process_column, process_value) = stat(&rust_i18n::t!("tools.tasks_processes"));
+    let (process_column, process_value) = stat(&rust_i18n::t!("tools.resources_processes"));
 
     stats.append(&memory_column);
     stats.append(&process_column);
@@ -157,7 +157,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
     /*
      * 60-second memory graph.
      */
-    let graph_caption = Label::new(Some(&rust_i18n::t!("tools.tasks_graph")));
+    let graph_caption = Label::new(Some(&rust_i18n::t!("tools.resources_graph")));
 
     graph_caption.add_css_class("dim-label");
 
@@ -249,7 +249,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
     /*
      * Open tabs.
      */
-    let tabs_caption = Label::new(Some(&rust_i18n::t!("tools.tasks_tabs")));
+    let tabs_caption = Label::new(Some(&rust_i18n::t!("tools.resources_tabs")));
 
     tabs_caption.add_css_class("title-3");
 
@@ -262,7 +262,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
     page.append(&tabs_caption);
     page.append(&list);
 
-    let note = Label::new(Some(&rust_i18n::t!("tools.tasks_note")));
+    let note = Label::new(Some(&rust_i18n::t!("tools.resources_note")));
 
     note.add_css_class("dim-label");
 
@@ -333,7 +333,7 @@ pub fn build_tasks(deps: TaskDeps) -> ScrolledWindow {
 
     update();
 
-    // Every tab prebuilds its own tasks page, so refresh right away whenever
+    // Every tab prebuilds its own resources page, so refresh right away whenever
     // this one becomes visible (the tick below skips hidden pages).
     {
         let update = update.clone();

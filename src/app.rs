@@ -23,24 +23,47 @@ fn running_under_wsl() -> bool {
     false
 }
 
-pub fn run() -> gtk::glib::ExitCode {
-    // Known WebKitGTK6 + Mesa DMA-BUF renderer bug: on some Linux setups
-    // (notably Mesa/Intel/AMD combos also affecting XFCE/X11 sessions), the
-    // browser freezes entirely — not just the tab — on pages that re-render
-    // very frequently while interacting with them, like a chat app's text
-    // editor. Disabling the DMA-BUF renderer trades a bit of GPU-accelerated
-    // compositing for stability, and is the standard fix distros/WebKit
-    // itself recommend for this. Must be set before WebKit initializes,
-    // so this has to happen before the GTK Application is even built.
-    unsafe {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+/// WebKit's DMA-BUF renderer is the fast GPU path on real Linux, but it can
+/// freeze the whole browser on WSLg and on a few Mesa/X11 setups (frequent
+/// re-renders, e.g. a chat editor). Keep WebKit's default (enabled) on real
+/// Linux and disable it only under WSL. `AXYS_DMABUF=0|1` forces either
+/// side; WebKit's own `WEBKIT_DISABLE_DMABUF_RENDERER`, when already set,
+/// always wins. Must run before WebKit/GTK initialize.
+fn should_disable_dmabuf(under_wsl: bool, override_value: Option<&str>) -> bool {
+    match override_value {
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "0" | "off" | "false" | "never" => true,
+            "1" | "on" | "true" | "always" => false,
+            _ => under_wsl,
+        },
+        None => under_wsl,
     }
+}
+
+fn configure_rendering(under_wsl: bool) {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+
+    let override_value = std::env::var("AXYS_DMABUF").ok();
+
+    if should_disable_dmabuf(under_wsl, override_value.as_deref()) {
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+}
+
+pub fn run() -> gtk::glib::ExitCode {
+    let under_wsl = running_under_wsl();
+
+    configure_rendering(under_wsl);
 
     // WebKit's bubblewrap sandbox frequently fails inside WSL (restricted
     // user namespaces), which kills the web process exactly on pages that
     // spawn workers — Discord being the prime example. Disable only there;
     // real Linux keeps the sandbox.
-    if running_under_wsl() {
+    if under_wsl {
         unsafe {
             std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
         }
@@ -97,9 +120,9 @@ pub fn run() -> gtk::glib::ExitCode {
 
                 let is_web = uri.starts_with("http://") || uri.starts_with("https://");
 
-                // Internal pages (`axysbrowser axys://tasks`, desktop
+                // Internal pages (`axysbrowser axys://resources`, desktop
                 // shortcuts) must be passed through verbatim: treating them
-                // as a bare word resolved `axys://tasks` to a bogus URL.
+                // as a bare word resolved `axys://resources` to a bogus URL.
                 let is_internal = uri.to_ascii_lowercase().starts_with("axys://");
 
                 let is_existing_file =
@@ -135,4 +158,32 @@ pub fn run() -> gtk::glib::ExitCode {
     let args: Vec<String> = std::env::args().collect();
 
     app.run_with_args(&args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_disable_dmabuf;
+
+    #[test]
+    fn dmabuf_follows_the_platform_by_default() {
+        assert!(should_disable_dmabuf(true, None));
+        assert!(!should_disable_dmabuf(false, None));
+    }
+
+    #[test]
+    fn dmabuf_override_accepts_common_spellings() {
+        for value in ["0", "off", "false", "never", " OFF "] {
+            assert!(should_disable_dmabuf(false, Some(value)), "{value}");
+        }
+
+        for value in ["1", "on", "true", "always", " ON "] {
+            assert!(!should_disable_dmabuf(true, Some(value)), "{value}");
+        }
+    }
+
+    #[test]
+    fn dmabuf_unknown_override_falls_back_to_the_platform() {
+        assert!(should_disable_dmabuf(true, Some("maybe")));
+        assert!(!should_disable_dmabuf(false, Some("maybe")));
+    }
 }

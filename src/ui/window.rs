@@ -13,7 +13,7 @@ use crate::app_state::AppState;
 use crate::browser::address::{SearchConfig, resolve_input};
 use crate::browser::engine::BrowserEngine;
 use crate::browser::tabs::{NewTabCallback, Tab};
-use crate::internal::pages::tasks::TabRow;
+use crate::internal::pages::resources::TabRow;
 use crate::internal::pages::tools::ToolAction;
 use crate::internal::router;
 use crate::internal::router::PageCallbacks;
@@ -414,10 +414,9 @@ fn build_browser_window(
         })
     };
 
-    // Page-scoped tools (view source, inspector, zoom) work on the active
-    // tab when it holds a real page, and otherwise on the last web page that
-    // loaded in this window. They are reachable from the hamburger menu and
-    // the WebView's right-click menu, not from the local Tools page.
+    // Page-scoped tools (view source, zoom) work on the active tab when it
+    // holds a real page, and otherwise on the last web page that loaded in
+    // this window. The inspector is WebKit's own right-click entry.
     let target_view: Rc<dyn Fn() -> Option<WebView>> = {
         let current_web_view = current_web_view.clone();
         let last_web_view = last_web_view.clone();
@@ -482,7 +481,7 @@ fn build_browser_window(
                 ToolAction::ZoomOut => "win.zoom-out",
                 ToolAction::ZoomReset => "win.zoom-reset",
                 ToolAction::OpenBookmarks => "win.bookmarks",
-                ToolAction::OpenTasks => "win.tasks",
+                ToolAction::OpenResources => "win.resources",
                 ToolAction::OpenDownloadsFolder => "win.open-downloads-folder",
             };
 
@@ -539,7 +538,7 @@ fn build_browser_window(
                 };
 
                 // Switching to an internal page maps it synchronously, and a
-                // map handler (axys://tasks) reads the tab list. Running this
+                // map handler (axys://resources) reads the tab list. Running this
                 // outside the `tabs` borrow avoids a re-entrant borrow panic.
                 // The page is built on first use.
                 if content.child_by_name(page).is_none() {
@@ -1306,8 +1305,8 @@ fn build_browser_window(
 
     *new_tab_slot.borrow_mut() = Some(new_tab.clone());
 
-    // Page-scoped tool callbacks (`win.view-source`, `win.devtools`,
-    // `win.zoom-*`) and the system "open downloads folder" action.
+    // Page-scoped tool callbacks (`win.view-source`, `win.zoom-*`) and the
+    // system "open downloads folder" action.
     let view_source: Rc<dyn Fn()> = {
         let target_view = target_view.clone();
         let new_tab = new_tab.clone();
@@ -1381,23 +1380,6 @@ fn build_browser_window(
                     }
                 },
             );
-        })
-    };
-
-    let devtools: Rc<dyn Fn()> = {
-        let target_view = target_view.clone();
-        let state = state.clone();
-
-        Rc::new(move || {
-            if !state.settings.borrow().developer_tools {
-                return;
-            }
-
-            if let Some(view) = target_view()
-                && let Some(inspector) = view.inspector()
-            {
-                inspector.show();
-            }
         })
     };
 
@@ -1792,7 +1774,7 @@ fn build_browser_window(
                     "axys://downloads",
                     "axys://history",
                     "axys://bookmarks",
-                    "axys://tasks",
+                    "axys://resources",
                 ] {
                     let Some(page_name) = router::page_name(page_uri) else {
                         continue;
@@ -1876,18 +1858,26 @@ fn build_browser_window(
 
     state.subscribe_language(&language_refresh);
 
-    // Live-apply developer tools to every open tab
-    // of this window (private windows never enable dev extras).
+    // Live-apply appearance/developer settings to every open tab of this
+    // window (private windows never enable dev extras).
     let settings_refresh: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
         let state = state.clone();
 
         Rc::new(move || {
-            let developer_tools = state.settings.borrow().developer_tools && !private_mode;
+            let (developer_tools, hardware_acceleration) = {
+                let settings = state.settings.borrow();
+
+                (
+                    settings.developer_tools && !private_mode,
+                    settings.hardware_acceleration,
+                )
+            };
 
             for tab in tabs.borrow().iter() {
                 if let Some(settings) = webkit6::prelude::WebViewExt::settings(&tab.web_view) {
                     settings.set_enable_developer_extras(developer_tools);
+                    BrowserEngine::apply_hardware_acceleration(&settings, hardware_acceleration);
                 }
             }
         })
@@ -2014,7 +2004,7 @@ fn build_browser_window(
                 })
             },
             view_source: view_source.clone(),
-            devtools: devtools.clone(),
+
             zoom_in: zoom_in.clone(),
             zoom_out: zoom_out.clone(),
             zoom_reset: zoom_reset.clone(),

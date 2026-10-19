@@ -13,7 +13,7 @@ pub enum ToolAction {
     ZoomOut,
     ZoomReset,
     OpenBookmarks,
-    OpenTasks,
+    OpenResources,
     OpenDownloadsFolder,
 }
 
@@ -74,8 +74,10 @@ pub fn escape_html(source: &str) -> String {
 pub fn source_document(source: &str) -> String {
     format!(
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">\
+         <meta name=\"color-scheme\" content=\"light dark\">\
          <title>{}</title></head>\
-         <body style=\"margin:0\"><pre style=\"white-space:pre-wrap;word-wrap:break-word;\
+         <body style=\"margin:0;background:Canvas;color:CanvasText\">\
+         <pre style=\"white-space:pre-wrap;word-wrap:break-word;\
          font-family:monospace;font-size:13px;padding:12px;\">{}</pre></body></html>",
         escape_html(&rust_i18n::t!("tools.source_title")),
         escape_html(source)
@@ -154,7 +156,11 @@ pub fn build_tools(deps: ToolsDeps) -> ScrolledWindow {
         ToolAction::OpenBookmarks,
         &on_tool,
     ));
-    browser_row.append(&tool_button("tools.tasks", ToolAction::OpenTasks, &on_tool));
+    browser_row.append(&tool_button(
+        "tools.resources",
+        ToolAction::OpenResources,
+        &on_tool,
+    ));
 
     page.append(&browser_row);
 

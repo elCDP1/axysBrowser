@@ -7,9 +7,9 @@ use crate::browser::history::HistoryManager;
 
 use super::pages::{
     about::build_about, bookmarks::build_bookmarks, downloads::build_downloads,
-    history::build_history, newtab::build_newtab, privacy::build_privacy, settings::build_settings,
-    tasks::TabRow, tasks::TaskDeps, tasks::build_tasks, tools::ToolAction, tools::ToolsDeps,
-    tools::build_tools, welcome::build_welcome,
+    history::build_history, newtab::build_newtab, privacy::build_privacy, resources::ResourcesDeps,
+    resources::TabRow, resources::build_resources, settings::build_settings, tools::ToolAction,
+    tools::ToolsDeps, tools::build_tools, welcome::build_welcome,
 };
 
 pub fn page_name(uri: &str) -> Option<&'static str> {
@@ -23,7 +23,7 @@ pub fn page_name(uri: &str) -> Option<&'static str> {
         "axys://downloads" => Some("downloads"),
         "axys://history" => Some("history"),
         "axys://bookmarks" => Some("bookmarks"),
-        "axys://tasks" => Some("tasks"),
+        "axys://resources" | "axys://tasks" => Some("resources"),
         _ => None,
     }
 }
@@ -38,7 +38,7 @@ pub fn page_title(uri: &str) -> String {
         "axys://downloads" => rust_i18n::t!("downloads.title").to_string(),
         "axys://history" => rust_i18n::t!("history.title").to_string(),
         "axys://bookmarks" => rust_i18n::t!("tools.bookmarks").to_string(),
-        "axys://tasks" => rust_i18n::t!("tools.tasks").to_string(),
+        "axys://resources" | "axys://tasks" => rust_i18n::t!("tools.resources").to_string(),
         _ => rust_i18n::t!("app.new_tab").to_string(),
     }
 }
@@ -53,7 +53,7 @@ pub struct PageCallbacks {
     pub on_clear_browsing_data: crate::app_state::ClearBrowsingData,
     /// History store for this window (ephemeral in private windows).
     pub history: HistoryManager,
-    /// Snapshot of the window's open tabs (task manager).
+    /// Snapshot of the window's open tabs (resources page).
     pub tab_rows: Rc<dyn Fn() -> Vec<TabRow>>,
     pub on_close_tab: Rc<dyn Fn(usize)>,
     /// Runs a page/system action through the window's `win.*` actions.
@@ -104,8 +104,8 @@ pub fn route(
             .upcast(),
         ),
 
-        "axys://tasks" => Some(
-            build_tasks(TaskDeps {
+        "axys://resources" | "axys://tasks" => Some(
+            build_resources(ResourcesDeps {
                 tab_rows,
                 on_close_tab,
             })
@@ -126,7 +126,7 @@ pub fn route(
 mod tests {
     use super::*;
 
-    const PAGES: [(&str, &str); 10] = [
+    const PAGES: [(&str, &str); 11] = [
         ("axys://", "newtab"),
         ("axys://newtab", "newtab"),
         ("axys://welcome", "welcome"),
@@ -136,7 +136,9 @@ mod tests {
         ("axys://tools", "tools"),
         ("axys://downloads", "downloads"),
         ("axys://history", "history"),
-        ("axys://tasks", "tasks"),
+        ("axys://resources", "resources"),
+        // Backwards-compatible alias for links/bookmarks created before 1.1.
+        ("axys://tasks", "resources"),
     ];
 
     #[test]
@@ -152,6 +154,8 @@ mod tests {
     fn rejects_unknown_and_external_uris() {
         for uri in [
             "axys://nope",
+            "axys://resources/",
+            "AXYS://resources",
             "axys://tasks/",
             "AXYS://tasks",
             "https://example.com",

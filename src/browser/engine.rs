@@ -134,6 +134,16 @@ impl BrowserEngine {
         session
     }
 
+    /// Applies the user's GPU choice to a settings object. Used for new
+    /// views and again for every open view when the setting changes.
+    pub fn apply_hardware_acceleration(settings: &webkit6::Settings, enabled: bool) {
+        settings.set_hardware_acceleration_policy(if enabled {
+            HardwareAccelerationPolicy::Always
+        } else {
+            HardwareAccelerationPolicy::Never
+        });
+    }
+
     pub fn configure(view: &WebView, developer_tools: bool, hardware_acceleration: bool) {
         let Some(settings) = webkit6::prelude::WebViewExt::settings(view) else {
             return;
@@ -172,11 +182,7 @@ impl BrowserEngine {
 
         // Configurable (Settings → Appearance): forced acceleration breaks
         // systems without a working GPU (notably some WSLg setups).
-        settings.set_hardware_acceleration_policy(if hardware_acceleration {
-            HardwareAccelerationPolicy::Always
-        } else {
-            HardwareAccelerationPolicy::Never
-        });
+        Self::apply_hardware_acceleration(&settings, hardware_acceleration);
 
         settings.set_user_agent(Some(chrome_user_agent()).as_deref());
     }
@@ -754,10 +760,13 @@ impl BrowserEngine {
 
         format!(
             "<!doctype html><html><head><meta charset=\"utf-8\">\
-             <style>body{{font-family:system-ui,sans-serif;background:#1e1e2e;color:#cdd6f4;\
+             <meta name=\"color-scheme\" content=\"light dark\">\
+             <style>:root{{color-scheme:light dark}}\
+             body{{font-family:system-ui,sans-serif;background:Canvas;color:CanvasText;\
              display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}\
-             .card{{max-width:560px;padding:32px;background:#313244;border-radius:12px}}\
-             h1{{font-size:20px}}code{{color:#f9e2af;word-break:break-all}}\
+             .card{{max-width:560px;padding:32px;background:rgba(127,127,127,0.12);\
+             border-radius:12px}}\
+             h1{{font-size:20px}}code{{font-weight:600;word-break:break-all}}\
              p{{line-height:1.5}}</style></head><body><div class=\"card\">\
              <h1>{}</h1><p>{}</p><p><code>{}</code></p>\
              <p>{}</p>\

@@ -22,8 +22,6 @@ pub struct WindowActions {
     pub open_private_toggle: Rc<dyn Fn()>,
     /// Show the active page's HTML source in a new tab.
     pub view_source: Rc<dyn Fn()>,
-    /// Open the WebKit inspector for the active page.
-    pub devtools: Rc<dyn Fn()>,
     /// Zoom the active page.
     pub zoom_in: Rc<dyn Fn()>,
     pub zoom_out: Rc<dyn Fn()>,
@@ -87,7 +85,7 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
         ("downloads", "axys://downloads"),
         ("history", "axys://history"),
         ("bookmarks", "axys://bookmarks"),
-        ("tasks", "axys://tasks"),
+        ("resources", "axys://resources"),
         ("settings", "axys://settings"),
     ] {
         let new_tab = actions.new_tab.clone();
@@ -103,7 +101,6 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
 
     for (name, callback) in [
         ("view-source", actions.view_source.clone()),
-        ("devtools", actions.devtools.clone()),
         ("zoom-in", actions.zoom_in.clone()),
         ("zoom-out", actions.zoom_out.clone()),
         ("zoom-reset", actions.zoom_reset.clone()),
