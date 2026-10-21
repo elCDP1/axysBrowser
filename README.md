@@ -46,6 +46,12 @@ Requirements: Rust **1.92+**, GTK 4.10+ and WebKitGTK 6.0 (2.52+) development fi
 # Debian / Ubuntu 24.04
 sudo apt install libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config
 
+# Arch Linux
+sudo pacman -S --needed gtk4 webkitgtk-6.0 pkgconf
+
+# Fedora
+sudo dnf install gtk4-devel webkitgtk6.0-devel javascriptcoregtk6.0-devel pkgconf-pkg-config
+
 cargo run --release
 ```
 
@@ -146,6 +152,17 @@ runner) so the sandboxed smoke runs for real. On a desktop, see
 the sandbox is unavailable.
 
 ## Troubleshooting
+
+### Linux sandbox
+The browser probes `bubblewrap` before WebKit starts. If unprivileged user
+and network namespaces are unavailable (hardened kernels, containers, or a
+missing `bwrap`), it prints a warning and keeps running without the sandbox
+instead of aborting. Install `bubblewrap` and allow unprivileged user
+namespaces to keep the sandbox; check the host with:
+
+```sh
+bwrap --unshare-user --unshare-pid --unshare-net --ro-bind / / true
+```
 
 ### Ubuntu 24.04 sandbox
 Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
