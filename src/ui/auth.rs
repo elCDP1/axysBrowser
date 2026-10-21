@@ -106,7 +106,7 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
     let decided = Rc::new(Cell::new(false));
 
     {
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
         let request = request.clone();
         let decided = decided.clone();
         let username = username.clone();
@@ -121,19 +121,25 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
 
             decided.set(true);
             request.authenticate(Some(&credential));
-            dialog.close();
+
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
         });
     }
 
     {
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
         let request = request.clone();
         let decided = decided.clone();
 
         cancel.connect_clicked(move |_| {
             decided.set(true);
             request.cancel();
-            dialog.close();
+
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
         });
     }
 
@@ -151,13 +157,15 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
     }
 
     {
-        let dialog_for_key = dialog.clone();
+        let dialog_for_key = dialog.downgrade();
 
         let key = gtk::EventControllerKey::new();
 
         key.connect_key_pressed(move |_, keyval, _, _| {
             if keyval == gtk::gdk::Key::Escape {
-                dialog_for_key.close();
+                if let Some(dialog) = dialog_for_key.upgrade() {
+                    dialog.close();
+                }
 
                 gtk::glib::Propagation::Stop
             } else {

@@ -23,6 +23,30 @@ fn running_under_wsl() -> bool {
     false
 }
 
+/// Whether the unprivileged user and network namespaces WebKit's bubblewrap
+/// sandbox needs actually work here. Ubuntu 24.04 restricts them with
+/// AppArmor and containers often do too; WebKit then aborts the UI process as
+/// soon as a page spawns a web process. Probe once before WebKit starts.
+fn sandbox_available() -> bool {
+    use std::process::{Command, Stdio};
+
+    Command::new("bwrap")
+        .args([
+            "--unshare-user",
+            "--unshare-pid",
+            "--unshare-net",
+            "--ro-bind",
+            "/",
+            "/",
+            "true",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// WebKit's DMA-BUF renderer is the fast GPU path on real Linux, but it can
 /// freeze the whole browser on WSLg and on a few Mesa/X11 setups (frequent
 /// re-renders, e.g. a chat editor). Keep WebKit's default (enabled) on real
@@ -74,14 +98,30 @@ pub fn run() -> gtk::glib::ExitCode {
 
     // WebKit's bubblewrap sandbox frequently fails inside WSL (restricted
     // user namespaces), which kills the web process exactly on pages that
-    // spawn workers — Discord being the prime example. Disable only there;
-    // real Linux keeps the sandbox.
-    if under_wsl {
-        unsafe {
-            std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
-        }
+    // spawn workers — Discord being the prime example. The same restriction
+    // is on by default on Ubuntu 24.04 (AppArmor) and in many containers,
+    // where WebKit aborts the UI process on the first web load. Fall back to
+    // no sandbox with a warning instead of crashing; the README explains how
+    // to enable it on Ubuntu. `AXYS_FORCE_SANDBOX=1` keeps it on for testing.
+    let force_sandbox = std::env::var_os("AXYS_FORCE_SANDBOX").is_some();
 
-        eprintln!("WSL detected: WebKit sandbox disabled for compatibility");
+    if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_none() && !force_sandbox {
+        if under_wsl {
+            unsafe {
+                std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+            }
+
+            eprintln!("WSL detected: WebKit sandbox disabled for compatibility");
+        } else if !sandbox_available() {
+            unsafe {
+                std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+            }
+
+            eprintln!(
+                "WebKit sandbox unavailable (bubblewrap cannot create user/network \
+                 namespaces); running without it. See the Ubuntu 24.04 notes in README."
+            );
+        }
     }
 
     let app = Application::builder()

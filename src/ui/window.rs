@@ -269,6 +269,12 @@ fn build_browser_window(
 
             top_stack.set_visible_child(&content);
 
+            // An internal page is a native GTK child; the tab's WebView may
+            // still hold a previous page (and keep loading it). Only expose it
+            // as current when it is actually the visible child, or reload,
+            // zoom and the bookmark star would act on a hidden page.
+            let showing_web = content.visible_child_name().as_deref() == Some("web");
+
             // Clear the previous tab's find highlights before switching.
             if let Some(findbar) = findbar_slot.borrow().as_ref()
                 && let Some(previous) = current_web_view.borrow().as_ref()
@@ -285,21 +291,33 @@ fn build_browser_window(
                 bar.close_panels();
             }
 
-            *current_web_view.borrow_mut() = Some(web_view.clone());
+            *current_web_view.borrow_mut() = if showing_web {
+                Some(web_view.clone())
+            } else {
+                None
+            };
 
             // Keep an open findbar searching in the newly shown tab.
-            if let Some(findbar) = findbar_slot.borrow().as_ref() {
+            if showing_web && let Some(findbar) = findbar_slot.borrow().as_ref() {
                 findbar.research_in(&web_view);
             }
 
             if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                 toolbar.address.set_text(address_text_for(&uri));
 
-                toolbar.set_loading(web_view.is_loading());
+                toolbar.set_loading(showing_web && web_view.is_loading());
 
                 toolbar.set_navigation_state(
-                    can_go_back || web_view.can_go_back(),
-                    can_go_forward || web_view.can_go_forward(),
+                    if showing_web {
+                        can_go_back || web_view.can_go_back()
+                    } else {
+                        can_go_back
+                    },
+                    if showing_web {
+                        can_go_forward || web_view.can_go_forward()
+                    } else {
+                        can_go_forward
+                    },
                 );
 
                 toolbar.refresh_bookmark();
@@ -496,6 +514,7 @@ fn build_browser_window(
         let toolbar_slot = toolbar_slot.clone();
         let tabbar_slot = tabbar_slot.clone();
         let bookmark_bar_slot = bookmark_bar_slot.clone();
+        let current_web_view = current_web_view.clone();
         let search = search.clone();
         let page_builders = page_builders.clone();
 
@@ -515,7 +534,7 @@ fn build_browser_window(
             };
 
             if let Some(page) = router::page_name(&target) {
-                let (content, can_go_back, can_go_forward) = {
+                let (content, web_view, can_go_back, can_go_forward) = {
                     let mut tabs_ref = tabs.borrow_mut();
 
                     let Some(tab) = tabs_ref.iter_mut().find(|tab| tab.id == id) else {
@@ -534,8 +553,24 @@ fn build_browser_window(
 
                     tab.push_history(target.clone());
 
-                    (tab.content.clone(), tab.can_go_back(), tab.can_go_forward())
+                    // Invalidate the watchdog of any load left behind: the
+                    // page is hidden now and must not be replaced by a
+                    // timeout page after the user navigated away.
+                    tab.nav_serial += 1;
+
+                    (
+                        tab.content.clone(),
+                        tab.web_view.clone(),
+                        tab.can_go_back(),
+                        tab.can_go_forward(),
+                    )
                 };
+
+                if active_id.get() == id {
+                    *current_web_view.borrow_mut() = None;
+                }
+
+                web_view.stop_loading();
 
                 // Switching to an internal page maps it synchronously, and a
                 // map handler (axys://resources) reads the tab list. Running this
@@ -609,6 +644,8 @@ fn build_browser_window(
 
             if active_id.get() == id {
                 top_stack.set_visible_child(&content);
+
+                *current_web_view.borrow_mut() = Some(web_view.clone());
 
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                     toolbar.address.set_text(address_text_for(&target));
@@ -686,6 +723,11 @@ fn build_browser_window(
             if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
                 tab.uri = target.clone();
 
+                // Any watchdog still armed for the load we are leaving must
+                // not replace the hidden page after navigating through the
+                // custom history.
+                tab.nav_serial += 1;
+
                 if router::page_name(&target).is_some() {
                     tab.title = router::page_title(&target);
                 }
@@ -711,6 +753,10 @@ fn build_browser_window(
             if let Some(page) = router::page_name(&target) {
                 content.set_visible_child_name(page);
 
+                *current_web_view.borrow_mut() = None;
+
+                web_view.stop_loading();
+
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                     toolbar.address.set_text(address_text_for(&target));
 
@@ -729,6 +775,10 @@ fn build_browser_window(
 
                 top_stack.set_visible_child(&content);
             } else {
+                content.set_visible_child_name("web");
+
+                *current_web_view.borrow_mut() = Some(web_view.clone());
+
                 BrowserEngine::load(&web_view, &target);
 
                 begin_web_load(&tabs, id, &web_view, &target);
@@ -781,6 +831,11 @@ fn build_browser_window(
             if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
                 tab.uri = target.clone();
 
+                // Any watchdog still armed for the load we are leaving must
+                // not replace the hidden page after navigating through the
+                // custom history.
+                tab.nav_serial += 1;
+
                 if router::page_name(&target).is_some() {
                     tab.title = router::page_title(&target);
                 }
@@ -806,6 +861,10 @@ fn build_browser_window(
             if let Some(page) = router::page_name(&target) {
                 content.set_visible_child_name(page);
 
+                *current_web_view.borrow_mut() = None;
+
+                web_view.stop_loading();
+
                 if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
                     toolbar.address.set_text(address_text_for(&target));
 
@@ -824,6 +883,10 @@ fn build_browser_window(
 
                 top_stack.set_visible_child(&content);
             } else {
+                content.set_visible_child_name("web");
+
+                *current_web_view.borrow_mut() = Some(web_view.clone());
+
                 BrowserEngine::load(&web_view, &target);
 
                 begin_web_load(&tabs, id, &web_view, &target);
@@ -1122,12 +1185,14 @@ fn build_browser_window(
 
             top_stack.set_visible_child(&content);
 
-            *current_web_view.borrow_mut() = Some(web_view.clone());
-
             if internal_page.is_none() {
+                *current_web_view.borrow_mut() = Some(web_view.clone());
+
                 BrowserEngine::load(&web_view, &first_uri);
 
                 begin_web_load(&tabs, id, &web_view, &first_uri);
+            } else {
+                *current_web_view.borrow_mut() = None;
             }
 
             if let Some(slot) = toolbar_slot.upgrade()
@@ -1156,8 +1221,25 @@ fn build_browser_window(
                         return;
                     };
 
-                    if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
-                        tab.uri = uri.clone();
+                    let showing_web = {
+                        let mut tabs = tabs.borrow_mut();
+
+                        let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id) else {
+                            return;
+                        };
+
+                        let showing_web =
+                            tab.content.visible_child_name().as_deref() == Some("web");
+
+                        if showing_web {
+                            tab.uri = uri.clone();
+                        }
+
+                        showing_web
+                    };
+
+                    if !showing_web {
+                        return;
                     }
 
                     // Neither the tab bar (titles only) nor the bookmark bar
@@ -1194,6 +1276,10 @@ fn build_browser_window(
                         });
 
                     if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
+                        if tab.content.visible_child_name().as_deref() != Some("web") {
+                            return;
+                        }
+
                         tab.title = title;
                     }
 
@@ -1208,9 +1294,15 @@ fn build_browser_window(
             {
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
+                let current_web_view = current_web_view.clone();
 
                 web_view.connect_is_loading_notify(move |view| {
-                    if active_id.get() != id {
+                    if active_id.get() != id
+                        || !current_web_view
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|current| current == view)
+                    {
                         return;
                     }
 
@@ -1245,6 +1337,7 @@ fn build_browser_window(
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
                 let window_history = window_history.clone();
+                let current_web_view = current_web_view.clone();
 
                 web_view.connect_load_changed(move |view, event| {
                     // History is per-window, not per-visible-tab: a page
@@ -1265,7 +1358,12 @@ fn build_browser_window(
                         window_history.add_visit(title, uri);
                     }
 
-                    if active_id.get() != id {
+                    if active_id.get() != id
+                        || !current_web_view
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|current| current == view)
+                    {
                         return;
                     }
 
@@ -1317,6 +1415,7 @@ fn build_browser_window(
         let tabs = tabs.clone();
         let toolbar_slot = Rc::downgrade(&toolbar_slot);
         let active_id = active_id.clone();
+        let current_web_view = current_web_view.clone();
 
         Rc::new(move || {
             let Some(view) = target_view() else {
@@ -1330,6 +1429,7 @@ fn build_browser_window(
             let toolbar_slot = toolbar_slot.clone();
             let active_id = active_id.clone();
             let base_for_load = base.clone();
+            let current_web_view = current_web_view.clone();
 
             view.evaluate_javascript(
                 "document.documentElement ? document.documentElement.outerHTML : ''",
@@ -1361,6 +1461,10 @@ fn build_browser_window(
                         // to the web child or the source document would be
                         // loaded invisibly.
                         content.set_visible_child_name("web");
+
+                        if active_id.get() == id {
+                            *current_web_view.borrow_mut() = Some(web_view.clone());
+                        }
 
                         web_view.load_html(&document, base_for_load.as_deref());
                     }

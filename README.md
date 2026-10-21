@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.0.4`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.1.2`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -98,8 +98,8 @@ xdg-settings set default-web-browser axysbrowser.desktop
 src/
   main.rs            entry point (exit code from the GTK application)
   app.rs             GtkApplication wiring, CLI / HANDLES_OPEN
-  app_state.rs       shared, thread-safe application state
-  config.rs          settings load/save
+  app_state.rs       shared application state, settings load/save
+  i18n.rs            locale loading and fallback
   paths.rs           XDG directories, atomic file writes
   theme.rs           CSS
   browser/           engine, tabs, history, bookmarks, downloads, permissions
@@ -137,7 +137,31 @@ its web process exited, that closing a whole window frees its tabs'
 `WebView`s too, and that leftover memory stays below half the growth the
 pages caused.
 
+The strict variants need a host where `bwrap` can create and configure
+user and network namespaces. Ubuntu 24.04 gates that behind AppArmor;
+CI loads Ubuntu's `bwrap-userns-restrict` profile (falling back to the
+`kernel.apparmor_restrict_unprivileged_userns` sysctl on the disposable
+runner) so the sandboxed smoke runs for real. On a desktop, see
+[Ubuntu 24.04 sandbox](#ubuntu-2404-sandbox) if the browser warns that
+the sandbox is unavailable.
+
 ## Troubleshooting
+
+### Ubuntu 24.04 sandbox
+Ubuntu 24.04 restricts unprivileged user namespaces with AppArmor, which
+also blocks WebKit's `bwrap` sandbox (it configures loopback inside the
+new network namespace). If the browser prints `WebKit sandbox
+unavailable`, it keeps working without the sandbox. To restore it
+without weakening the host globally, load Ubuntu's targeted profile:
+
+```sh
+sudo apt install apparmor-profiles
+sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/
+sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+```
+
+`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` also works
+but relaxes the restriction for every application.
 
 ### WSL
 Fractional Windows display scaling (125 %, 150 %) can clip 1–2 px rows of

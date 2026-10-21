@@ -106,16 +106,18 @@ fn bookmark_dialog(
     content.append(&buttons);
 
     {
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
 
         cancel.connect_clicked(move |_| {
-            dialog.close();
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
         });
     }
 
     {
         let state = state.clone();
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
         let name = name.clone();
         let url = url.clone();
         let existing = existing.clone();
@@ -147,7 +149,10 @@ fn bookmark_dialog(
 
             if success {
                 refresh_star();
-                dialog.close();
+
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.close();
+                }
             } else {
                 url.add_css_class("error");
             }
@@ -156,7 +161,7 @@ fn bookmark_dialog(
 
     {
         let state = state.clone();
-        let dialog = dialog.clone();
+        let dialog = dialog.downgrade();
         let refresh_star = refresh_star.clone();
         let existing = existing.clone();
 
@@ -164,7 +169,10 @@ fn bookmark_dialog(
             if let Some(bookmark) = existing.as_ref() {
                 state.bookmarks.remove(&bookmark.url);
                 refresh_star();
-                dialog.close();
+
+                if let Some(dialog) = dialog.upgrade() {
+                    dialog.close();
+                }
             }
         });
     }

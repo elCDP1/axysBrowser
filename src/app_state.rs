@@ -83,6 +83,18 @@ impl Completion {
             callback(!self.failed.get());
         }
     }
+
+    /// Gives up on the remaining steps (e.g. a hung WebKit call) and reports
+    /// failure immediately. Late callbacks are ignored because `done` is
+    /// already empty.
+    fn abort(&self) {
+        self.failed.set(true);
+        self.pending.set(0);
+
+        if let Some(callback) = self.done.borrow_mut().take() {
+            callback(false);
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -537,11 +549,12 @@ impl AppState {
         completion.finish(true);
 
         // Safety net: a WebKit async step that never reports back must not
-        // leave the settings page stuck on "Clearing…". `Completion` reports
-        // exactly once, so a late real callback after this is harmless.
+        // leave the settings page stuck on "Clearing…". Abort (not finish)
+        // because more than one step may still be pending; `Completion`
+        // reports exactly once, so late callbacks after this are harmless.
         let watchdog = completion.clone();
 
-        gtk::glib::timeout_add_seconds_local_once(30, move || watchdog.finish(false));
+        gtk::glib::timeout_add_seconds_local_once(30, move || watchdog.abort());
     }
 
     pub fn set_language(&self, language: &str) {
@@ -593,6 +606,22 @@ mod tests {
         completion.begin();
         completion.finish(true);
         assert_eq!(log.borrow().len(), 1, "callback is one-shot");
+    }
+
+    #[test]
+    fn completion_abort_reports_failure_once_with_pending_steps() {
+        let (log, callback) = recorder();
+        let completion = Completion::new(Some(callback));
+
+        completion.begin();
+        completion.begin();
+
+        completion.abort();
+        assert_eq!(*log.borrow(), vec![false]);
+
+        completion.finish(true);
+        completion.finish(true);
+        assert_eq!(log.borrow().len(), 1, "late steps must not report again");
     }
 
     #[test]

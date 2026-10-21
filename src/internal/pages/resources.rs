@@ -333,35 +333,68 @@ pub fn build_resources(deps: ResourcesDeps) -> ScrolledWindow {
 
     update();
 
-    // Every tab prebuilds its own resources page, so refresh right away whenever
-    // this one becomes visible (the tick below skips hidden pages).
+    let timer: Rc<RefCell<Option<glib::SourceId>>> = Rc::new(RefCell::new(None));
+
+    let start_timer: Rc<dyn Fn()> = {
+        let timer = timer.clone();
+        let update = update.clone();
+        let scroller_weak = scroller.downgrade();
+
+        Rc::new(move || {
+            if timer.borrow().is_some() {
+                return;
+            }
+
+            let timer_weak = Rc::downgrade(&timer);
+            let update = update.clone();
+            let scroller_weak = scroller_weak.clone();
+
+            let id = glib::timeout_add_seconds_local(1, move || {
+                let Some(timer) = timer_weak.upgrade() else {
+                    return ControlFlow::Break;
+                };
+
+                let Some(scroller) = scroller_weak.upgrade() else {
+                    timer.borrow_mut().take();
+
+                    return ControlFlow::Break;
+                };
+
+                if scroller.root().is_none() || !scroller.is_mapped() {
+                    timer.borrow_mut().take();
+
+                    return ControlFlow::Break;
+                }
+
+                update();
+
+                ControlFlow::Continue
+            });
+
+            *timer.borrow_mut() = Some(id);
+        })
+    };
+
     {
+        let start_timer = start_timer.clone();
         let update = update.clone();
 
-        scroller.connect_map(move |_| update());
-    }
-
-    glib::timeout_add_seconds_local(1, {
-        let update = update.clone();
-        let scroller = scroller.clone();
-
-        move || {
-            // Stop when the page has been destroyed (tab closed).
-            if scroller.root().is_none() {
-                return ControlFlow::Break;
-            }
-
-            // A hidden GtkStack child is unmapped: skip the two /proc scans
-            // so N open tabs don't cost 2N scans per second.
-            if !scroller.is_mapped() {
-                return ControlFlow::Continue;
-            }
-
+        scroller.connect_map(move |_| {
             update();
 
-            ControlFlow::Continue
-        }
-    });
+            start_timer();
+        });
+    }
+
+    {
+        let timer = timer.clone();
+
+        scroller.connect_unmap(move |_| {
+            if let Some(id) = timer.borrow_mut().take() {
+                id.remove();
+            }
+        });
+    }
 
     scroller
 }

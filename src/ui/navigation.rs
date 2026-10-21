@@ -30,7 +30,9 @@ pub fn address_text_for(uri: &str) -> &str {
 /// load is stopped and the error page is shown instead of spinning
 /// forever. A page that already committed is never replaced (slow
 /// subresources are normal), and a watchdog from an older navigation
-/// (different serial or URI) never kills a newer load.
+/// (different serial) never kills a newer load. The serial, not the URI,
+/// identifies the load: redirects change the URI while the load is still
+/// the same one.
 pub fn begin_web_load(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize, web_view: &WebView, target: &str) {
     let serial = {
         let mut tabs = tabs.borrow_mut();
@@ -47,7 +49,7 @@ pub fn begin_web_load(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize, web_view: &WebVie
     };
 
     let weak = web_view.downgrade();
-    let tabs = tabs.clone();
+    let tabs = Rc::downgrade(tabs);
     let target = target.to_string();
 
     gtk::glib::timeout_add_local_once(
@@ -57,11 +59,15 @@ pub fn begin_web_load(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize, web_view: &WebVie
                 return;
             };
 
+            let Some(tabs) = tabs.upgrade() else {
+                return;
+            };
+
             let stuck = tabs
                 .borrow()
                 .iter()
                 .find(|tab| tab.id == id)
-                .is_some_and(|tab| tab.nav_serial == serial && !tab.committed && tab.uri == target);
+                .is_some_and(|tab| tab.nav_serial == serial && !tab.committed);
 
             if stuck && view.is_loading() {
                 eprintln!("Load timed out: {target}");

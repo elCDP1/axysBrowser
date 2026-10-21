@@ -76,6 +76,20 @@ pub fn format_speed(bps: f64) -> String {
 type DownloadListener = Weak<dyn Fn()>;
 type DownloadListeners = Rc<RefCell<Vec<DownloadListener>>>;
 
+fn notify_listeners(listeners: &DownloadListeners) {
+    listeners
+        .borrow_mut()
+        .retain(|weak| weak.strong_count() > 0);
+
+    let callbacks = listeners.borrow().clone();
+
+    for weak in callbacks {
+        if let Some(callback) = weak.upgrade() {
+            callback();
+        }
+    }
+}
+
 /// Tracks downloads started in any `NetworkSession` this manager watches.
 /// Every download prompts the user for a destination via a native GTK save
 /// dialog (like "Save As" in Chromium), sends a desktop notification when
@@ -137,17 +151,7 @@ impl DownloadManager {
     }
 
     fn notify(&self) {
-        self.listeners
-            .borrow_mut()
-            .retain(|weak| weak.strong_count() > 0);
-
-        let listeners = self.listeners.borrow().clone();
-
-        for weak in listeners {
-            if let Some(callback) = weak.upgrade() {
-                callback();
-            }
-        }
+        notify_listeners(&self.listeners);
     }
 
     pub fn downloads_dir() -> PathBuf {
@@ -201,9 +205,19 @@ impl DownloadManager {
             manager.notify();
 
             {
-                let manager = manager.clone();
+                let entries = Rc::downgrade(&manager.entries);
+                let listeners = Rc::downgrade(&manager.listeners);
 
                 download.connect_decide_destination(move |download, suggested_filename| {
+                    let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
+                    else {
+                        // The window/session that owned this download is gone;
+                        // don't leave WebKit waiting for a destination.
+                        download.cancel();
+
+                        return true;
+                    };
+
                     let sanitized = sanitize_download_name(suggested_filename);
 
                     let default_name = if sanitized.is_empty() {
@@ -218,7 +232,8 @@ impl DownloadManager {
                         .initial_name(&default_name)
                         .build();
 
-                    let manager = manager.clone();
+                    let entries = entries.clone();
+                    let listeners = listeners.clone();
                     let download = download.clone();
 
                     dialog.save(
@@ -237,7 +252,7 @@ impl DownloadManager {
                                 };
 
                                 if let Some(entry) =
-                                    manager.entries.borrow_mut().iter_mut().find(|e| e.id == id)
+                                    entries.borrow_mut().iter_mut().find(|e| e.id == id)
                                 {
                                     entry.filename = path
                                         .file_name()
@@ -247,7 +262,7 @@ impl DownloadManager {
                                     entry.path = path.clone();
                                 }
 
-                                manager.notify();
+                                notify_listeners(&listeners);
 
                                 download.set_destination(path_str);
                             }
@@ -263,9 +278,15 @@ impl DownloadManager {
             }
 
             {
-                let manager = manager.clone();
+                let entries = Rc::downgrade(&manager.entries);
+                let listeners = Rc::downgrade(&manager.listeners);
 
                 download.connect_estimated_progress_notify(move |download| {
+                    let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
+                    else {
+                        return;
+                    };
+
                     let progress = download.estimated_progress();
 
                     // Progress fires very frequently; rebuilding the toolbar
@@ -273,9 +294,7 @@ impl DownloadManager {
                     // loop time during fast downloads. Update the stored value
                     // cheaply, but only notify listeners on visible steps.
                     let should_notify = {
-                        if let Some(entry) =
-                            manager.entries.borrow_mut().iter_mut().find(|e| e.id == id)
-                        {
+                        if let Some(entry) = entries.borrow_mut().iter_mut().find(|e| e.id == id) {
                             let delta = (progress - entry.progress).abs();
 
                             entry.progress = progress;
@@ -287,19 +306,28 @@ impl DownloadManager {
                     };
 
                     if should_notify {
-                        manager.notify();
+                        notify_listeners(&listeners);
                     }
                 });
             }
 
             {
-                let manager = manager.clone();
+                let entries = Rc::downgrade(&manager.entries);
+                let listeners = Rc::downgrade(&manager.listeners);
+                let announce = Rc::downgrade(&manager.announce);
+                let application = manager.application.clone();
 
                 download.connect_finished(move |_download| {
+                    let (Some(entries), Some(listeners), Some(announce)) =
+                        (entries.upgrade(), listeners.upgrade(), announce.upgrade())
+                    else {
+                        return;
+                    };
+
                     // `finished` also fires after `failed` / cancellation, so
                     // only announce downloads that really completed.
                     let (filename, completed) = {
-                        let mut entries = manager.entries.borrow_mut();
+                        let mut entries = entries.borrow_mut();
 
                         let Some(entry) = entries.iter_mut().find(|e| e.id == id) else {
                             return;
@@ -315,7 +343,7 @@ impl DownloadManager {
                         (entry.filename.clone(), completed)
                     };
 
-                    manager.notify();
+                    notify_listeners(&listeners);
 
                     if !completed {
                         return;
@@ -323,7 +351,7 @@ impl DownloadManager {
 
                     // Private windows mute this: the filename would linger
                     // in the desktop notification history.
-                    if !manager.announce.get() {
+                    if !announce.get() {
                         return;
                     }
 
@@ -340,18 +368,22 @@ impl DownloadManager {
 
                     notification.set_body(Some(&filename));
 
-                    manager
-                        .application
+                    application
                         .send_notification(Some(&format!("axys-download-{tag}")), &notification);
                 });
             }
 
             {
-                let manager = manager.clone();
+                let entries = Rc::downgrade(&manager.entries);
+                let listeners = Rc::downgrade(&manager.listeners);
 
                 download.connect_failed(move |_download, error| {
-                    if let Some(entry) =
-                        manager.entries.borrow_mut().iter_mut().find(|e| e.id == id)
+                    let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
+                    else {
+                        return;
+                    };
+
+                    if let Some(entry) = entries.borrow_mut().iter_mut().find(|e| e.id == id)
                         && entry.status != DownloadStatus::Cancelled
                     {
                         entry.status = if error.matches(webkit6::DownloadError::CancelledByUser) {
@@ -361,7 +393,7 @@ impl DownloadManager {
                         };
                     }
 
-                    manager.notify();
+                    notify_listeners(&listeners);
                 });
             }
         });
