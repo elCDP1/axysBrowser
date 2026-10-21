@@ -54,6 +54,19 @@ fn configure_rendering(under_wsl: bool) {
     }
 }
 
+/// Makes `icon_name("axysbrowser")` resolve when running from the source
+/// tree. Installed builds get the icon from the system hicolor theme (see
+/// the install steps in README).
+fn register_icon_theme() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/icons");
+
+    if dir.is_dir()
+        && let Some(display) = gtk::gdk::Display::default()
+    {
+        gtk::IconTheme::for_display(&display).add_search_path(&dir);
+    }
+}
+
 pub fn run() -> gtk::glib::ExitCode {
     let under_wsl = running_under_wsl();
 
@@ -82,6 +95,8 @@ pub fn run() -> gtk::glib::ExitCode {
         let state_slot = state_slot.clone();
 
         app.connect_startup(move |app| {
+            register_icon_theme();
+
             let state = AppState::load(app);
 
             *state_slot.borrow_mut() = Some(state);

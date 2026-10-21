@@ -931,10 +931,14 @@ fn build_browser_window(
 
             let permissions = window_permissions.clone();
 
+            let on_authenticate: crate::browser::engine::AuthenticateHandler =
+                Rc::new(crate::ui::auth::prompt);
+
             BrowserEngine::wire_view(
                 &web_view,
                 open_in_new_tab.clone(),
                 show_notification.clone(),
+                on_authenticate,
                 permissions,
             );
 

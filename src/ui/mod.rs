@@ -1,4 +1,5 @@
 pub mod actions;
+pub mod auth;
 pub mod bookmarks;
 pub mod findbar;
 pub mod logo;

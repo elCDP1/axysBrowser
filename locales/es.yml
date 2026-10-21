@@ -14,6 +14,16 @@ app:
   search_or_enter_url: "Buscar o introducir URL"
   close_tab: "Cerrar pestaña"
 
+auth:
+  title: "Iniciar sesión"
+  message: "%{host} requiere un usuario y una contraseña."
+  realm: "Dominio: %{realm}"
+  username: "Usuario"
+  password: "Contraseña"
+  sign_in: "Iniciar sesión"
+  cancel: "Cancelar"
+  retry: "Usuario o contraseña incorrectos. Inténtalo de nuevo."
+
 settings:
   title: "Ajustes"
   appearance: "Apariencia"

@@ -57,6 +57,16 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
 
     let lower = input.to_ascii_lowercase();
 
+    // `view-source:` is a display mode, not a navigation target. The source
+    // tab labels itself `view-source:<url>`, so resolving that verbatim built
+    // a broken `https://view-source:...` URL when the user pressed Enter.
+    // Resolve the inner address instead, which loads the page itself.
+    const VIEW_SOURCE: &str = "view-source:";
+
+    if lower.starts_with(VIEW_SOURCE) {
+        return resolve_input(&input[VIEW_SOURCE.len()..], config);
+    }
+
     if lower.starts_with("axys://") {
         return lower;
     }
@@ -278,6 +288,25 @@ mod tests {
         for (id, _) in super::KNOWN_ENGINES {
             assert!(config.engines.contains_key(*id), "missing engine {id}");
         }
+    }
+
+    #[test]
+    fn resolves_view_source_to_the_inner_address() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("view-source:https://example.com/Path", &config),
+            "https://example.com/Path"
+        );
+        assert_eq!(
+            resolve_input("VIEW-SOURCE:example.com", &config),
+            "https://example.com"
+        );
+        assert_eq!(
+            resolve_input("view-source:", &config),
+            "axys://newtab",
+            "an empty source address falls back to the new tab"
+        );
     }
 
     #[test]

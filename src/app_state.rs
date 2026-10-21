@@ -109,6 +109,35 @@ type LanguageListeners = Rc<RefCell<Vec<LanguageListener>>>;
 type SettingsListener = Weak<dyn Fn()>;
 type SettingsListeners = Rc<RefCell<Vec<SettingsListener>>>;
 
+/// Applies the app's light/dark choice to GTK.
+///
+/// GTK 4.20 replaced the `gtk-application-prefer-dark-theme` boolean with the
+/// `gtk-interface-color-scheme` enum and warns whenever the old property is
+/// used. The enum type in the `gtk4` bindings is behind its `v4_20` feature,
+/// which this crate cannot enable (builds must keep working on GTK 4.10/4.14),
+/// so the property is set by name. `g_object_set` takes enums as `int`, and
+/// `GtkInterfaceColorScheme` keeps `DARK` at 2 across versions.
+fn set_gtk_color_scheme(gtk_settings: &GtkSettings, dark: bool) {
+    if gtk_settings
+        .find_property("gtk-interface-color-scheme")
+        .is_some()
+    {
+        // GtkInterfaceColorScheme: DEFAULT = 1, DARK = 2, LIGHT = 3.
+        let scheme: i32 = if dark { 2 } else { 1 };
+
+        unsafe {
+            gtk::glib::gobject_ffi::g_object_set(
+                gtk_settings.as_ptr().cast(),
+                c"gtk-interface-color-scheme".as_ptr(),
+                scheme,
+                std::ptr::null::<std::ffi::c_void>(),
+            );
+        }
+    } else {
+        gtk_settings.set_property("gtk-application-prefer-dark-theme", dark);
+    }
+}
+
 /// Browsing-data wipe with completion: receives a one-shot callback that
 /// fires with success once the asynchronous wipe finishes.
 pub type ClearBrowsingData = Rc<dyn Fn(Rc<dyn Fn(bool)>)>;
@@ -280,7 +309,7 @@ impl AppState {
         let dark = self.settings.borrow().dark_mode;
 
         if let Some(gtk_settings) = GtkSettings::default() {
-            gtk_settings.set_property("gtk-application-prefer-dark-theme", dark);
+            set_gtk_color_scheme(&gtk_settings, dark);
         }
 
         self.css_provider.load_from_data(&theme::stylesheet(dark));
@@ -506,6 +535,13 @@ impl AppState {
 
         // Release the setup token; reports now if everything already ended.
         completion.finish(true);
+
+        // Safety net: a WebKit async step that never reports back must not
+        // leave the settings page stuck on "Clearing…". `Completion` reports
+        // exactly once, so a late real callback after this is harmless.
+        let watchdog = completion.clone();
+
+        gtk::glib::timeout_add_seconds_local_once(30, move || watchdog.finish(false));
     }
 
     pub fn set_language(&self, language: &str) {

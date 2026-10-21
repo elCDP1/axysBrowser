@@ -64,6 +64,12 @@ browser (URLs arrive through `HANDLES_OPEN`, including `xdg-open` and
 # install the .desktop entry locally
 desktop-file-install --dir="$HOME/.local/share/applications" assets/axysbrowser.desktop
 update-desktop-database "$HOME/.local/share/applications"
+
+# install the icon so launchers and docks show it
+install -Dm644 assets/icons/hicolor/scalable/apps/axysbrowser.svg \
+  "$HOME/.local/share/icons/hicolor/scalable/apps/axysbrowser.svg"
+gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
+
 xdg-settings set default-web-browser axysbrowser.desktop
 ```
 
@@ -104,7 +110,7 @@ src/
   ui/                window, toolbar, menus, shortcuts, find bar, smokes
 locales/             en / es translations
 config/              default settings
-assets/              desktop entry
+assets/              desktop entry and icon
 .github/             CI workflows and Xvfb smoke scripts
 ```
 

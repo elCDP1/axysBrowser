@@ -14,6 +14,16 @@ app:
   search_or_enter_url: "Search or enter URL"
   close_tab: "Close tab"
 
+auth:
+  title: "Sign in"
+  message: "%{host} requires a username and password."
+  realm: "Realm: %{realm}"
+  username: "Username"
+  password: "Password"
+  sign_in: "Sign in"
+  cancel: "Cancel"
+  retry: "Incorrect username or password. Try again."
+
 settings:
   title: "Settings"
   appearance: "Appearance"

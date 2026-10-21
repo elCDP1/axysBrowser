@@ -7,14 +7,19 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use webkit6::{
-    HardwareAccelerationPolicy, LoadEvent, MemoryPressureSettings, NavigationPolicyDecision,
-    NetworkSession, PermissionRequest, PermissionState, PolicyDecisionType, ResponsePolicyDecision,
-    ScriptDialogType, WebProcessTerminationReason, WebView, prelude::*,
+    AuthenticationRequest, HardwareAccelerationPolicy, LoadEvent, MemoryPressureSettings,
+    NavigationPolicyDecision, NetworkSession, PermissionRequest, PermissionState,
+    PolicyDecisionType, ResponsePolicyDecision, ScriptDialogType, WebProcessTerminationReason,
+    WebView, prelude::*,
 };
 
 use super::permissions::{PermissionKind, PermissionManager};
 
 pub struct BrowserEngine;
+
+/// Handles WebKit's `authenticate` signal; the handler owns the request and
+/// must eventually authenticate or cancel it.
+pub type AuthenticateHandler = Rc<dyn Fn(&WebView, &AuthenticationRequest)>;
 
 /// Which WebKit signal reported a popup request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,10 +200,13 @@ impl BrowserEngine {
     /// `open_in_new_tab` is called (via idle, to avoid re-entrancy) with the
     /// URL of popups / new-window navigations. `show_notification` receives
     /// (title, body) of web notifications to surface as desktop notifications.
+    /// `on_authenticate` gets HTTP/proxy authentication requests; it must
+    /// eventually call `authenticate()` or `cancel()` on the request.
     pub fn wire_view(
         view: &WebView,
         open_in_new_tab: Rc<dyn Fn(String)>,
         show_notification: Rc<dyn Fn(String, String)>,
+        on_authenticate: AuthenticateHandler,
         permissions: PermissionManager,
     ) {
         // Shared popup guard: window.open() typically fires `create` AND a
@@ -212,6 +220,7 @@ impl BrowserEngine {
         Self::wire_dialogs(view);
         Self::wire_crash_recovery(view);
         Self::wire_notifications(view, show_notification);
+        Self::wire_authentication(view, on_authenticate);
     }
 
     /// Schemes the engine never loads itself: handed to the desktop
@@ -977,11 +986,15 @@ impl BrowserEngine {
 
             true
         });
+    }
 
-        view.connect_authenticate(|_, _request| {
-            // No interactive HTTP-auth handler yet: let WebKit cancel the
-            // request instead of hanging the load.
-            false
+    fn wire_authentication(view: &WebView, on_authenticate: AuthenticateHandler) {
+        view.connect_authenticate(move |view, request| {
+            // The dialog is asynchronous, so claim the signal to stop WebKit
+            // from cancelling the request while the user types.
+            on_authenticate(view, request);
+
+            true
         });
     }
 
