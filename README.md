@@ -126,15 +126,25 @@ Settings, bookmarks and history live in `$XDG_CONFIG_HOME/axysbrowser`
 (`~/.config/axysbrowser`); website data in `~/.local/share/axysbrowser`;
 caches in `~/.cache/axysbrowser`.
 
+History bursts are coalesced and written a couple of seconds after a visit,
+then flushed when the app exits normally, so a crash can lose the last two
+seconds of history.
+
 ## Testing
 
 ```sh
 cargo test --locked                      # unit tests
 cargo fmt --all --check                  # formatting
 cargo clippy --locked --all-targets -- -D warnings
-xvfb-run -a bash .github/gui-smoke.sh    # startup under Xvfb
+xvfb-run -a bash .github/gui-smoke.sh    # startup + a real page render under Xvfb
 xvfb-run -a bash .github/mem-smoke.sh    # open/close tabs, assert WebViews free
 ```
+
+`gui-smoke.sh` opens a local page and passes only when a WebKit web process
+exists and the page's own JavaScript reached the local server, so a broken
+web-process launch (sandbox, namespaces) cannot slip through. Its `strict`
+mode forces the sandbox on (`AXYS_FORCE_SANDBOX=1`) instead of letting the
+browser fall back to no sandbox silently.
 
 `mem-smoke.sh` (plus `strict` variants with the WebKit sandbox on) drives
 the built-in `AXYS_MEM_SMOKE` self-test against a local page: it checks
@@ -194,7 +204,12 @@ hit freezes on a Mesa/X11 setup, run with `AXYS_DMABUF=0` (or WebKit's own
 
 Hardware acceleration can be toggled in Settings and applies to open tabs
 immediately. If the window chrome itself is slow or glitchy, try GTK's
-software renderer with `GSK_RENDERER=cairo`.
+software renderer with `GSK_RENDERER=cairo`. On machines without a working
+GPU (VMs, Xvfb, some WSLg setups) GTK falls back to Mesa's software GL, which
+is memory hungry: measured under Xvfb, the main process used ~240 MiB PSS
+idle with the default renderer and ~105 MiB with `GSK_RENDERER=cairo`. On a
+real GPU this does not apply, so the browser does not change the renderer
+by itself.
 
 ## Contributing
 

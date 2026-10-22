@@ -1,12 +1,17 @@
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const MAX_HISTORY_ENTRIES: usize = 10_000;
+
+/// Visits are written to disk at most this often. Serializing and syncing
+/// the whole (up to 10 000 entries) file takes tens of milliseconds, which
+/// used to be paid on the UI thread after *every* page load.
+const SAVE_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryEntry {
@@ -20,6 +25,22 @@ struct HistoryStore {
     entries: Vec<HistoryEntry>,
 }
 
+/// Borrowing twin of [`HistoryStore`] used to write: same TOML, no clone of
+/// the whole history per save.
+#[derive(Serialize)]
+struct HistoryStoreRef<'a> {
+    entries: &'a [HistoryEntry],
+}
+
+/// Write-coalescing state shared by every clone of a manager.
+#[derive(Default)]
+struct PendingSave {
+    /// Entries changed since the last write.
+    dirty: Cell<bool>,
+    /// A deferred write is already scheduled.
+    armed: Cell<bool>,
+}
+
 type Listener = Weak<dyn Fn()>;
 type Listeners = Rc<RefCell<Vec<Listener>>>;
 
@@ -30,6 +51,7 @@ pub struct HistoryManager {
     /// never read from or written to disk.
     path: Option<PathBuf>,
     listeners: Listeners,
+    pending: Rc<PendingSave>,
 }
 
 impl HistoryManager {
@@ -45,6 +67,7 @@ impl HistoryManager {
             entries: Rc::new(RefCell::new(Vec::new())),
             path: None,
             listeners: Rc::new(RefCell::new(Vec::new())),
+            pending: Rc::default(),
         }
     }
 
@@ -68,6 +91,7 @@ impl HistoryManager {
             entries: Rc::new(RefCell::new(entries)),
             path: Some(path),
             listeners: Rc::new(RefCell::new(Vec::new())),
+            pending: Rc::default(),
         }
     }
 
@@ -111,7 +135,8 @@ impl HistoryManager {
         };
 
         if changed {
-            self.persist_and_notify();
+            self.schedule_save();
+            self.notify();
         }
     }
 
@@ -207,6 +232,54 @@ impl HistoryManager {
         listeners.push(Rc::downgrade(callback));
     }
 
+    /// Persists soon, coalescing bursts of visits into one write. When no
+    /// main loop owns this thread (unit tests, teardown) it writes at once.
+    fn schedule_save(&self) {
+        self.schedule_save_with(gtk::glib::MainContext::default().is_owner(), |manager| {
+            gtk::glib::timeout_add_local_once(SAVE_DELAY, move || manager.on_save_timer());
+        });
+    }
+
+    /// `defer`: a main loop will run `arm`'s timer. Split out so the
+    /// coalescing can be tested without a running GLib main loop.
+    fn schedule_save_with(&self, defer: bool, arm: impl FnOnce(HistoryManager)) {
+        if self.path.is_none() {
+            return;
+        }
+
+        self.pending.dirty.set(true);
+
+        if !defer {
+            self.flush();
+
+            return;
+        }
+
+        if !self.pending.armed.replace(true) {
+            arm(self.clone());
+        }
+    }
+
+    fn on_save_timer(&self) {
+        self.pending.armed.set(false);
+
+        self.flush();
+    }
+
+    /// Writes any deferred change now. Called on application shutdown so a
+    /// normal exit never loses the last visits; a no-op when nothing is
+    /// pending. A failed write keeps the change dirty so a later timer or
+    /// flush can retry it.
+    pub fn flush(&self) {
+        if !self.pending.dirty.get() {
+            return;
+        }
+
+        if let Err(error) = self.save() {
+            eprintln!("Failed to save browsing history: {error}");
+        }
+    }
+
     fn persist_and_notify(&self) {
         if let Err(error) = self.save() {
             eprintln!("Failed to save browsing history: {error}");
@@ -245,15 +318,21 @@ impl HistoryManager {
             return Ok(());
         };
 
+        // Mark the state dirty while writing: if serialization or the atomic
+        // rename fails, a later timer or shutdown flush retries it.
+        self.pending.dirty.set(true);
+
         let entries = self.entries.borrow();
 
-        let store = HistoryStore {
-            entries: entries.clone(),
-        };
+        let store = HistoryStoreRef { entries: &entries };
 
         let contents = toml::to_string_pretty(&store).map_err(io::Error::other)?;
 
-        crate::paths::atomic_write(path, &contents)
+        crate::paths::atomic_write(path, &contents)?;
+
+        self.pending.dirty.set(false);
+
+        Ok(())
     }
 }
 
@@ -276,6 +355,7 @@ mod tests {
             entries: Rc::new(RefCell::new(Vec::new())),
             path: Some(std::env::temp_dir().join(format!("axys-history-test-{name}.toml"))),
             listeners: Rc::new(RefCell::new(Vec::new())),
+            pending: Rc::default(),
         }
     }
 
@@ -359,6 +439,7 @@ mod tests {
             entries: Rc::new(RefCell::new(Vec::new())),
             path: Some(PathBuf::from("/proc/axys-nonexistent/history.toml")),
             listeners: Rc::new(RefCell::new(Vec::new())),
+            pending: Rc::default(),
         };
 
         assert!(broken.clear().is_err());
@@ -443,5 +524,143 @@ mod tests {
                 "{url} must not be recorded"
             );
         }
+    }
+
+    #[test]
+    fn deferred_visits_coalesce_into_a_single_write() {
+        let manager = test_manager("coalesce");
+        let path = test_path(&manager).to_path_buf();
+        let _ = fs::remove_file(&path);
+        let armed = Cell::new(0);
+
+        for i in 0..1000 {
+            manager
+                .entries
+                .borrow_mut()
+                .push(entry_at(&format!("https://example.com/{i}"), i));
+
+            manager.schedule_save_with(true, |_| armed.set(armed.get() + 1));
+        }
+
+        assert_eq!(armed.get(), 1, "one timer for the whole burst");
+        assert!(!path.exists(), "nothing is written while deferred");
+
+        manager.flush();
+
+        let reloaded = HistoryManager::load_from(path.clone());
+        assert_eq!(reloaded.entries.borrow().len(), 1000);
+
+        // Idempotent: a second flush (or the late timer) writes nothing.
+        fs::remove_file(&path).unwrap();
+        manager.flush();
+        manager.on_save_timer();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn immediate_privacy_writes_supersede_a_pending_one() {
+        let manager = test_manager("supersede");
+        let path = test_path(&manager).to_path_buf();
+        let _ = fs::remove_file(&path);
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://example.com/a", 1));
+        manager.schedule_save_with(true, |_| {});
+
+        assert!(!path.exists());
+
+        manager.clear().unwrap();
+
+        assert!(path.exists(), "clear writes immediately");
+
+        fs::remove_file(&path).unwrap();
+        manager.flush();
+
+        assert!(!path.exists(), "the pending write was superseded");
+    }
+
+    #[test]
+    fn without_a_main_loop_visits_are_written_immediately() {
+        let manager = test_manager("immediate");
+        let path = test_path(&manager).to_path_buf();
+        let _ = fs::remove_file(&path);
+
+        manager.add_visit("Title", "https://example.com/x");
+
+        assert_eq!(
+            HistoryManager::load_from(path.clone())
+                .entries
+                .borrow()
+                .len(),
+            1
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn failed_write_keeps_the_change_dirty_for_a_retry() {
+        let manager = test_manager("retry");
+        let path = test_path(&manager).to_path_buf();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&path);
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://example.com/retry", 1));
+        manager.schedule_save_with(true, |_| {});
+
+        // A directory at the destination makes the atomic rename fail.
+        fs::create_dir(&path).unwrap();
+        manager.flush();
+
+        assert!(
+            manager.pending.dirty.get(),
+            "a failed write must stay dirty so it can be retried"
+        );
+
+        fs::remove_dir(&path).unwrap();
+        manager.flush();
+
+        assert!(!manager.pending.dirty.get());
+        assert_eq!(
+            HistoryManager::load_from(path.clone())
+                .entries
+                .borrow()
+                .len(),
+            1
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn ephemeral_manager_never_schedules_a_write() {
+        let manager = HistoryManager::ephemeral();
+        let armed = Cell::new(0);
+
+        manager.schedule_save_with(true, |_| armed.set(armed.get() + 1));
+
+        assert_eq!(armed.get(), 0);
+    }
+
+    #[test]
+    fn borrowed_store_serializes_like_the_owned_one() {
+        let entries = vec![
+            entry_at("https://example.com/a", 1),
+            entry_at("https://example.com/b", 2),
+        ];
+
+        let owned = toml::to_string_pretty(&HistoryStore {
+            entries: entries.clone(),
+        })
+        .unwrap();
+
+        let borrowed = toml::to_string_pretty(&HistoryStoreRef { entries: &entries }).unwrap();
+
+        assert_eq!(owned, borrowed);
     }
 }

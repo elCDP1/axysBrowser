@@ -1298,10 +1298,10 @@ fn build_browser_window(
 
                 web_view.connect_is_loading_notify(move |view| {
                     if active_id.get() != id
-                        || !current_web_view
+                        || current_web_view
                             .borrow()
                             .as_ref()
-                            .is_some_and(|current| current == view)
+                            .is_none_or(|current| current != view)
                     {
                         return;
                     }
@@ -1359,10 +1359,10 @@ fn build_browser_window(
                     }
 
                     if active_id.get() != id
-                        || !current_web_view
+                        || current_web_view
                             .borrow()
                             .as_ref()
-                            .is_some_and(|current| current == view)
+                            .is_none_or(|current| current != view)
                     {
                         return;
                     }

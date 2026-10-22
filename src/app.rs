@@ -143,6 +143,18 @@ pub fn run() -> gtk::glib::ExitCode {
         });
     }
 
+    // History writes are deferred and coalesced (see `HistoryManager`);
+    // flush whatever is still pending so a normal exit loses nothing.
+    {
+        let state_slot = state_slot.clone();
+
+        app.connect_shutdown(move |_| {
+            if let Some(state) = state_slot.borrow().as_ref() {
+                state.history.flush();
+            }
+        });
+    }
+
     {
         let state_slot = state_slot.clone();
 

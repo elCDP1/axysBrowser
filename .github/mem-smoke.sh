@@ -16,11 +16,14 @@
 #
 # Usage: mem-smoke.sh [strict]
 #   default: WebKit sandbox off (CI runners cannot guarantee user
-#     namespaces); strict: sandbox left on.
+#     namespaces); strict: sandbox forced on and the no-sandbox fallback
+#     disabled.
 set -uo pipefail
 
 if [ "${1:-}" = "strict" ]; then
   echo "strict mode: sandbox enabled"
+  export AXYS_FORCE_SANDBOX=1
+  unset WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS
 else
   export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
 fi
@@ -29,7 +32,7 @@ export WEBKIT_DISABLE_DMABUF_RENDERER=1
 # GApplication single-instance would forward this launch into a running
 # browser (which then exits at once and reports nothing): refuse instead
 # of producing a confusing false negative.
-if pgrep -f "target/debug/axysbrowser" > /dev/null; then
+if pgrep -x axysbrowser > /dev/null; then
   echo "A browser instance is already running: close it first,"
   echo "a second launch would just activate that window and exit."
   exit 2
