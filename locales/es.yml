@@ -33,7 +33,7 @@ settings:
   english: "Inglés"
   spanish: "Español"
   search: "Búsqueda"
-  search_note: "Los cambios se aplican inmediatamente. Brave Search es el buscador predeterminado."
+  search_note: "Se usa en la barra de direcciones y en la página de nueva pestaña. Los cambios se aplican inmediatamente."
   privacy_security: "Privacidad y seguridad"
   tracking_prevention: "Prevención de seguimiento"
   tracking_description: "Usar la prevención inteligente de seguimiento de WebKit para la navegación normal."
@@ -51,6 +51,8 @@ settings:
   developer_description: "Activar las herramientas de desarrollo de WebKit. Los cambios se aplican inmediatamente."
   hw_accel: "Aceleración de hardware"
   hw_accel_description: "Usar la GPU para renderizar. Desactívalo en sistemas sin GPU funcional."
+  clipboard_reads: "Lectura del portapapeles"
+  clipboard_reads_description: "Permitir que los sitios lean el portapapeles tras un clic o una pulsación sin preguntar. Desactívalo para preguntar por sitio."
   permissions: "Permisos de sitios web"
   permissions_description: "Decisiones recordadas de notificaciones, cámara, micrófono y otros permisos por sitio."
   permissions_reset: "Olvidar todo"
@@ -122,7 +124,7 @@ welcome:
   heading: "Te damos la bienvenida a axysBrowser"
   subtitle: "Un navegador ligero y centrado en la privacidad para Linux."
   search: "Buscador"
-  search_note: "Brave Search es el buscador predeterminado."
+  search_note: "Puedes cambiarlo más tarde en Ajustes."
   description: "axysBrowser apuesta por la sencillez, la ligereza y la privacidad, con una interfaz Linux nativa y una experiencia de navegación limpia."
   continue: "Continuar"
 
@@ -145,6 +147,7 @@ history:
   search: "Buscar en el historial"
   clear: "Borrar historial"
   empty: "Todavía no hay historial."
+  no_results: "Ninguna entrada del historial coincide con la búsqueda."
   open: "Abrir"
   delete: "Eliminar"
   older_day: "24 horas"
@@ -163,6 +166,7 @@ bookmarks:
   open: "Abrir"
   search: "Buscar marcadores"
   empty: "Todavía no hay marcadores."
+  no_results: "Ningún marcador coincide con la búsqueda."
 
 find:
   title: "Buscar en la página"
@@ -184,6 +188,7 @@ permission:
   share_screen: "capturar tu pantalla"
   use_drm: "reproducir contenido protegido"
   use_pointer_lock: "bloquear el puntero"
+  use_clipboard: "leer tu portapapeles"
   use_other: "usar una función desconocida"
 
 dialog:

@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.1.2`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.1.3`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -32,7 +32,11 @@ GTK4 and WebKitGTK 6.
   "View page source" (and "Inspect Element" when developer tools are on)
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
 - Private downloads keep a separate list that dies with the window (files stay on disk, like other browsers)
-- Per-site permissions (notifications, camera, mic, location) with allow/block prompts
+- Per-site permissions (notifications, camera, mic, location) with
+  allow/block prompts; clipboard reads are allowed after a user gesture by
+  default, and Settings → Privacy can ask per site instead
+- Script clipboard writes need a user gesture, so background tabs cannot
+  replace what you copied
 - Tracking prevention (WebKit ITP) and cookie policy settings
 - Search engines: Brave (default), DuckDuckGo, Google, Bing, Yahoo, Startpage, Ecosia, Qwant
 - Find in page (Ctrl+F), reopen closed tab (Ctrl+Shift+T)
@@ -128,7 +132,9 @@ caches in `~/.cache/axysbrowser`.
 
 History bursts are coalesced and written a couple of seconds after a visit,
 then flushed when the app exits normally, so a crash can lose the last two
-seconds of history.
+seconds of history. If a write fails (full disk, read-only profile) it is
+retried a few times with growing delays, then again on the next visit and on
+exit.
 
 ## Testing
 

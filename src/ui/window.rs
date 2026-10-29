@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use webkit6::{ContextMenuItem, LoadEvent, NetworkSession, WebView, prelude::WebViewExt};
 
 use crate::app_state::AppState;
-use crate::browser::address::{SearchConfig, resolve_input};
+use crate::browser::address::SearchConfig;
 use crate::browser::engine::BrowserEngine;
 use crate::browser::tabs::{NewTabCallback, Tab};
 use crate::internal::pages::resources::TabRow;
@@ -21,7 +21,7 @@ use crate::internal::router::PageCallbacks;
 use super::actions::{WindowActions, register_window_actions};
 use super::bookmarks::BookmarkBar;
 use super::findbar::FindBar;
-use super::navigation::{address_text_for, begin_web_load};
+use super::navigation::{address_text_for, begin_web_load, is_tab_target, resolve_target};
 use super::tabs::TabBar;
 use super::toolbar::{Toolbar, ToolbarOptions};
 
@@ -158,6 +158,14 @@ fn build_browser_window(
         crate::browser::permissions::PermissionManager::ephemeral()
     } else {
         state.permissions.clone()
+    };
+
+    // Read live for every request, so toggling the setting applies to tabs
+    // that are already open.
+    let clipboard_reads: Rc<dyn Fn() -> bool> = {
+        let state = state.clone();
+
+        Rc::new(move || state.settings.borrow().allow_clipboard_reads)
     };
 
     // One history store per window: private windows get an ephemeral one so
@@ -522,15 +530,7 @@ fn build_browser_window(
             let target = {
                 let config = search.borrow();
 
-                resolve_input(&input, &config)
-            };
-
-            // An unknown `axys://` page falls back to New Tab rather than
-            // being silently dropped (no feedback at all).
-            let target = if target.starts_with("axys://") && router::page_name(&target).is_none() {
-                "axys://newtab".to_string()
-            } else {
-                target
+                resolve_target(&input, &config)
             };
 
             if let Some(page) = router::page_name(&target) {
@@ -611,11 +611,7 @@ fn build_browser_window(
                 return;
             }
 
-            if !target.starts_with("http://")
-                && !target.starts_with("https://")
-                && !target.starts_with("file://")
-                && target != "about:blank"
-            {
+            if !is_tab_target(&target) {
                 return;
             }
 
@@ -1003,6 +999,7 @@ fn build_browser_window(
                 show_notification.clone(),
                 on_authenticate,
                 permissions,
+                clipboard_reads.clone(),
             );
 
             // WebKit's default menu already contains the usual navigation,
@@ -2136,15 +2133,24 @@ fn build_browser_window(
         app: app.clone(),
     });
 
-    let first_tab = new_tab(None);
+    // URLs handed by the system (default-browser launches, `xdg-open`) are
+    // resolved exactly like typed input (bare domains and searches work too)
+    // and loaded straight into the first tab. Building a New Tab page first
+    // only to replace it wasted a full page build on every launch.
+    let first_target = initial_url
+        .map(|url| {
+            let config = search.borrow();
+
+            resolve_target(&url, &config)
+        })
+        .filter(|target| is_tab_target(target));
+
+    let first_tab = match first_target.as_deref() {
+        Some(target) => new_tab(Some(target)),
+        None => new_tab(None),
+    };
 
     active_id.set(first_tab);
-
-    // URLs handed by the system land in the first tab (resolved like typed
-    // input, so bare domains and searches work too).
-    if let Some(url) = initial_url {
-        navigate_tab(active_id.get(), url);
-    }
 
     window.present();
 

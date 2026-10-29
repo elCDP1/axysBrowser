@@ -48,6 +48,36 @@ pub fn load_config() -> SearchConfig {
     default_config()
 }
 
+/// Whether a dotted input should be treated as a hostname instead of a search.
+///
+/// Nearly everything with a dot and no spaces is a URL, but pure numbers
+/// (`3.14`, `version.2`) and near-miss addresses (`e.g`) are almost always
+/// searches; guessing `https://3.14` only produced a load error. The last
+/// label must look like a domain: at least two characters and not all
+/// digits. A single trailing dot (fully-qualified name) is ignored, and IDN
+/// labels are accepted because the check is "not numeric", not "ASCII".
+fn looks_like_host(input: &str) -> bool {
+    if input.contains(' ') {
+        return false;
+    }
+
+    let host = input.split(['/', '?', '#']).next().unwrap_or(input);
+
+    // Drop a numeric port before looking at the last label.
+    let host = match host.rsplit_once(':') {
+        Some((head, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => head,
+        _ => host,
+    };
+
+    let host = host.strip_suffix('.').unwrap_or(host);
+
+    let Some(last_label) = host.rsplit('.').next() else {
+        return false;
+    };
+
+    last_label.chars().count() >= 2 && !last_label.chars().all(|c| c.is_ascii_digit())
+}
+
 pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
     let input = input.trim();
 
@@ -86,6 +116,21 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return format!("{}{}", &lower[..scheme_len], &input[scheme_len..]);
     }
 
+    // A scheme we cannot load (`ftp://`, `ssh://`, …) would otherwise be
+    // turned into `https://ftp://…` by the heuristic below, which only ends
+    // in a load error. Searching it keeps the user's intent.
+    if let Some(colon) = lower.find("://") {
+        let scheme = &lower[..colon];
+
+        if !scheme.is_empty()
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
+        {
+            return search_url(input, config);
+        }
+    }
+
     if !input.contains(' ')
         && (lower == "localhost"
             || lower.starts_with("localhost:")
@@ -112,7 +157,7 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         }
     }
 
-    if input.contains('.') && !input.contains(' ') {
+    if input.contains('.') && looks_like_host(input) {
         let host = input.trim_end_matches('/');
 
         if host.eq_ignore_ascii_case("youtube.com") {
@@ -126,6 +171,12 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return format!("https://{input}");
     }
 
+    search_url(input, config)
+}
+
+/// Sends `input` to the configured engine, form-encoding it as a query
+/// (spaces become `+`, which every bundled engine accepts).
+fn search_url(input: &str, config: &SearchConfig) -> String {
     let engine = config
         .engines
         .get(&config.default_engine)
@@ -316,6 +367,82 @@ mod tests {
         assert_eq!(
             resolve_input("www.youtube.com", &config),
             "https://www.youtube.com"
+        );
+    }
+
+    #[test]
+    fn search_uses_the_selected_engine() {
+        let mut config = load_config();
+
+        config.default_engine = "duckduckgo".to_string();
+
+        let resolved = resolve_input("hola mundo", &config);
+
+        // `byte_serialize` is form encoding: spaces become `+`, which every
+        // configured engine accepts in its query string.
+        assert_eq!(resolved, "https://duckduckgo.com/?q=hola+mundo");
+        assert!(!resolved.contains("%s"), "placeholder must be replaced");
+    }
+
+    #[test]
+    fn unknown_schemes_are_searched_instead_of_becoming_https_urls() {
+        let config = load_config();
+
+        for input in ["ftp://example.com/file", "ssh://example.com"] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search.brave.com/search?q="),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+    }
+
+    #[test]
+    fn dotted_numbers_are_searched_instead_of_becoming_hosts() {
+        let config = load_config();
+
+        for input in ["3.14", "1.5", "version.2", "10.0.0.999"] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search.brave.com/search?q="),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+    }
+
+    #[test]
+    fn near_miss_domains_are_searched() {
+        let config = load_config();
+
+        for input in ["e.g", "e.g.", "example.c"] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search.brave.com/search?q="),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_with_port_is_still_a_url() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("example.com:8080/x", &config),
+            "https://example.com:8080/x"
+        );
+    }
+
+    #[test]
+    fn fully_qualified_host_keeps_its_trailing_dot() {
+        let config = load_config();
+
+        assert_eq!(
+            resolve_input("Example.com./Path", &config),
+            "https://Example.com./Path"
         );
     }
 }

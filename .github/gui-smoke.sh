@@ -64,10 +64,24 @@ cat > "$WORK/gui.html" <<'HTML'
 <script>fetch("/axys-rendered").catch(() => {});</script>
 HTML
 
-PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
-python3 -m http.server "$PORT" --bind 127.0.0.1 --directory "$WORK" > "$SERVER_LOG" 2>&1 &
+python3 "$(dirname "${BASH_SOURCE[0]}")/smoke-server.py" "$WORK" "$WORK/port" > "$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-sleep 1
+
+# The server picks its own port and publishes it: no probe-then-release race.
+PORT=""
+for _ in $(seq 1 100); do
+  if [ -s "$WORK/port" ]; then
+    PORT=$(cat "$WORK/port")
+    break
+  fi
+  kill -0 "$SERVER_PID" 2>/dev/null || break
+  sleep 0.1
+done
+if [ -z "$PORT" ]; then
+  echo "SMOKE SERVER FAILED TO START"
+  cat "$SERVER_LOG"
+  exit 1
+fi
 
 # True when a WebKit web process is a descendant of $PID.
 web_process_running() {

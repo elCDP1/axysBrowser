@@ -181,9 +181,16 @@ impl BrowserEngine {
         // WebRTC calls are unaffected: they use explicit permission grants.
         settings.set_media_playback_requires_user_gesture(true);
 
-        // Popups (OAuth) and rendering.
+        // Popups (OAuth) get their own tab (see `wire_popups`).
         settings.set_javascript_can_open_windows_automatically(true);
-        settings.set_javascript_can_access_clipboard(true);
+
+        // Chromium parity: script-driven clipboard *writes* need a user
+        // gesture. WebKit treats this as "no gesture needed at all" for both
+        // `document.execCommand('copy'/'cut')` and `navigator.clipboard`
+        // writes, which would let any page (background tabs included)
+        // silently replace the clipboard. Reads never depend on it: they go
+        // through the clipboard permission prompt instead.
+        settings.set_javascript_can_access_clipboard(false);
 
         // Configurable (Settings → Appearance): forced acceleration breaks
         // systems without a working GPU (notably some WSLg setups).
@@ -208,6 +215,7 @@ impl BrowserEngine {
         show_notification: Rc<dyn Fn(String, String)>,
         on_authenticate: AuthenticateHandler,
         permissions: PermissionManager,
+        clipboard_reads: Rc<dyn Fn() -> bool>,
     ) {
         // Shared popup guard: window.open() typically fires `create` AND a
         // NewWindow policy decision for the same URL — one guard for both
@@ -216,7 +224,7 @@ impl BrowserEngine {
 
         Self::wire_policy(view, open_in_new_tab.clone(), popup_guard.clone());
         Self::wire_popups(view, open_in_new_tab, popup_guard);
-        Self::wire_permissions(view, permissions);
+        Self::wire_permissions(view, permissions, clipboard_reads);
         Self::wire_dialogs(view);
         Self::wire_crash_recovery(view);
         Self::wire_notifications(view, show_notification);
@@ -590,9 +598,14 @@ impl BrowserEngine {
         dialog.present();
     }
 
-    fn wire_permissions(view: &WebView, permissions: PermissionManager) {
+    fn wire_permissions(
+        view: &WebView,
+        permissions: PermissionManager,
+        clipboard_reads: Rc<dyn Fn() -> bool>,
+    ) {
         view.connect_permission_request({
             let permissions = permissions.clone();
+            let clipboard_reads = clipboard_reads.clone();
 
             move |view, request: &PermissionRequest| {
                 // PermissionRequest is an interface; the concrete type name
@@ -639,6 +652,16 @@ impl BrowserEngine {
                     return true;
                 }
 
+                // Settings → Privacy: clipboard reads need no per-site prompt
+                // while enabled. WebKit still requires transient user
+                // activation and a secure context, and writes stay
+                // gesture-gated (`javascript_can_access_clipboard(false)`).
+                if kind == PermissionKind::Clipboard && clipboard_reads() {
+                    request.allow();
+
+                    return true;
+                }
+
                 Self::ask_permission(view, request.clone(), kind, origin, permissions.clone());
 
                 true
@@ -647,6 +670,7 @@ impl BrowserEngine {
 
         view.connect_query_permission_state({
             let permissions = permissions.clone();
+            let clipboard_reads = clipboard_reads.clone();
 
             move |view, query| {
                 // Report a remembered verdict so sites see the real state
@@ -664,6 +688,9 @@ impl BrowserEngine {
                 let state = match permissions.remembered(&origin, kind) {
                     Some(true) => PermissionState::Granted,
                     Some(false) => PermissionState::Denied,
+                    None if kind == PermissionKind::Clipboard && clipboard_reads() => {
+                        PermissionState::Granted
+                    }
                     None => PermissionState::Prompt,
                 };
 

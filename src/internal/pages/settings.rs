@@ -266,6 +266,27 @@ pub fn build_settings(
         });
     }
 
+    let clipboard_row = row(
+        &rust_i18n::t!("settings.clipboard_reads"),
+        &rust_i18n::t!("settings.clipboard_reads_description"),
+    );
+
+    let clipboard_switch = Switch::new();
+
+    clipboard_switch.set_active(state.settings.borrow().allow_clipboard_reads);
+
+    clipboard_switch.set_valign(gtk::Align::Center);
+
+    clipboard_row.append(&clipboard_switch);
+
+    {
+        let state = state.clone();
+
+        clipboard_switch.connect_active_notify(move |switch| {
+            state.set_allow_clipboard_reads(switch.is_active());
+        });
+    }
+
     let permissions_desc = format!(
         "{} ({})",
         rust_i18n::t!("settings.permissions_description"),
@@ -362,6 +383,8 @@ pub fn build_settings(
     page.append(&developer_row);
 
     page.append(&hw_row);
+
+    page.append(&clipboard_row);
 
     page.append(&permissions_row);
 

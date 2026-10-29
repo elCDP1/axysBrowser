@@ -174,6 +174,12 @@ pub struct UserSettings {
     #[serde(default = "default_cookie_policy")]
     pub cookie_policy: String,
 
+    /// Sites may read the clipboard after a user gesture without an
+    /// allow/block prompt. On by default (the `Clipboard` prompt remains
+    /// the fallback when this is turned off).
+    #[serde(default = "default_true")]
+    pub allow_clipboard_reads: bool,
+
     #[serde(default = "default_language")]
     pub language: String,
 }
@@ -187,6 +193,7 @@ impl Default for UserSettings {
             hardware_acceleration: true,
             tracking_prevention: true,
             cookie_policy: default_cookie_policy(),
+            allow_clipboard_reads: true,
             language: default_language(),
         }
     }
@@ -427,6 +434,16 @@ impl AppState {
         self.network_session.set_itp_enabled(enabled);
 
         self.save();
+    }
+
+    /// Clipboard reads allowed without a per-site prompt (applied live: the
+    /// permission handler reads the setting for every request).
+    pub fn set_allow_clipboard_reads(&self, enabled: bool) {
+        self.settings.borrow_mut().allow_clipboard_reads = enabled;
+
+        self.save();
+
+        self.notify_settings_changed();
     }
 
     pub fn set_cookie_policy(&self, policy: &str) {
@@ -678,6 +695,7 @@ mod tests {
         assert!(settings.hardware_acceleration);
         assert!(settings.tracking_prevention);
         assert_eq!(settings.cookie_policy, "no-third-party");
+        assert!(settings.allow_clipboard_reads);
         assert_eq!(settings.language, "en");
     }
 
@@ -695,6 +713,7 @@ mod tests {
         assert!(settings.tracking_prevention);
         assert_eq!(settings.search_engine, "brave");
         assert_eq!(settings.cookie_policy, "no-third-party");
+        assert!(settings.allow_clipboard_reads);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
@@ -19,9 +19,15 @@ pub struct Bookmark {
     pub favicon_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct BookmarkStore {
     bookmarks: Vec<Bookmark>,
+}
+
+/// Borrowed view used when writing, so saving never clones the list.
+#[derive(Serialize)]
+struct BookmarkStoreRef<'a> {
+    bookmarks: &'a [Bookmark],
 }
 
 type Listener = Weak<dyn Fn()>;
@@ -32,6 +38,10 @@ pub struct BookmarkManager {
     bookmarks: Rc<RefCell<Vec<Bookmark>>>,
     path: PathBuf,
     listeners: Listeners,
+    /// Bumped on every change, so UI listeners that are also refreshed for
+    /// unrelated reasons (navigation, tab switches) can skip rebuilding
+    /// their widgets from unchanged data.
+    revision: Rc<Cell<u64>>,
 }
 
 impl BookmarkManager {
@@ -53,7 +63,13 @@ impl BookmarkManager {
             bookmarks: Rc::new(RefCell::new(bookmarks)),
             path,
             listeners: Rc::new(RefCell::new(Vec::new())),
+            revision: Rc::new(Cell::new(0)),
         }
+    }
+
+    /// Monotonic change counter: any add, update or remove bumps it.
+    pub fn revision(&self) -> u64 {
+        self.revision.get()
     }
 
     pub fn entries(&self) -> Vec<Bookmark> {
@@ -268,6 +284,9 @@ impl BookmarkManager {
     }
 
     fn notify(&self) {
+        // Every mutation notifies, so this is also the change counter.
+        self.revision.set(self.revision.get() + 1);
+
         let callbacks = {
             let mut listeners = self.listeners.borrow_mut();
 
@@ -321,8 +340,8 @@ impl BookmarkManager {
     fn save(&self) -> io::Result<()> {
         let bookmarks = self.bookmarks.borrow();
 
-        let store = BookmarkStore {
-            bookmarks: bookmarks.clone(),
+        let store = BookmarkStoreRef {
+            bookmarks: bookmarks.as_slice(),
         };
 
         let contents = toml::to_string_pretty(&store).map_err(io::Error::other)?;
@@ -344,7 +363,7 @@ fn sanitize_title(title: String, url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::BookmarkManager;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::fs;
     use std::rc::Rc;
 
@@ -360,6 +379,7 @@ mod tests {
             bookmarks: Rc::new(RefCell::new(Vec::new())),
             path,
             listeners: Rc::new(RefCell::new(Vec::new())),
+            revision: Rc::new(Cell::new(0)),
         }
     }
 
@@ -449,6 +469,28 @@ mod tests {
         assert!(manager.add_with_favicon("   ", "https://example.com/page", None));
 
         assert_eq!(manager.entries()[0].title, "https://example.com/page");
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn revision_bumps_on_every_change() {
+        let manager = test_manager("revision");
+
+        let start = manager.revision();
+
+        assert!(manager.add_with_favicon("Example", "https://example.com", None));
+
+        let added = manager.revision();
+
+        assert!(added > start, "adding must bump the revision");
+
+        // Rejected changes must not look like changes.
+        assert!(!manager.add_with_favicon("Again", "https://example.com", None));
+        assert_eq!(manager.revision(), added);
+
+        assert!(manager.remove("https://example.com"));
+        assert!(manager.revision() > added, "removing must bump it");
 
         let _ = fs::remove_file(&manager.path);
     }

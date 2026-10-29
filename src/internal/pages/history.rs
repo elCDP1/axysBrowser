@@ -142,7 +142,13 @@ pub fn build_history(manager: HistoryManager, on_open: Rc<dyn Fn(String)>) -> Bo
             let entries = manager.search_limited(&query, 200);
 
             if entries.is_empty() {
-                let empty = Label::new(Some(&rust_i18n::t!("history.empty")));
+                let message = if query.trim().is_empty() {
+                    rust_i18n::t!("history.empty")
+                } else {
+                    rust_i18n::t!("history.no_results")
+                };
+
+                let empty = Label::new(Some(&message));
 
                 empty.add_css_class("dim-label");
 

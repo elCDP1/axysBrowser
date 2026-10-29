@@ -293,7 +293,7 @@ pub fn build_resources(deps: ResourcesDeps) -> ScrolledWindow {
         let last_rows: Rc<RefCell<Vec<TabRow>>> = Rc::new(RefCell::new(Vec::new()));
 
         Rc::new(move || {
-            let memory_kb = memprobe::tree_memory_kb();
+            let (memory_kb, web_pids) = memprobe::tree_snapshot();
 
             {
                 let mut samples = samples.borrow_mut();
@@ -309,7 +309,7 @@ pub fn build_resources(deps: ResourcesDeps) -> ScrolledWindow {
 
             memory_value.set_text(&crate::browser::downloads::format_bytes(memory_kb * 1024));
 
-            process_value.set_text(&memprobe::web_process_pids().len().to_string());
+            process_value.set_text(&web_pids.len().to_string());
 
             let rows = tab_rows();
 

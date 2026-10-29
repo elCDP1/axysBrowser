@@ -35,3 +35,21 @@ fn main() {
 
     std::process::exit(i32::from(app::run()));
 }
+
+#[cfg(test)]
+mod version_tests {
+    /// The About page and the new tab footer read `CARGO_PKG_VERSION`, so the
+    /// only version that can go stale by hand is the README status line.
+    /// Failing here turns a release-time slip into a test failure.
+    #[test]
+    fn readme_status_matches_the_crate_version() {
+        const README: &str = include_str!("../README.md");
+
+        let expected = format!("Status: `{}`", env!("CARGO_PKG_VERSION"));
+
+        assert!(
+            README.contains(&expected),
+            "README status must match Cargo.toml ({expected})"
+        );
+    }
+}

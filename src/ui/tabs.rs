@@ -1,10 +1,22 @@
 use gtk::prelude::*;
 use gtk::{Box, Button, GestureClick, Orientation, PropagationPhase};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::browser::tabs::Tab;
 
 use super::logo::build_logo_button;
+
+/// What the tab row currently shows. `refresh` is called on navigation,
+/// tab switches, title changes and language changes; rebuilding every
+/// button when the result would be identical cancels in-flight clicks and
+/// costs a full widget tree, so it is skipped.
+#[derive(PartialEq, Eq)]
+struct Rendered {
+    rows: Vec<(usize, String)>,
+    active: usize,
+    close_tooltip: String,
+}
 
 pub struct TabBar {
     pub root: Box,
@@ -13,6 +25,7 @@ pub struct TabBar {
     new_button: Button,
     on_select: Rc<dyn Fn(usize)>,
     on_close: Rc<dyn Fn(usize)>,
+    rendered: RefCell<Option<Rendered>>,
 }
 
 impl TabBar {
@@ -71,6 +84,7 @@ impl TabBar {
             new_button,
             on_select,
             on_close,
+            rendered: RefCell::new(None),
         }
     }
 
@@ -84,6 +98,36 @@ impl TabBar {
     }
 
     pub fn refresh(&self, tabs: &[Tab], active_id: usize) {
+        let close_tooltip = rust_i18n::t!("app.close_tab").to_string();
+        let fallback_title = rust_i18n::t!("app.new_tab").to_string();
+
+        let rendered = Rendered {
+            rows: tabs
+                .iter()
+                .map(|tab| {
+                    let title = if tab.title.is_empty() {
+                        fallback_title.clone()
+                    } else {
+                        tab.title.clone()
+                    };
+
+                    (tab.id, title)
+                })
+                .collect(),
+            active: active_id,
+            close_tooltip: close_tooltip.clone(),
+        };
+
+        {
+            let mut last = self.rendered.borrow_mut();
+
+            if last.as_ref() == Some(&rendered) {
+                return;
+            }
+
+            *last = Some(rendered);
+        }
+
         while let Some(child) = self.tabs_box.first_child() {
             self.tabs_box.remove(&child);
         }
@@ -101,10 +145,8 @@ impl TabBar {
                 tab.add_css_class("active");
             }
 
-            let new_tab_title = rust_i18n::t!("app.new_tab").to_string();
-
             let title = if tab_data.title.is_empty() {
-                new_tab_title.as_str()
+                fallback_title.as_str()
             } else {
                 &tab_data.title
             };
@@ -125,7 +167,7 @@ impl TabBar {
 
             let close = Button::builder()
                 .icon_name("window-close-symbolic")
-                .tooltip_text(rust_i18n::t!("app.close_tab").as_ref())
+                .tooltip_text(close_tooltip.as_str())
                 .build();
 
             // Fixed small box, vertically centered in the tab row, so the

@@ -13,6 +13,12 @@ const MAX_HISTORY_ENTRIES: usize = 10_000;
 /// used to be paid on the UI thread after *every* page load.
 const SAVE_DELAY: Duration = Duration::from_secs(2);
 
+/// After a failed deferred write the timer is re-armed this many times, with
+/// the delay doubling each time (4, 8, 16, 32 s). Past that it gives up until
+/// the next visit or the shutdown flush tries again, so a persistent failure
+/// (full disk, read-only profile) never turns into a retry loop.
+const MAX_SAVE_RETRIES: u32 = 4;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HistoryEntry {
     pub title: String,
@@ -39,6 +45,8 @@ struct PendingSave {
     dirty: Cell<bool>,
     /// A deferred write is already scheduled.
     armed: Cell<bool>,
+    /// Consecutive failed deferred writes; reset by any successful write.
+    failures: Cell<u32>,
 }
 
 type Listener = Weak<dyn Fn()>;
@@ -143,7 +151,9 @@ impl HistoryManager {
     /// Newest-first matches, capped at `limit` rows so pages never clone
     /// and render thousands of widgets per keystroke.
     pub fn search_limited(&self, query: &str, limit: usize) -> Vec<HistoryEntry> {
-        let query = query.trim().to_ascii_lowercase();
+        // Unicode-aware (not `to_ascii_lowercase`): Spanish titles such as
+        // "España" must match a lowercase query.
+        let query = query.trim().to_lowercase();
 
         if query.is_empty() {
             return self
@@ -161,8 +171,8 @@ impl HistoryManager {
             .iter()
             .rev()
             .filter(|entry| {
-                entry.title.to_ascii_lowercase().contains(&query)
-                    || entry.url.to_ascii_lowercase().contains(&query)
+                entry.title.to_lowercase().contains(&query)
+                    || entry.url.to_lowercase().contains(&query)
             })
             .take(limit)
             .cloned()
@@ -261,9 +271,32 @@ impl HistoryManager {
     }
 
     fn on_save_timer(&self) {
+        self.on_save_timer_with(|manager, delay| {
+            gtk::glib::timeout_add_local_once(delay, move || manager.on_save_timer());
+        });
+    }
+
+    /// Runs the deferred write; if it failed, `rearm` schedules the retry
+    /// (see [`MAX_SAVE_RETRIES`]). Split out so the backoff can be tested
+    /// without a running GLib main loop.
+    fn on_save_timer_with(&self, rearm: impl FnOnce(HistoryManager, Duration)) {
         self.pending.armed.set(false);
 
         self.flush();
+
+        if let Some(delay) = self.retry_delay() {
+            self.pending.armed.set(true);
+
+            rearm(self.clone(), delay);
+        }
+    }
+
+    /// `Some(delay)` while the last writes failed and retries remain.
+    fn retry_delay(&self) -> Option<Duration> {
+        let failures = self.pending.failures.get();
+
+        (self.pending.dirty.get() && (1..=MAX_SAVE_RETRIES).contains(&failures))
+            .then(|| SAVE_DELAY * 2u32.pow(failures))
     }
 
     /// Writes any deferred change now. Called on application shutdown so a
@@ -276,6 +309,10 @@ impl HistoryManager {
         }
 
         if let Err(error) = self.save() {
+            self.pending
+                .failures
+                .set(self.pending.failures.get().saturating_add(1));
+
             eprintln!("Failed to save browsing history: {error}");
         }
     }
@@ -331,6 +368,7 @@ impl HistoryManager {
         crate::paths::atomic_write(path, &contents)?;
 
         self.pending.dirty.set(false);
+        self.pending.failures.set(0);
 
         Ok(())
     }
@@ -396,6 +434,21 @@ mod tests {
 
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].url, "https://new.example");
+    }
+
+    #[test]
+    fn search_is_case_insensitive_for_accented_text() {
+        let manager = test_manager("search-unicode");
+
+        manager.entries.borrow_mut().push(HistoryEntry {
+            title: "España".to_string(),
+            url: "https://example.com/ESPANA".to_string(),
+            visited_at: 1,
+        });
+
+        assert_eq!(manager.search_limited("españa", usize::MAX).len(), 1);
+        assert_eq!(manager.search_limited("ESPAÑA", usize::MAX).len(), 1);
+        assert!(manager.search_limited("portugal", usize::MAX).is_empty());
     }
 
     #[test]
@@ -662,5 +715,108 @@ mod tests {
         let borrowed = toml::to_string_pretty(&HistoryStoreRef { entries: &entries }).unwrap();
 
         assert_eq!(owned, borrowed);
+    }
+
+    /// Makes writes to `path` fail (a directory sits where the file goes).
+    fn block_path(path: &std::path::Path) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(path);
+
+        fs::create_dir(path).unwrap();
+    }
+
+    #[test]
+    fn failed_deferred_write_is_retried_with_bounded_backoff() {
+        let manager = test_manager("backoff");
+        let path = test_path(&manager).to_path_buf();
+
+        block_path(&path);
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://example.com/backoff", 1));
+        manager.schedule_save_with(true, |_| {});
+
+        let mut delays = Vec::new();
+
+        // The original attempt plus MAX_SAVE_RETRIES retries, then it stops.
+        for _ in 0..=MAX_SAVE_RETRIES {
+            manager.on_save_timer_with(|_, delay| delays.push(delay));
+        }
+
+        assert_eq!(
+            delays,
+            [4, 8, 16, 32].map(Duration::from_secs),
+            "doubling delays, one per allowed retry"
+        );
+        assert!(
+            !manager.pending.armed.get(),
+            "no timer is left armed after giving up"
+        );
+        assert!(manager.pending.dirty.get(), "the change is still pending");
+
+        // Once the disk recovers, the next attempt saves and resets.
+        fs::remove_dir(&path).unwrap();
+        manager.flush();
+
+        assert!(!manager.pending.dirty.get());
+        assert_eq!(manager.pending.failures.get(), 0);
+        assert_eq!(
+            HistoryManager::load_from(path.clone())
+                .entries
+                .borrow()
+                .len(),
+            1
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_successful_timer_write_does_not_rearm() {
+        let manager = test_manager("no-rearm");
+        let path = test_path(&manager).to_path_buf();
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&path);
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://example.com/ok", 1));
+        manager.schedule_save_with(true, |_| {});
+
+        let mut rearmed = 0;
+        manager.on_save_timer_with(|_, _| rearmed += 1);
+
+        assert_eq!(rearmed, 0);
+        assert!(!manager.pending.armed.get());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_new_visit_after_giving_up_arms_the_timer_again() {
+        let manager = test_manager("rearm-after-giveup");
+        let path = test_path(&manager).to_path_buf();
+
+        block_path(&path);
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://example.com/a", 1));
+        manager.schedule_save_with(true, |_| {});
+
+        for _ in 0..=MAX_SAVE_RETRIES {
+            manager.on_save_timer_with(|_, _| {});
+        }
+
+        let armed = Cell::new(0);
+        manager.schedule_save_with(true, |_| armed.set(armed.get() + 1));
+
+        assert_eq!(armed.get(), 1, "a fresh visit retries without waiting");
+
+        let _ = fs::remove_dir_all(&path);
     }
 }

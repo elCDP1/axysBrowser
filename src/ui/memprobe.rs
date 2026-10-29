@@ -129,6 +129,28 @@ pub fn tree_memory_kb() -> u64 {
         .sum()
 }
 
+/// Memory in KiB and the PIDs of the running web (renderer) processes,
+/// both from a single `/proc` scan. The resources page and the memory
+/// self-test need the two together; calling [`tree_memory_kb`] and
+/// [`web_process_pids`] back to back walked (and `stat`-read) the whole
+/// process table twice.
+pub fn tree_snapshot() -> (u64, Vec<u32>) {
+    let tree = current_tree();
+
+    let memory_kb = tree
+        .iter()
+        .map(|process| process_memory_kb(process.pid))
+        .sum();
+
+    let web_pids = tree
+        .iter()
+        .filter(|process| is_web_process(&process.comm))
+        .map(|process| process.pid)
+        .collect();
+
+    (memory_kb, web_pids)
+}
+
 /// Whether a process is a WebKit web (renderer) process. `comm` is
 /// truncated to 15 characters by the kernel, hence the prefix match.
 pub fn is_web_process(comm: &str) -> bool {
@@ -230,5 +252,16 @@ mod tests {
         assert!(process_memory_kb(me) > 0);
         assert!(is_alive(me));
         assert!(current_tree().iter().any(|process| process.pid == me));
+    }
+
+    #[test]
+    fn snapshot_combines_memory_and_web_pids() {
+        let (memory_kb, web_pids) = tree_snapshot();
+
+        assert!(memory_kb > 0, "the browser itself must be counted");
+        assert!(
+            web_pids.iter().all(|pid| is_alive(*pid)),
+            "reported web processes must be live at snapshot time"
+        );
     }
 }

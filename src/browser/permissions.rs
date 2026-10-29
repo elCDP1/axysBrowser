@@ -2,7 +2,8 @@
 //!
 //! Replaces blanket auto-allow/auto-deny: the first time an origin asks for
 //! something sensitive (notifications, camera/microphone, geolocation,
-//! screen sharing, DRM), the browser prompts and can remember the answer.
+//! screen sharing, DRM, clipboard reads), the browser prompts and can
+//! remember the answer.
 //! Decisions persist as TOML next to the other profile data; private
 //! windows use an ephemeral manager that never touches disk.
 
@@ -31,6 +32,9 @@ pub enum PermissionKind {
     Drm,
     /// Pointer lock is harmless and games need it: granted silently.
     PointerLock,
+    /// Clipboard reads (`navigator.clipboard.readText()`/`read()`), asked
+    /// per origin and still gated by WebKit on a user gesture.
+    Clipboard,
     /// Anything else: denied silently (status quo ante).
     Other,
 }
@@ -57,6 +61,8 @@ impl PermissionKind {
             Self::Drm
         } else if lower.contains("pointerlock") || lower.contains("pointer-lock") {
             Self::PointerLock
+        } else if lower.contains("clipboard") {
+            Self::Clipboard
         } else {
             Self::Other
         }
@@ -99,6 +105,7 @@ impl PermissionKind {
                 | Self::Media
                 | Self::ScreenShare
                 | Self::Drm
+                | Self::Clipboard
         )
     }
 
@@ -113,6 +120,7 @@ impl PermissionKind {
             Self::ScreenShare => "permission.share_screen",
             Self::Drm => "permission.use_drm",
             Self::PointerLock => "permission.use_pointer_lock",
+            Self::Clipboard => "permission.use_clipboard",
             Self::Other => "permission.use_other",
         }
     }
@@ -322,6 +330,10 @@ mod tests {
             PermissionKind::PointerLock
         );
         assert_eq!(
+            PermissionKind::classify("WebKitClipboardPermissionRequest"),
+            PermissionKind::Clipboard
+        );
+        assert_eq!(
             PermissionKind::classify("SomethingUnknown"),
             PermissionKind::Other
         );
@@ -499,6 +511,7 @@ mod tests {
             PermissionKind::Media,
             PermissionKind::ScreenShare,
             PermissionKind::Drm,
+            PermissionKind::Clipboard,
         ] {
             assert!(kind.needs_prompt(), "{kind:?}");
         }
@@ -518,6 +531,7 @@ mod tests {
             PermissionKind::ScreenShare,
             PermissionKind::Drm,
             PermissionKind::PointerLock,
+            PermissionKind::Clipboard,
             PermissionKind::Other,
         ];
 

@@ -143,7 +143,7 @@ pub fn build_bookmarks(manager: BookmarkManager, on_open: Rc<dyn Fn(String)>) ->
 
             let query = search
                 .upgrade()
-                .map(|entry| entry.text().trim().to_ascii_lowercase())
+                .map(|entry| entry.text().trim().to_lowercase())
                 .unwrap_or_default();
 
             let bookmarks: Vec<Bookmark> = manager
@@ -151,13 +151,19 @@ pub fn build_bookmarks(manager: BookmarkManager, on_open: Rc<dyn Fn(String)>) ->
                 .into_iter()
                 .filter(|bookmark| {
                     query.is_empty()
-                        || bookmark.title.to_ascii_lowercase().contains(&query)
-                        || bookmark.url.to_ascii_lowercase().contains(&query)
+                        || bookmark.title.to_lowercase().contains(&query)
+                        || bookmark.url.to_lowercase().contains(&query)
                 })
                 .collect();
 
             if bookmarks.is_empty() {
-                let empty = Label::new(Some(&rust_i18n::t!("bookmarks.empty")));
+                let message = if query.is_empty() {
+                    rust_i18n::t!("bookmarks.empty")
+                } else {
+                    rust_i18n::t!("bookmarks.no_results")
+                };
+
+                let empty = Label::new(Some(&message));
 
                 empty.add_css_class("dim-label");
 

@@ -95,8 +95,8 @@ async fn run(ctx: SmokeContext, url: String) {
     };
 
     for cycle in 1..=CYCLES {
-        let base_kb = memprobe::tree_memory_kb();
-        let base_web = memprobe::web_process_pids().len();
+        let (base_kb, base_pids) = memprobe::tree_snapshot();
+        let base_web = base_pids.len();
 
         let ids: Vec<usize> = (0..TABS_PER_CYCLE)
             .map(|_| (ctx.new_tab)(Some(&url)))
@@ -108,8 +108,8 @@ async fn run(ctx: SmokeContext, url: String) {
 
         glib::timeout_future(SETTLE).await;
 
-        let peak_kb = memprobe::tree_memory_kb();
-        let peak_web = memprobe::web_process_pids().len();
+        let (peak_kb, peak_pids) = memprobe::tree_snapshot();
+        let peak_web = peak_pids.len();
 
         let weaks: Vec<glib::WeakRef<WebView>> = ids
             .iter()
@@ -132,8 +132,8 @@ async fn run(ctx: SmokeContext, url: String) {
 
         glib::timeout_future(SETTLE).await;
 
-        let after_kb = memprobe::tree_memory_kb();
-        let after_web = memprobe::web_process_pids().len();
+        let (after_kb, after_pids) = memprobe::tree_snapshot();
+        let after_web = after_pids.len();
 
         eprintln!(
             "MEM_SMOKE_CYCLE cycle={cycle} opened={} loaded={loaded} views_freed={views_freed} \
@@ -153,8 +153,7 @@ async fn run(ctx: SmokeContext, url: String) {
 
     glib::timeout_future(SETTLE).await;
 
-    let before_pids = memprobe::web_process_pids();
-    let before_kb = memprobe::tree_memory_kb();
+    let (before_kb, before_pids) = memprobe::tree_snapshot();
 
     let last_weak: Vec<glib::WeakRef<WebView>> = view_of(&ctx.tabs, first_tab)
         .map(|view| vec![view.downgrade()])

@@ -255,10 +255,22 @@ impl BookmarkBar {
 
             let on_open = on_open.clone();
 
+            // Last revision rebuilt here. `refresh` is also called on
+            // navigation and tab switches, where the list never changed.
+            let last_revision: Rc<Cell<Option<u64>>> = Rc::new(Cell::new(None));
+
             Rc::new(move || {
                 // Static tooltip follows the UI language (titles come from
                 // the bookmarks themselves).
                 overflow_button.set_tooltip_text(Some(&rust_i18n::t!("bookmarks.more")));
+
+                let revision = manager.revision();
+
+                if last_revision.get() == Some(revision) {
+                    return;
+                }
+
+                last_revision.set(Some(revision));
 
                 while let Some(child) = items.first_child() {
                     items.remove(&child);
@@ -372,9 +384,10 @@ impl BookmarkBar {
 }
 
 fn load_bookmark_icon(bookmark: &Bookmark) -> Image {
-    // Favicons are read from disk on each bar refresh. Refreshes only happen
-    // on bookmark-data changes (never on resize, which only reflows), so a
-    // cache would buy nothing and could serve a stale icon after an edit.
+    // Favicons are decoded only when the bar actually rebuilds: the
+    // revision check above skips navigation-driven refreshes, and resizes
+    // only reflow. A cache would buy nothing and could serve a stale icon
+    // after an edit.
     if let Some(path) = bookmark.favicon_path.as_ref()
         && let Ok(texture) = gdk::Texture::from_filename(path)
     {

@@ -33,7 +33,7 @@ settings:
   english: "English"
   spanish: "Spanish"
   search: "Search"
-  search_note: "Changes apply immediately. Brave Search is the default."
+  search_note: "Used by the address bar and the new tab page. Changes apply immediately."
   privacy_security: "Privacy & Security"
   tracking_prevention: "Tracking prevention"
   tracking_description: "Use WebKit Intelligent Tracking Prevention for normal browsing."
@@ -51,6 +51,8 @@ settings:
   developer_description: "Enable WebKit developer tools. Changes apply immediately."
   hw_accel: "Hardware acceleration"
   hw_accel_description: "Use the GPU for rendering. Turn off on systems without a working GPU."
+  clipboard_reads: "Clipboard reads"
+  clipboard_reads_description: "Let sites read the clipboard after a click or key press without asking. Turn off to get a per-site prompt."
   permissions: "Website permissions"
   permissions_description: "Notifications, camera, microphone and other per-site decisions you remembered."
   permissions_reset: "Forget all"
@@ -122,7 +124,7 @@ welcome:
   heading: "Welcome to axysBrowser"
   subtitle: "A lightweight, privacy-focused browser for Linux."
   search: "Search engine"
-  search_note: "Brave Search is the default search engine."
+  search_note: "You can change it later in Settings."
   description: "axysBrowser is designed to be simple, lightweight and privacy-focused, with a native Linux interface and a clean browsing experience."
   continue: "Continue"
 
@@ -145,6 +147,7 @@ history:
   search: "Search history"
   clear: "Clear history"
   empty: "No history yet."
+  no_results: "No history entries match that search."
   open: "Open"
   delete: "Delete"
   older_day: "24 hours"
@@ -163,6 +166,7 @@ bookmarks:
   open: "Open"
   search: "Search bookmarks"
   empty: "No bookmarks yet."
+  no_results: "No bookmarks match that search."
 
 find:
   title: "Find in page"
@@ -184,6 +188,7 @@ permission:
   share_screen: "capture your screen"
   use_drm: "play protected media"
   use_pointer_lock: "lock the pointer"
+  use_clipboard: "read your clipboard"
   use_other: "use an unknown capability"
 
 dialog:
