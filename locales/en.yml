@@ -135,6 +135,8 @@ about:
   copyright: "Copyright © 2026 CDP"
   notice: "Derivative works may be modified and renamed, but must retain visible attribution to the original axysBrowser project and elCDP1."
   tooltip: "About axysBrowser"
+  sandbox_on: "Web content sandbox: active"
+  sandbox_off: "Web content sandbox: DISABLED. Websites run without isolation from your system (WSL, or this system does not allow it). See \"Linux sandbox\" in the README."
 
 privacy:
   title: "Privacy mode"
@@ -194,3 +196,7 @@ permission:
 dialog:
   ok: "OK"
   cancel: "Cancel"
+
+external:
+  title: "Open this link in another application?"
+  open: "Open"

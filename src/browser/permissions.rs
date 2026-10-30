@@ -141,6 +141,14 @@ fn kind_key(kind: PermissionKind) -> String {
 /// afresh, so unrelated hostless pages cannot share grants.
 pub const GENERIC_ORIGIN: &str = "this site";
 
+/// Whether a clipboard read may skip the per-site prompt: only while the
+/// setting is on **and** the origin is verifiable. Hostless pages (`data:`,
+/// `about:`, `file:`, `blob:` …) share [`GENERIC_ORIGIN`], which always asks
+/// and is never remembered; the setting must not widen that.
+pub fn clipboard_read_without_prompt(origin: &str, setting_enabled: bool) -> bool {
+    setting_enabled && origin != GENERIC_ORIGIN
+}
+
 /// Remembers per-origin permission decisions, optionally on disk.
 #[derive(Clone)]
 pub struct PermissionManager {
@@ -575,5 +583,19 @@ mod tests {
             manager.remembered(origin, PermissionKind::Microphone),
             Some(false)
         );
+    }
+
+    #[test]
+    fn clipboard_setting_never_skips_the_prompt_for_unverifiable_origins() {
+        assert!(clipboard_read_without_prompt(
+            "https://example.com:443",
+            true
+        ));
+        assert!(!clipboard_read_without_prompt(
+            "https://example.com:443",
+            false
+        ));
+        assert!(!clipboard_read_without_prompt(GENERIC_ORIGIN, true));
+        assert!(!clipboard_read_without_prompt(GENERIC_ORIGIN, false));
     }
 }

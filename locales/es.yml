@@ -135,6 +135,8 @@ about:
   copyright: "Copyright © 2026 CDP"
   notice: "Las obras derivadas pueden modificarse y renombrarse, pero deben mantener visible la atribución al proyecto original axysBrowser y a elCDP1."
   tooltip: "Acerca de axysBrowser"
+  sandbox_on: "Sandbox del contenido web: activo"
+  sandbox_off: "Sandbox del contenido web: DESACTIVADO. Las webs se ejecutan sin aislamiento del sistema (WSL, o este sistema no lo permite). Consulta «Linux sandbox» en el README."
 
 privacy:
   title: "Modo privado"
@@ -194,3 +196,7 @@ permission:
 dialog:
   ok: "Aceptar"
   cancel: "Cancelar"
+
+external:
+  title: "¿Abrir este enlace en otra aplicación?"
+  open: "Abrir"

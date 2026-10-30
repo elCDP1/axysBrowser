@@ -105,6 +105,20 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         return lower;
     }
 
+    // `mailto:`, `tel:` and `sms:` are desktop targets, not web URLs. They
+    // have no `//`, so the hostname heuristic below used to turn them into
+    // `https://mailto:someone@example.com`, which can never load. Keep the
+    // address intact (local parts are case-sensitive) and only normalise the
+    // scheme, then let the navigation path hand them to the desktop app.
+    if let Some(colon) = input.find(':') {
+        let scheme = &lower[..colon];
+        let rest = &input[colon + 1..];
+
+        if matches!(scheme, "mailto" | "tel" | "sms") && !rest.is_empty() {
+            return format!("{scheme}:{rest}");
+        }
+    }
+
     if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("file://")
     {
         // Normalise only the scheme to lower case: `HTTPS://x` would
@@ -311,6 +325,34 @@ mod tests {
         let config = load_config();
 
         assert_eq!(resolve_input("about:blank", &config), "about:blank");
+    }
+
+    #[test]
+    fn keeps_mailto_and_tel_targets_for_the_desktop() {
+        let config = load_config();
+
+        // These used to become `https://mailto:…`, an unloadable URL.
+        assert_eq!(
+            resolve_input("mailto:Someone@Example.com?subject=Hi", &config),
+            "mailto:Someone@Example.com?subject=Hi"
+        );
+        assert_eq!(
+            resolve_input("MAILTO:a@example.com", &config),
+            "mailto:a@example.com"
+        );
+        assert_eq!(
+            resolve_input("tel:+34600111222", &config),
+            "tel:+34600111222"
+        );
+        assert_eq!(
+            resolve_input("sms:+34600111222", &config),
+            "sms:+34600111222"
+        );
+
+        // An empty target is not useful: keep the old search behaviour.
+        let empty = resolve_input("tel:", &config);
+
+        assert!(empty.starts_with("https://search."), "got {empty}");
     }
 
     #[test]

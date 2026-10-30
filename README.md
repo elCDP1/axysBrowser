@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.1.3`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.1.4`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -32,11 +32,23 @@ GTK4 and WebKitGTK 6.
   "View page source" (and "Inspect Element" when developer tools are on)
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
 - Private downloads keep a separate list that dies with the window (files stay on disk, like other browsers)
+- Popup blocking: `window.open()` and `target=_blank` open a tab only after a
+  user gesture, at most 3 per 5 seconds per tab (a page that just loads cannot
+  open tabs, and one click cannot open dozens)
+- Links to other applications (`ssh:`, `smb:`, `vnc:`, custom handlers) ask
+  before opening; `mailto:`, `tel:` and `sms:` open directly. Without a user
+  gesture they never open.
+- `mailto:`/`tel:`/`sms:` typed in the address bar reach the desktop app too,
+  instead of becoming an invalid `https://mailto:…` URL
+- A page gets at most 5 `alert()`/`confirm()` dialogs per 10 seconds; the
+  rest are dismissed so a dialog loop cannot lock the browser window
 - Per-site permissions (notifications, camera, mic, location) with
   allow/block prompts; clipboard reads are allowed after a user gesture by
   default, and Settings → Privacy can ask per site instead
 - Script clipboard writes need a user gesture, so background tabs cannot
   replace what you copied
+- Permission answers stay bound to the origin that asked: navigating while the
+  prompt is open cancels the grant, and nothing is remembered for the new page
 - Tracking prevention (WebKit ITP) and cookie policy settings
 - Search engines: Brave (default), DuckDuckGo, Google, Bing, Yahoo, Startpage, Ecosia, Qwant
 - Find in page (Ctrl+F), reopen closed tab (Ctrl+Shift+T)
@@ -173,7 +185,8 @@ the sandbox is unavailable.
 The browser probes `bubblewrap` before WebKit starts. If unprivileged user
 and network namespaces are unavailable (hardened kernels, containers, or a
 missing `bwrap`), it prints a warning and keeps running without the sandbox
-instead of aborting. Install `bubblewrap` and allow unprivileged user
+instead of aborting. The state is also shown, in red when it is off, on the
+About page (`axys://about`). Install `bubblewrap` and allow unprivileged user
 namespaces to keep the sandbox; check the host with:
 
 ```sh
@@ -223,6 +236,9 @@ Issues and pull requests are welcome. Before opening a PR, please make
 sure it passes the checks in [Testing](#testing) (formatting, unit tests
 and clippy with `-D warnings`). See [CONTRIBUTING.md](CONTRIBUTING.md) for
 details.
+
+Please report security problems privately, not in a public issue: see
+[SECURITY.md](SECURITY.md).
 
 ## License
 

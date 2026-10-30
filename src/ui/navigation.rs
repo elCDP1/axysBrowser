@@ -121,4 +121,14 @@ mod tests {
         assert!(!is_tab_target("axys://does-not-exist"));
         assert!(!is_tab_target(""));
     }
+
+    #[test]
+    fn typed_external_targets_are_recognised_for_the_desktop() {
+        let config = crate::browser::address::load_config();
+        let target = resolve_target("mailto:Someone@Example.com", &config);
+
+        assert_eq!(target, "mailto:Someone@Example.com");
+        assert!(!is_tab_target(&target));
+        assert!(BrowserEngine::is_external_scheme(&target));
+    }
 }

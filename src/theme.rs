@@ -130,6 +130,11 @@ pub fn stylesheet(dark: bool) -> String {
             border-color: #c03636;
         }}
 
+        label.error {{
+            color: #e5534b;
+            font-weight: 600;
+        }}
+
         entry selection {{
             background-color: alpha(@axys_accent, 0.35);
             color: @axys_fg;

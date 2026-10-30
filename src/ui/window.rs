@@ -612,6 +612,22 @@ fn build_browser_window(
             }
 
             if !is_tab_target(&target) {
+                // External targets typed in the address bar (mailto:, tel:,
+                // sms:) have no page to show: hand them to the desktop and
+                // leave the current tab alone. In-page links take the same
+                // route through the policy handler.
+                if BrowserEngine::is_external_scheme(&target) {
+                    let web_view = tabs
+                        .borrow()
+                        .iter()
+                        .find(|tab| tab.id == id)
+                        .map(|tab| tab.web_view.clone());
+
+                    if let Some(web_view) = web_view {
+                        BrowserEngine::open_external(&web_view, &target);
+                    }
+                }
+
                 return;
             }
 

@@ -4,6 +4,10 @@ on:
   push:
     branches: [ main ]
   pull_request:
+  # Weekly run on an unchanged tree: new RustSec advisories and new lints in
+  # the floating `stable` toolchain show up here instead of on a random push.
+  schedule:
+    - cron: '17 5 * * 1'
 
 permissions:
   contents: read
@@ -15,6 +19,7 @@ concurrency:
 jobs:
   linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +49,7 @@ jobs:
 
   gui-smoke:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +81,31 @@ jobs:
       - name: Memory smoke under Xvfb (sandbox enabled)
         run: xvfb-run -a bash .github/mem-smoke.sh strict
 
+  release:
+    # The distributed profile uses LTO and was never built in CI; a
+    # release-only breakage would reach users. Weekly, on the scheduled run.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GTK4 / WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
   audit:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
       - uses: actions/checkout@v4

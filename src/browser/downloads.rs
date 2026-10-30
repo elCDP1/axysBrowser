@@ -436,6 +436,24 @@ impl DownloadManager {
     }
 }
 
+/// Caps a filename suggestion to `max_bytes` without splitting a character.
+/// Linux limits one name component to 255 *bytes*, not characters: a short
+/// string of multibyte characters can exceed that and the save fails with
+/// `ENAMETOOLONG` even though it looked short.
+fn cap_filename_bytes(name: &str, max_bytes: usize) -> String {
+    if name.len() <= max_bytes {
+        return name.to_string();
+    }
+
+    let mut end = max_bytes;
+
+    while end > 0 && !name.is_char_boundary(end) {
+        end -= 1;
+    }
+
+    name[..end].to_string()
+}
+
 /// Sanitises a server-suggested filename before using it as the save
 /// dialog's initial name: strips directory components (a remote name can
 /// contain `../` or be an absolute path), control characters, and caps the
@@ -454,7 +472,7 @@ fn sanitize_download_name(suggested: &str) -> String {
         return String::new();
     }
 
-    cleaned.chars().take(255).collect()
+    cap_filename_bytes(cleaned, 255)
 }
 
 #[cfg(test)]
@@ -524,6 +542,23 @@ mod tests {
         let long = "a".repeat(500);
 
         assert_eq!(sanitize_download_name(&long).chars().count(), 255);
+    }
+
+    #[test]
+    fn sanitize_name_caps_bytes_not_characters_for_multibyte_names() {
+        // 200 `ñ` = 400 bytes: 200 characters looked fine, but Linux rejects
+        // a component over 255 bytes.
+        let long = "ñ".repeat(200);
+        let sanitized = sanitize_download_name(&long);
+
+        assert!(sanitized.len() <= 255, "got {} bytes", sanitized.len());
+        assert!(sanitized.chars().all(|c| c == 'ñ'), "no broken characters");
+
+        let long = "ñ".repeat(127); // 254 bytes: fits exactly.
+        assert_eq!(sanitize_download_name(&long), long);
+
+        let long = "ñ".repeat(128); // 256 bytes: one character over.
+        assert_eq!(sanitize_download_name(&long).len(), 254);
     }
 
     #[test]

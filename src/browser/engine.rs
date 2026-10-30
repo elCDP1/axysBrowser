@@ -13,7 +13,7 @@ use webkit6::{
     WebView, prelude::*,
 };
 
-use super::permissions::{PermissionKind, PermissionManager};
+use super::permissions::{PermissionKind, PermissionManager, clipboard_read_without_prompt};
 
 pub struct BrowserEngine;
 
@@ -37,6 +37,162 @@ type PopupGuard = Rc<RefCell<Vec<(String, PopupSource, Instant)>>>;
 
 fn new_popup_guard() -> PopupGuard {
     Rc::new(RefCell::new(Vec::new()))
+}
+
+/// Links to these schemes open their application without asking: mail
+/// links and phone numbers are everywhere and low-risk. Every other
+/// external scheme (`ssh:`, `smb:`, `vnc:`, custom handlers …) asks first.
+fn external_needs_confirmation(uri: &str) -> bool {
+    let scheme = uri
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    !matches!(scheme.as_str(), "mailto" | "tel" | "sms")
+}
+
+/// Trims a long URI for a dialog, on a character boundary.
+fn shorten_for_dialog(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+
+    let mut shortened: String = text.chars().take(max_chars).collect();
+
+    shortened.push('…');
+
+    shortened
+}
+
+/// URI form that is safe to write to stderr: scheme, host and port only.
+/// Credentials, path, query and fragment are dropped, because popup URLs and
+/// external links can carry session tokens and end up in the journal.
+fn log_safe_uri(uri: &str) -> String {
+    let Some(colon) = uri.find(':') else {
+        return "(url)".to_string();
+    };
+
+    let scheme = &uri[..colon];
+
+    let Some(rest) = uri[colon + 1..].strip_prefix("//") else {
+        // `mailto:`, `tel:`, …: the scheme alone is enough for a log line.
+        return format!("{scheme}:…");
+    };
+
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+
+    // A `user:password@host` authority would leak credentials: keep the host.
+    let authority = &rest[..authority_end];
+
+    let host = authority.rsplit('@').next().unwrap_or(authority);
+
+    if host.is_empty() {
+        format!("{scheme}://…")
+    } else {
+        format!("{scheme}://{host}")
+    }
+}
+
+/// A hostile page can call `window.open()`, `alert()` or navigate to an
+/// external scheme in a tight loop. Each rejection used to write a line to
+/// stderr, and that blocks the UI thread on the pipe/journal. Only the first
+/// few messages of a tab are emitted; the gate itself is unaffected.
+const VIEW_LOG_LIMIT: u32 = 5;
+
+type ViewLogBudget = Rc<Cell<u32>>;
+
+fn new_view_log_budget() -> ViewLogBudget {
+    Rc::new(Cell::new(0))
+}
+
+/// Claims one log slot, if any is left in this view.
+fn take_log_slot(budget: &ViewLogBudget) -> bool {
+    let used = budget.get();
+
+    if used >= VIEW_LOG_LIMIT {
+        return false;
+    }
+
+    budget.set(used + 1);
+
+    true
+}
+
+/// Logs a rejection, redacting the URI and respecting the per-view budget.
+fn log_rejection(budget: &ViewLogBudget, message: impl FnOnce() -> String) {
+    if !take_log_slot(budget) {
+        return;
+    }
+
+    eprintln!("{}", message());
+
+    if budget.get() == VIEW_LOG_LIMIT {
+        eprintln!(
+            "Further blocked popups, dialogs and external links from this tab are not logged"
+        );
+    }
+}
+
+/// A page may open at most this many popups per [`POPUP_BURST_WINDOW`], even
+/// with a user gesture: a click anywhere on a hostile page (an invisible
+/// full-page overlay) must not be able to open dozens of tabs, each one a
+/// whole web process. Normal flows (a `target=_blank` link, an OAuth popup)
+/// open one.
+const POPUP_BURST_LIMIT: usize = 3;
+const POPUP_BURST_WINDOW: Duration = Duration::from_secs(5);
+
+/// When this view recently opened popups (see [`POPUP_BURST_LIMIT`]).
+type PopupBurst = Rc<RefCell<std::collections::VecDeque<Instant>>>;
+
+fn new_popup_burst() -> PopupBurst {
+    Rc::new(RefCell::new(std::collections::VecDeque::new()))
+}
+
+/// Popups only ever open web pages, and only as the result of a user
+/// gesture: `window.open()` from page load or a timer is how popup spam
+/// starts. Pages that open `about:`, `blob:` or `javascript:` windows are
+/// not supported (the URL is opened as a regular tab, see `wire_popups`).
+fn popup_allowed(uri: &str, user_gesture: bool) -> bool {
+    user_gesture && (uri.starts_with("http://") || uri.starts_with("https://"))
+}
+
+/// Records one event and says whether it fits in `limit` per `window`.
+fn burst_ok(burst: &PopupBurst, now: Instant, limit: usize, window: Duration) -> bool {
+    let mut seen = burst.borrow_mut();
+
+    while let Some(oldest) = seen.front() {
+        if now.duration_since(*oldest) > window {
+            seen.pop_front();
+        } else {
+            break;
+        }
+    }
+
+    if seen.len() >= limit {
+        return false;
+    }
+
+    seen.push_back(now);
+
+    true
+}
+
+/// Records one popup and says whether it fits in the burst limit.
+fn popup_burst_ok(burst: &PopupBurst, now: Instant) -> bool {
+    burst_ok(burst, now, POPUP_BURST_LIMIT, POPUP_BURST_WINDOW)
+}
+
+/// A page gets at most this many `alert()`/`confirm()` dialogs per window;
+/// past that they are dismissed unseen (like Chromium's "prevent this page
+/// from creating additional dialogs", but automatic). The dialogs are modal
+/// over the whole browser window, so an `alert()` loop would otherwise
+/// chain them and lock the user out of the browser.
+const DIALOG_BURST_LIMIT: usize = 5;
+const DIALOG_BURST_WINDOW: Duration = Duration::from_secs(10);
+
+fn dialog_burst_ok(burst: &PopupBurst, now: Instant) -> bool {
+    burst_ok(burst, now, DIALOG_BURST_LIMIT, DIALOG_BURST_WINDOW)
 }
 
 /// Directory holding the HTTP disk cache. Only cache files live here —
@@ -221,11 +377,25 @@ impl BrowserEngine {
         // NewWindow policy decision for the same URL — one guard for both
         // paths so the same URL can never open two tabs.
         let popup_guard = new_popup_guard();
+        let popup_burst = new_popup_burst();
+        let log_budget = new_view_log_budget();
 
-        Self::wire_policy(view, open_in_new_tab.clone(), popup_guard.clone());
-        Self::wire_popups(view, open_in_new_tab, popup_guard);
+        Self::wire_policy(
+            view,
+            open_in_new_tab.clone(),
+            popup_guard.clone(),
+            popup_burst.clone(),
+            log_budget.clone(),
+        );
+        Self::wire_popups(
+            view,
+            open_in_new_tab,
+            popup_guard,
+            popup_burst,
+            log_budget.clone(),
+        );
         Self::wire_permissions(view, permissions, clipboard_reads);
-        Self::wire_dialogs(view);
+        Self::wire_dialogs(view, log_budget);
         Self::wire_crash_recovery(view);
         Self::wire_notifications(view, show_notification);
         Self::wire_authentication(view, on_authenticate);
@@ -234,7 +404,7 @@ impl BrowserEngine {
     /// Schemes the engine never loads itself: handed to the desktop
     /// instead (mail clients, dialers, …). Everything else WebKit owns:
     /// http(s), files, internal pages and script/data URLs.
-    fn is_external_scheme(uri: &str) -> bool {
+    pub fn is_external_scheme(uri: &str) -> bool {
         let lower = uri.to_ascii_lowercase();
 
         let Some(colon) = lower.find(':') else {
@@ -255,6 +425,48 @@ impl BrowserEngine {
             &lower[..colon],
             "http" | "https" | "file" | "axys" | "about" | "blank" | "data" | "blob" | "javascript"
         )
+    }
+
+    /// The single decision for both popup signals. Order matters: the
+    /// freshness check comes before the burst limit so a `create`+`policy`
+    /// pair for one popup consumes one slot, not two.
+    fn popup_may_open(
+        guard: &PopupGuard,
+        burst: &PopupBurst,
+        log_budget: &ViewLogBudget,
+        uri: &str,
+        user_gesture: bool,
+        source: PopupSource,
+    ) -> bool {
+        if !popup_allowed(uri, user_gesture) {
+            if uri.starts_with("http://") || uri.starts_with("https://") {
+                log_rejection(log_budget, || {
+                    format!(
+                        "Blocked popup without a user gesture: {}",
+                        log_safe_uri(uri)
+                    )
+                });
+            }
+
+            return false;
+        }
+
+        if !Self::popup_is_fresh(guard, uri, source) {
+            return false;
+        }
+
+        if !popup_burst_ok(burst, Instant::now()) {
+            log_rejection(log_budget, || {
+                format!(
+                    "Blocked popup, too many in a short time: {}",
+                    log_safe_uri(uri)
+                )
+            });
+
+            return false;
+        }
+
+        true
     }
 
     /// First-seen check for a popup URL; records it when fresh.
@@ -289,10 +501,18 @@ impl BrowserEngine {
         }
     }
 
-    fn wire_policy(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>, popup_guard: PopupGuard) {
+    fn wire_policy(
+        view: &WebView,
+        open_in_new_tab: Rc<dyn Fn(String)>,
+        popup_guard: PopupGuard,
+        popup_burst: PopupBurst,
+        log_budget: ViewLogBudget,
+    ) {
         // Dedupe: window.open() typically fires `create` AND a NewWindow
         // policy decision for the same URL. Opening both would duplicate tabs.
-        view.connect_decide_policy(move |_, decision, decision_type| {
+        let external_dialog_open = Rc::new(Cell::new(false));
+
+        view.connect_decide_policy(move |view, decision, decision_type| {
             match decision_type {
                 PolicyDecisionType::NavigationAction | PolicyDecisionType::NewWindowAction => {
                     let navigation_action = decision
@@ -305,6 +525,10 @@ impl BrowserEngine {
                         .and_then(|r| r.uri())
                         .map(|u| u.to_string());
 
+                    let user_gesture = navigation_action
+                        .as_ref()
+                        .is_some_and(|action| action.is_user_gesture());
+
                     // External schemes (mailto:, tel:, …) open in their
                     // desktop app instead of showing a WebKit error page.
                     // A user gesture is required: otherwise a hostile page
@@ -312,23 +536,23 @@ impl BrowserEngine {
                     if let Some(uri) = uri.as_ref()
                         && Self::is_external_scheme(uri)
                     {
-                        let gesture = navigation_action
-                            .as_ref()
-                            .is_some_and(|action| action.is_user_gesture());
-
-                        if gesture {
-                            eprintln!("Opening externally: {uri}");
-
-                            if webkit6::gio::AppInfo::launch_default_for_uri(
-                                uri,
-                                None::<&webkit6::gio::AppLaunchContext>,
-                            )
-                            .is_err()
-                            {
-                                eprintln!("No application handles: {uri}");
+                        if user_gesture {
+                            if external_needs_confirmation(uri) {
+                                Self::confirm_external_open(
+                                    view,
+                                    uri.clone(),
+                                    external_dialog_open.clone(),
+                                );
+                            } else {
+                                Self::launch_external(uri);
                             }
                         } else {
-                            eprintln!("Ignored external scheme without user gesture: {uri}");
+                            log_rejection(&log_budget, || {
+                                format!(
+                                    "Ignored external scheme without user gesture: {}",
+                                    log_safe_uri(uri)
+                                )
+                            });
                         }
 
                         decision.ignore();
@@ -338,8 +562,14 @@ impl BrowserEngine {
 
                     if decision_type == PolicyDecisionType::NewWindowAction {
                         if let Some(uri) = uri
-                            && (uri.starts_with("http://") || uri.starts_with("https://"))
-                            && Self::popup_is_fresh(&popup_guard, &uri, PopupSource::Policy)
+                            && Self::popup_may_open(
+                                &popup_guard,
+                                &popup_burst,
+                                &log_budget,
+                                &uri,
+                                user_gesture,
+                                PopupSource::Policy,
+                            )
                         {
                             let opener = open_in_new_tab.clone();
 
@@ -378,14 +608,94 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_popups(view: &WebView, open_in_new_tab: Rc<dyn Fn(String)>, popup_guard: PopupGuard) {
+    fn launch_external(uri: &str) {
+        eprintln!("Opening externally: {}", log_safe_uri(uri));
+
+        if webkit6::gio::AppInfo::launch_default_for_uri(
+            uri,
+            None::<&webkit6::gio::AppLaunchContext>,
+        )
+        .is_err()
+        {
+            eprintln!("No application handles: {}", log_safe_uri(uri));
+        }
+    }
+
+    /// Hands a URI the user typed in the address bar to the desktop. Typing
+    /// is the gesture, so `mailto:`/`tel:`/`sms:` open straight away and
+    /// every other scheme still asks first, exactly like in-page links.
+    pub fn open_external(view: &WebView, uri: &str) {
+        if external_needs_confirmation(uri) {
+            Self::confirm_external_open(view, uri.to_string(), Rc::new(Cell::new(false)));
+        } else {
+            Self::launch_external(uri);
+        }
+    }
+
+    /// Asks before handing a link to another application: a web page must
+    /// not be able to start `ssh:`, `smb:`, `vnc:` … handlers with one click
+    /// the user did not know would do that. One question at a time (`busy`).
+    fn confirm_external_open(view: &WebView, uri: String, busy: Rc<Cell<bool>>) {
+        let Some(parent) = view.root().and_downcast::<gtk::Window>() else {
+            eprintln!(
+                "No window to ask about opening {}; not opening it",
+                log_safe_uri(&uri)
+            );
+
+            return;
+        };
+
+        if busy.replace(true) {
+            return;
+        }
+
+        let dialog = gtk::AlertDialog::builder()
+            .modal(true)
+            .message(rust_i18n::t!("external.title").to_string())
+            .detail(shorten_for_dialog(&uri, 300))
+            .buttons([
+                rust_i18n::t!("dialog.cancel").to_string(),
+                rust_i18n::t!("external.open").to_string(),
+            ])
+            .default_button(0)
+            .cancel_button(0)
+            .build();
+
+        dialog.choose(
+            Some(&parent),
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                busy.set(false);
+
+                if matches!(result, Ok(1)) {
+                    Self::launch_external(&uri);
+                }
+            },
+        );
+    }
+
+    fn wire_popups(
+        view: &WebView,
+        open_in_new_tab: Rc<dyn Fn(String)>,
+        popup_guard: PopupGuard,
+        popup_burst: PopupBurst,
+        log_budget: ViewLogBudget,
+    ) {
         view.connect_create(move |_, action| {
+            let user_gesture = action.is_user_gesture();
+
             if let Some(uri) = action
                 .request()
                 .and_then(|r| r.uri())
                 .map(|u| u.to_string())
-                && (uri.starts_with("http://") || uri.starts_with("https://"))
-                && Self::popup_is_fresh(&popup_guard, &uri, PopupSource::Create)
+                && Self::popup_may_open(
+                    &popup_guard,
+                    &popup_burst,
+                    &log_budget,
+                    &uri,
+                    user_gesture,
+                    PopupSource::Create,
+                )
             {
                 let opener = open_in_new_tab.clone();
 
@@ -451,6 +761,14 @@ impl BrowserEngine {
         format!("{scheme}://{host}:{effective}")
     }
 
+    /// Whether a verdict still applies: the view must be on the same origin
+    /// the prompt was shown for. A page that navigates while its prompt is
+    /// open must not hand the grant (or the remembered denial) to whatever
+    /// loads next — the request belonged to the old document.
+    fn verdict_applies_to(prompted_origin: &str, current_origin: &str) -> bool {
+        prompted_origin == current_origin
+    }
+
     /// Permission prompt dialog. The WebKit request is answered
     /// asynchronously from the dialog buttons, so the page never hangs.
     fn ask_permission(
@@ -514,6 +832,7 @@ impl BrowserEngine {
             // capture here would make `dialog -> content -> button -> handler
             // -> dialog` a GObject refcount cycle that never finalizes.
             let dialog = dialog.downgrade();
+            let view = view.downgrade();
             let permissions = permissions.clone();
             let origin = origin.clone();
             let remember = remember.clone();
@@ -522,6 +841,23 @@ impl BrowserEngine {
 
             allow.connect_clicked(move |_| {
                 answered.set(true);
+
+                let current_origin = view
+                    .upgrade()
+                    .map(|view| Self::permission_origin(&view))
+                    .unwrap_or_default();
+
+                if !Self::verdict_applies_to(&origin, &current_origin) {
+                    // Navigated while the prompt was open: deny the stale
+                    // request and remember nothing for the new page.
+                    request.deny();
+
+                    if let Some(dialog) = dialog.upgrade() {
+                        dialog.close();
+                    }
+
+                    return;
+                }
 
                 if remember.is_active() {
                     permissions.remember(&origin, kind, true);
@@ -537,6 +873,7 @@ impl BrowserEngine {
 
         {
             let dialog = dialog.downgrade();
+            let view = view.downgrade();
             let permissions = permissions.clone();
             let remember = remember.clone();
             let request = request.clone();
@@ -545,7 +882,12 @@ impl BrowserEngine {
             block.connect_clicked(move |_| {
                 answered.set(true);
 
-                if remember.is_active() {
+                let current_origin = view
+                    .upgrade()
+                    .map(|view| Self::permission_origin(&view))
+                    .unwrap_or_default();
+
+                if Self::verdict_applies_to(&origin, &current_origin) && remember.is_active() {
                     permissions.remember(&origin, kind, false);
                 }
 
@@ -656,7 +998,9 @@ impl BrowserEngine {
                 // while enabled. WebKit still requires transient user
                 // activation and a secure context, and writes stay
                 // gesture-gated (`javascript_can_access_clipboard(false)`).
-                if kind == PermissionKind::Clipboard && clipboard_reads() {
+                if kind == PermissionKind::Clipboard
+                    && clipboard_read_without_prompt(&origin, clipboard_reads())
+                {
                     request.allow();
 
                     return true;
@@ -688,7 +1032,9 @@ impl BrowserEngine {
                 let state = match permissions.remembered(&origin, kind) {
                     Some(true) => PermissionState::Granted,
                     Some(false) => PermissionState::Denied,
-                    None if kind == PermissionKind::Clipboard && clipboard_reads() => {
+                    None if kind == PermissionKind::Clipboard
+                        && clipboard_read_without_prompt(&origin, clipboard_reads()) =>
+                    {
                         PermissionState::Granted
                     }
                     None => PermissionState::Prompt,
@@ -701,8 +1047,10 @@ impl BrowserEngine {
         });
     }
 
-    fn wire_dialogs(view: &WebView) {
-        view.connect_script_dialog(|view, dialog| {
+    fn wire_dialogs(view: &WebView, log_budget: ViewLogBudget) {
+        let dialog_burst = new_popup_burst();
+
+        view.connect_script_dialog(move |view, dialog| {
             // alert()/confirm() get a real, non-blocking dialog attached to
             // the window (the old auto-answer made every "Are you sure?"
             // fail). prompt()/beforeunload stay auto-handled so a page can
@@ -710,6 +1058,24 @@ impl BrowserEngine {
             match dialog.dialog_type() {
                 ScriptDialogType::Alert | ScriptDialogType::Confirm => {
                     let is_confirm = dialog.dialog_type() == ScriptDialogType::Confirm;
+
+                    if !dialog_burst_ok(&dialog_burst, Instant::now()) {
+                        log_rejection(&log_budget, || {
+                            "Dismissed a script dialog: this page is showing too many".to_string()
+                        });
+
+                        // Answer from an idle callback: closing a dialog from
+                        // inside its own signal handler does not release the
+                        // page's (synchronous) script call.
+                        let dialog = dialog.clone();
+
+                        glib::idle_add_local_once(move || {
+                            dialog.confirm_set_confirmed(false);
+                            dialog.close();
+                        });
+
+                        return true;
+                    }
 
                     let Some(parent) = view.root().and_downcast::<gtk::Window>() else {
                         // No window to attach to: fall back to the old behaviour.
@@ -1209,5 +1575,212 @@ mod tests {
             A,
             PopupSource::Policy
         ));
+    }
+
+    #[test]
+    fn popups_need_a_user_gesture_and_a_web_url() {
+        assert!(popup_allowed("https://example.com/x", true));
+        assert!(popup_allowed("http://example.com/x", true));
+        assert!(!popup_allowed("https://example.com/x", false));
+        assert!(!popup_allowed("javascript:alert(1)", true));
+        assert!(!popup_allowed("about:blank", true));
+        assert!(!popup_allowed("blob:https://example.com/id", true));
+        assert!(!popup_allowed("file:///etc/passwd", true));
+    }
+
+    #[test]
+    fn popup_burst_limit_blocks_spam_and_recovers() {
+        let burst = new_popup_burst();
+        let start = Instant::now();
+
+        for _ in 0..POPUP_BURST_LIMIT {
+            assert!(popup_burst_ok(&burst, start));
+        }
+
+        assert!(!popup_burst_ok(&burst, start), "the next popup is spam");
+        assert!(
+            !popup_burst_ok(&burst, start + POPUP_BURST_WINDOW),
+            "still inside the window at its very edge"
+        );
+        assert!(
+            popup_burst_ok(
+                &burst,
+                start + POPUP_BURST_WINDOW + Duration::from_millis(1)
+            ),
+            "the window has passed: popups work again"
+        );
+    }
+
+    #[test]
+    fn popup_without_gesture_never_consumes_a_burst_slot() {
+        let guard = new_popup_guard();
+        let burst = new_popup_burst();
+
+        for i in 0..50 {
+            let uri = format!("https://spam.example/{i}");
+
+            assert!(!may_open(&guard, &burst, &uri, false, PopupSource::Create));
+        }
+
+        assert!(burst.borrow().is_empty());
+        assert!(guard.borrow().is_empty(), "nothing even reaches the guard");
+        assert!(may_open(
+            &guard,
+            &burst,
+            "https://ok.example/",
+            true,
+            PopupSource::Create
+        ));
+    }
+
+    #[test]
+    fn a_popup_reported_by_both_signals_uses_one_burst_slot() {
+        let guard = new_popup_guard();
+        let burst = new_popup_burst();
+
+        for i in 0..POPUP_BURST_LIMIT {
+            let uri = format!("https://site.example/{i}");
+
+            assert!(may_open(&guard, &burst, &uri, true, PopupSource::Create));
+            assert!(
+                !may_open(&guard, &burst, &uri, true, PopupSource::Policy),
+                "the paired signal is a duplicate"
+            );
+        }
+
+        assert_eq!(burst.borrow().len(), POPUP_BURST_LIMIT);
+        assert!(!may_open(
+            &guard,
+            &burst,
+            "https://site.example/extra",
+            true,
+            PopupSource::Create
+        ));
+    }
+
+    fn may_open(
+        guard: &PopupGuard,
+        burst: &PopupBurst,
+        uri: &str,
+        gesture: bool,
+        source: PopupSource,
+    ) -> bool {
+        let budget = new_view_log_budget();
+
+        BrowserEngine::popup_may_open(guard, burst, &budget, uri, gesture, source)
+    }
+
+    #[test]
+    fn script_dialog_flood_is_cut_off_and_recovers() {
+        let burst = new_popup_burst();
+        let start = Instant::now();
+
+        for _ in 0..DIALOG_BURST_LIMIT {
+            assert!(dialog_burst_ok(&burst, start));
+        }
+
+        assert!(
+            !dialog_burst_ok(&burst, start),
+            "an alert() loop is cut off"
+        );
+        assert!(!dialog_burst_ok(&burst, start + Duration::from_secs(9)));
+        assert!(
+            dialog_burst_ok(
+                &burst,
+                start + DIALOG_BURST_WINDOW + Duration::from_millis(1)
+            ),
+            "a page that calms down gets its dialogs back"
+        );
+    }
+
+    #[test]
+    fn popup_and_dialog_limits_do_not_share_state() {
+        let popups = new_popup_burst();
+        let dialogs = new_popup_burst();
+        let now = Instant::now();
+
+        for _ in 0..POPUP_BURST_LIMIT {
+            assert!(popup_burst_ok(&popups, now));
+        }
+
+        assert!(!popup_burst_ok(&popups, now));
+        assert!(dialog_burst_ok(&dialogs, now));
+    }
+
+    #[test]
+    fn only_mail_and_phone_links_skip_the_confirmation() {
+        assert!(!external_needs_confirmation("mailto:a@example.com"));
+        assert!(!external_needs_confirmation("MAILTO:a@example.com"));
+        assert!(!external_needs_confirmation("tel:+34123456789"));
+        assert!(!external_needs_confirmation("sms:+34123456789"));
+        assert!(external_needs_confirmation("ssh://host/"));
+        assert!(external_needs_confirmation("smb://host/share"));
+        assert!(external_needs_confirmation("vnc://host"));
+        assert!(external_needs_confirmation("steam://run/1"));
+        assert!(external_needs_confirmation("mailto.evil://x"));
+    }
+
+    #[test]
+    fn dialog_text_is_shortened_on_a_char_boundary() {
+        assert_eq!(shorten_for_dialog("short", 10), "short");
+        assert_eq!(shorten_for_dialog("abcdef", 3), "abc…");
+
+        let accents = "ñ".repeat(50);
+
+        assert_eq!(shorten_for_dialog(&accents, 5).chars().count(), 6);
+    }
+
+    #[test]
+    fn logged_urls_drop_path_query_and_credentials() {
+        assert_eq!(
+            log_safe_uri("https://example.com/path?token=secret#fragment"),
+            "https://example.com"
+        );
+        assert_eq!(
+            log_safe_uri("https://user:password@example.com:8443/x"),
+            "https://example.com:8443"
+        );
+        assert_eq!(log_safe_uri("ssh://user@host/etc/passwd"), "ssh://host");
+        assert_eq!(log_safe_uri("https://[::1]:8080/x"), "https://[::1]:8080");
+        assert_eq!(log_safe_uri("mailto:someone@example.com"), "mailto:…");
+        assert_eq!(log_safe_uri("https://"), "https://…");
+        assert_eq!(log_safe_uri("not a url"), "(url)");
+    }
+
+    #[test]
+    fn rejection_logs_are_capped_per_view() {
+        let budget = new_view_log_budget();
+
+        for _ in 0..VIEW_LOG_LIMIT {
+            assert!(take_log_slot(&budget));
+        }
+
+        for _ in 0..10 {
+            assert!(
+                !take_log_slot(&budget),
+                "a page cannot flood the journal after the budget is spent"
+            );
+        }
+
+        assert_eq!(budget.get(), VIEW_LOG_LIMIT);
+    }
+
+    #[test]
+    fn verdicts_only_apply_to_the_origin_that_prompted() {
+        let prompted = "https://example.com:443";
+
+        assert!(BrowserEngine::verdict_applies_to(prompted, prompted));
+
+        // Navigating to another site (or port) while the prompt is open
+        // must not let the answer leak to the new page.
+        assert!(!BrowserEngine::verdict_applies_to(
+            prompted,
+            "https://evil.example:443"
+        ));
+        assert!(!BrowserEngine::verdict_applies_to(
+            prompted,
+            "http://example.com:80"
+        ));
+        assert!(!BrowserEngine::verdict_applies_to(prompted, ""));
     }
 }
