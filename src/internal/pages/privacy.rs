@@ -7,7 +7,11 @@ use super::background::build_waves_background;
 /// Privacy landing page: same look as the new tab page (shared waves
 /// background), with just a short private-mode heading and a continue
 /// button. Deliberately minimal — no long warning text.
-pub fn build_privacy(on_continue: Rc<dyn Fn(String)>) -> Box {
+///
+/// Private mode lives in its own window, so "continue" opens that window and
+/// leaves the current tab on the New Tab page: the landing page must not be a
+/// dead end that looks like nothing happened.
+pub fn build_privacy(on_search: Rc<dyn Fn(String)>, on_private: Rc<dyn Fn()>) -> Box {
     let page = Box::new(Orientation::Vertical, 0);
 
     page.set_hexpand(true);
@@ -43,7 +47,8 @@ pub fn build_privacy(on_continue: Rc<dyn Fn(String)>) -> Box {
     continue_button.set_margin_top(8);
 
     continue_button.connect_clicked(move |_| {
-        on_continue("axys://newtab".to_string());
+        on_private();
+        on_search("axys://newtab".to_string());
     });
 
     content.append(&title);

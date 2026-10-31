@@ -47,6 +47,9 @@ pub fn page_title(uri: &str) -> String {
 /// [`route`] stays readable as pages gain callbacks.
 pub struct PageCallbacks {
     pub on_search: Rc<dyn Fn(String)>,
+    /// Opens private mode (a new private window; exits it when already in
+    /// one), shared with the menu action so both behave identically.
+    pub on_private: Rc<dyn Fn()>,
     pub on_about: Rc<dyn Fn()>,
     pub on_downloads: Rc<dyn Fn()>,
     pub on_history: Rc<dyn Fn()>,
@@ -70,6 +73,7 @@ pub fn route(
 ) -> Option<Widget> {
     let PageCallbacks {
         on_search,
+        on_private,
         on_about,
         on_downloads,
         on_history,
@@ -86,7 +90,7 @@ pub fn route(
 
         "axys://welcome" => Some(build_welcome(state, on_search).upcast()),
 
-        "axys://privacy" => Some(build_privacy(on_search).upcast()),
+        "axys://privacy" => Some(build_privacy(on_search, on_private).upcast()),
 
         "axys://about" => Some(build_about().upcast()),
 

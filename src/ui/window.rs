@@ -111,6 +111,27 @@ fn build_browser_window(
         window.add_css_class("private-window");
     }
 
+    // Shared by the menu row and the `axys://privacy` landing page: entering
+    // private mode always opens a separate window, and "exit" closes this one
+    // only after the normal window exists (never leaving the user with none).
+    let open_private_toggle: Rc<dyn Fn()> = {
+        let app = app.clone();
+        let state = state.clone();
+        let window = window.downgrade();
+
+        Rc::new(move || {
+            if private_mode {
+                build_window(&app, state.clone());
+
+                if let Some(window) = window.upgrade() {
+                    window.close();
+                }
+            } else {
+                build_private_window(&app, state.clone());
+            }
+        })
+    };
+
     if !state.css_installed.get()
         && let Some(display) = gdk::Display::default()
     {
@@ -977,6 +998,7 @@ fn build_browser_window(
         let on_tool = on_tool.clone();
         let zoom_level = zoom_level.clone();
         let page_builders = page_builders.clone();
+        let on_private = open_private_toggle.clone();
 
         Rc::new(move |starting_uri: Option<&str>| {
             let id = next_id.get();
@@ -1131,12 +1153,14 @@ fn build_browser_window(
                 let zoom_level = zoom_level.clone();
                 let state = state.clone();
                 let downloads = downloads.clone();
+                let on_private = on_private.clone();
 
                 Rc::new(move |uri: &str| {
                     router::route(
                         uri,
                         PageCallbacks {
                             on_search: local_search.clone(),
+                            on_private: on_private.clone(),
                             on_about: local_about.clone(),
                             on_downloads: local_downloads.clone(),
                             on_history: local_history.clone(),
@@ -1813,6 +1837,7 @@ fn build_browser_window(
         let tab_rows = tab_rows.clone();
         let on_tool = on_tool.clone();
         let zoom_level = zoom_level.clone();
+        let on_private = open_private_toggle.clone();
 
         Rc::new(move || {
             let tab_data = {
@@ -1912,6 +1937,7 @@ fn build_browser_window(
                         page_uri,
                         PageCallbacks {
                             on_search: local_search.clone(),
+                            on_private: on_private.clone(),
                             on_about: local_about.clone(),
                             on_downloads: local_downloads.clone(),
                             on_history: local_history.clone(),
@@ -2102,28 +2128,7 @@ fn build_browser_window(
                     build_window(&app, state.clone());
                 })
             },
-            open_private_toggle: {
-                let app = app.clone();
-                let state = state.clone();
-                let window_weak = window_weak.clone();
-
-                Rc::new(move || {
-                    // Toggle: from a private window this opens a normal
-                    // window instead.
-                    if private_mode {
-                        build_window(&app, state.clone());
-
-                        // "Exit private mode" really leaves it: close this
-                        // window so no private session is left open behind
-                        // the new one.
-                        if let Some(window) = window_weak.upgrade() {
-                            window.close();
-                        }
-                    } else {
-                        build_private_window(&app, state.clone());
-                    }
-                })
-            },
+            open_private_toggle: open_private_toggle.clone(),
             view_source: view_source.clone(),
 
             zoom_in: zoom_in.clone(),
