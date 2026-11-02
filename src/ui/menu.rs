@@ -7,8 +7,9 @@
 //! reopen them. Everything here is therefore plain in-window widgets:
 //!
 //! - [`MenuPanel`]: hamburger menu as an overlay panel;
-//! - [`build_inline_picker`]: settings/welcome option lists as inline
-//!   expanding rows (no floating surface at all).
+//! - [`PickerPanel`]: Settings/Welcome option lists, floating over the page
+//!   instead of pushing its content down;
+//! - [`build_picker`]: the toggle button that asks the window to show it.
 //!
 //! Behaviour contract (Chromium-like) for every panel:
 //!
@@ -22,7 +23,7 @@
 
 use gtk::prelude::*;
 use gtk::{Align, Box, Button, Image, Label, Orientation, ScrolledWindow, Separator};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// The hamburger list grows with the window, up to this height, and scrolls
@@ -35,6 +36,9 @@ const MENU_VERTICAL_MARGIN: i32 = 190;
 /// Width reserved for the tab menu when clamping it to the window: the rows
 /// request 260 px and the panel adds padding and a border.
 const TAB_MENU_WIDTH: i32 = 280;
+
+/// Same idea for the option picker (rows request 180 px plus padding).
+const PICKER_WIDTH: i32 = 200;
 
 /// Rows that act on web content. They are disabled while an internal
 /// `axys://` page is showing, where they would do nothing.
@@ -605,14 +609,21 @@ impl TabMenuPanel {
     }
 }
 
-/// Inline option picker: a button that expands its option rows directly
-/// below it (used in Settings and Welcome). Returns the toggle button and
-/// the initially hidden rows box; the caller appends both in order.
-pub fn build_inline_picker(
+/// Opens the floating option picker for a toggle button.
+///
+/// Internal pages do not own the window overlay, so they receive this
+/// callback (through `PageCallbacks`) instead of embedding the rows.
+pub type ShowPicker = Rc<dyn Fn(Button, Vec<String>, usize, Rc<dyn Fn(usize)>)>;
+
+/// Option toggle (Settings/Welcome): shows the current value and asks the
+/// window to open its floating picker under this button, so the page layout
+/// never moves.
+pub fn build_picker(
     options: Vec<String>,
     selected: usize,
     on_pick: Rc<dyn Fn(usize)>,
-) -> (Button, Box) {
+    show_picker: ShowPicker,
+) -> Button {
     let toggle = Button::new();
 
     let head = Box::new(Orientation::Horizontal, 6);
@@ -629,57 +640,168 @@ pub fn build_inline_picker(
 
     toggle.set_child(Some(&head));
 
-    let list = Box::new(Orientation::Vertical, 2);
+    if let Some(text) = options.get(selected) {
+        toggle.set_tooltip_text(Some(text));
+    }
 
-    list.add_css_class("option-picker");
+    let picked = Rc::new(Cell::new(selected));
 
-    // Shrink to the rows instead of spanning the whole page width.
-    list.set_halign(Align::Start);
-
-    list.set_visible(false);
-
-    for (index, option) in options.iter().enumerate() {
-        let row = Button::with_label(option);
-
-        row.add_css_class("menu-row");
-
-        // Weak: the row is a child of `list`, so capturing `list` (or the
-        // sibling `toggle`/`current`) strongly here would make a GObject
-        // reference cycle that leaks the whole picker.
-        let row_list = list.downgrade();
-        let toggle = toggle.downgrade();
+    // Runs the caller's setter and keeps the button label in sync. Weak to
+    // the label and button: they are this button's own descendants.
+    let choose: Rc<dyn Fn(usize)> = {
         let current = current.downgrade();
-        let text = option.clone();
+        let toggle = toggle.downgrade();
+        let options = options.clone();
+        let picked = picked.clone();
         let on_pick = on_pick.clone();
 
-        row.connect_clicked(move |_| {
+        Rc::new(move |index| {
             on_pick(index);
+            picked.set(index);
+
+            let Some(text) = options.get(index) else {
+                return;
+            };
 
             if let Some(current) = current.upgrade() {
-                current.set_text(&text);
+                current.set_text(text);
             }
 
             if let Some(toggle) = toggle.upgrade() {
-                toggle.set_tooltip_text(Some(&text));
+                toggle.set_tooltip_text(Some(text));
             }
-
-            if let Some(row_list) = row_list.upgrade() {
-                row_list.set_visible(false);
-            }
-        });
-
-        list.append(&row);
-    }
+        })
+    };
 
     {
-        let list = list.clone();
+        let options = options.clone();
+        let picked = picked.clone();
 
-        toggle.connect_clicked(move |_| {
-            list.set_visible(!list.is_visible());
+        toggle.connect_clicked(move |toggle| {
+            show_picker(
+                toggle.clone(),
+                options.clone(),
+                picked.get(),
+                choose.clone(),
+            );
         });
     }
 
-    (toggle, list)
+    toggle
+}
+
+/// Floating option list, parented by the window overlay like [`MenuPanel`],
+/// so opening it never reflows the page.
+#[derive(Clone)]
+pub struct PickerPanel {
+    pub container: Box,
+    rows: Box,
+    /// Toggle this picker is open for, so clicking it again closes the list.
+    anchor: RefCell<Option<gtk::glib::WeakRef<Button>>>,
+    on_close: Rc<dyn Fn()>,
+}
+
+impl PickerPanel {
+    pub fn new(on_close: Rc<dyn Fn()>) -> Self {
+        let container = Box::new(Orientation::Vertical, 0);
+
+        container.add_css_class("menu-panel");
+        container.set_visible(false);
+
+        let rows = Box::new(Orientation::Vertical, 2);
+
+        rows.set_width_request(180);
+
+        container.append(&rows);
+
+        Self {
+            container,
+            rows,
+            anchor: RefCell::new(None),
+            on_close,
+        }
+    }
+
+    pub fn hide(&self) {
+        self.container.set_visible(false);
+        *self.anchor.borrow_mut() = None;
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.container.is_visible()
+    }
+
+    /// Shows the options under `anchor` in overlay coordinates. Clicking the
+    /// same toggle again closes the list.
+    pub fn show(
+        &self,
+        anchor: &Button,
+        left: i32,
+        top: i32,
+        options: &[String],
+        selected: usize,
+        on_pick: Rc<dyn Fn(usize)>,
+    ) {
+        let same_anchor = self
+            .anchor
+            .borrow()
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .is_some_and(|current| &current == anchor);
+
+        if self.container.is_visible() && same_anchor {
+            self.hide();
+            (self.on_close)();
+
+            return;
+        }
+
+        while let Some(child) = self.rows.first_child() {
+            self.rows.remove(&child);
+        }
+
+        for (index, option) in options.iter().enumerate() {
+            let row = Button::with_label(option);
+
+            row.add_css_class("menu-row");
+
+            if index == selected {
+                row.add_css_class("menu-row-selected");
+            }
+
+            let container = self.container.downgrade();
+            let on_close = self.on_close.clone();
+            let on_pick = on_pick.clone();
+
+            row.connect_clicked(move |_| {
+                if let Some(container) = container.upgrade() {
+                    container.set_visible(false);
+                }
+
+                on_close();
+
+                on_pick(index);
+            });
+
+            self.rows.append(&row);
+        }
+
+        *self.anchor.borrow_mut() = Some(anchor.downgrade());
+
+        // Keep the panel inside the window near the right edge.
+        let window_width = self
+            .container
+            .root()
+            .map(|root| root.width())
+            .unwrap_or(i32::MAX);
+
+        self.container
+            .set_margin_start(left.max(0).min((window_width - PICKER_WIDTH).max(0)));
+        self.container.set_margin_top(top.max(0));
+        self.container.set_visible(true);
+
+        (self.on_close)();
+    }
 }
 
 #[cfg(test)]

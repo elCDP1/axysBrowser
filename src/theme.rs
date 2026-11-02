@@ -423,10 +423,8 @@ pub fn stylesheet(dark: bool) -> String {
             padding: 0 2px;
         }}
 
-        .option-picker {{
-            border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
-            border-radius: 10px;
-            padding: 4px;
+        .menu-row-selected {{
+            background-color: alpha(@axys_fg, 0.10);
         }}
 
         .bookmark-bar {{

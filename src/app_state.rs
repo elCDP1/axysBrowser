@@ -423,11 +423,6 @@ impl AppState {
         self.notify_settings_changed();
     }
 
-    /// Forgets every remembered website permission decision.
-    pub fn reset_permissions(&self) {
-        self.permissions.clear_all();
-    }
-
     pub fn set_tracking_prevention(&self, enabled: bool) {
         self.settings.borrow_mut().tracking_prevention = enabled;
 

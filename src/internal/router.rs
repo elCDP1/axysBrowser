@@ -4,6 +4,8 @@ use std::rc::Rc;
 
 use crate::app_state::AppState;
 use crate::browser::history::HistoryManager;
+use crate::browser::permissions::PermissionManager;
+use crate::ui::menu::ShowPicker;
 
 use super::pages::{
     about::build_about, bookmarks::build_bookmarks, downloads::build_downloads,
@@ -56,6 +58,8 @@ pub struct PageCallbacks {
     pub on_clear_browsing_data: crate::app_state::ClearBrowsingData,
     /// History store for this window (ephemeral in private windows).
     pub history: HistoryManager,
+    /// Permission decisions for this window (ephemeral in private windows).
+    pub permissions: PermissionManager,
     /// Snapshot of the window's open tabs (resources page).
     pub tab_rows: Rc<dyn Fn() -> Vec<TabRow>>,
     pub on_close_tab: Rc<dyn Fn(usize)>,
@@ -63,6 +67,8 @@ pub struct PageCallbacks {
     pub on_tool: Rc<dyn Fn(ToolAction)>,
     /// Zoom level of the active web view, if a page is loaded.
     pub zoom_level: Rc<dyn Fn() -> Option<f64>>,
+    /// Opens the window's floating option picker under a toggle button.
+    pub show_picker: ShowPicker,
 }
 
 pub fn route(
@@ -79,22 +85,26 @@ pub fn route(
         on_history,
         on_clear_browsing_data,
         history,
+        permissions,
         tab_rows,
         on_close_tab,
         on_tool,
         zoom_level,
+        show_picker,
     } = callbacks;
 
     match uri {
         "axys://" | "axys://newtab" => Some(build_newtab(on_search, on_about).upcast()),
 
-        "axys://welcome" => Some(build_welcome(state, on_search).upcast()),
+        "axys://welcome" => Some(build_welcome(state, on_search, show_picker).upcast()),
 
         "axys://privacy" => Some(build_privacy(on_search, on_private).upcast()),
 
         "axys://about" => Some(build_about().upcast()),
 
-        "axys://settings" => Some(build_settings(state, on_clear_browsing_data).upcast()),
+        "axys://settings" => {
+            Some(build_settings(state, on_clear_browsing_data, show_picker, permissions).upcast())
+        }
 
         "axys://tools" => Some(
             build_tools(ToolsDeps {

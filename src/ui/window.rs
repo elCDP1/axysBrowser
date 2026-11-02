@@ -21,7 +21,7 @@ use crate::internal::router::PageCallbacks;
 use super::actions::{WindowActions, register_window_actions};
 use super::bookmarks::BookmarkBar;
 use super::findbar::FindBar;
-use super::menu::{TabAction, TabMenuState, tab_menu_entries};
+use super::menu::{ShowPicker, TabAction, TabMenuState, tab_menu_entries};
 use super::navigation::{address_text_for, begin_web_load, is_tab_target, resolve_target};
 use super::tabs::TabBar;
 use super::toolbar::{Toolbar, ToolbarOptions};
@@ -530,6 +530,63 @@ fn build_browser_window(
         Rc::new(move || target_view().map(|view| view.zoom_level()))
     };
 
+    // Settings/Welcome option pickers float above the page (in the window
+    // overlay) instead of expanding in place and reflowing the content.
+    // Pages only own their toggle, so they ask the window to place the list.
+    let show_picker: ShowPicker = {
+        // Weak: every internal page stores this callback, and the stack owns
+        // those pages; a strong capture would be a page <-> stack cycle that
+        // keeps the closed window's WebViews alive.
+        let toolbar_slot = Rc::downgrade(&toolbar_slot);
+        let top_stack = top_stack.downgrade();
+
+        Rc::new(
+            move |anchor: gtk::Button,
+                  options: Vec<String>,
+                  selected: usize,
+                  on_pick: Rc<dyn Fn(usize)>| {
+                let Some(toolbar_slot) = toolbar_slot.upgrade() else {
+                    return;
+                };
+
+                let Some(top_stack) = top_stack.upgrade() else {
+                    return;
+                };
+
+                let toolbar = toolbar_slot.borrow();
+
+                let Some(toolbar) = toolbar.as_ref() else {
+                    return;
+                };
+
+                let Some(point) =
+                    anchor.compute_point(&top_stack, &gtk::graphene::Point::new(0.0, 0.0))
+                else {
+                    return;
+                };
+
+                let left = point.x() as i32;
+                let anchor_top = point.y() as i32;
+
+                // Open below, or above when the window is too short; the
+                // estimate only has to be close enough to flip the side.
+                let estimated = options.len() as i32 * 34 + 12;
+                let below = anchor_top + anchor.height() + 4;
+                let above = anchor_top - estimated - 4;
+
+                let top = if below + estimated > top_stack.height() && above >= 0 {
+                    above
+                } else {
+                    below
+                };
+
+                toolbar
+                    .picker_panel
+                    .show(&anchor, left, top, &options, selected, on_pick);
+            },
+        )
+    };
+
     let on_tool: Rc<dyn Fn(ToolAction)> = {
         // Weak: this callback is stored inside every internal page, which is
         // a child of the window. Holding the window strongly would make
@@ -1015,7 +1072,9 @@ fn build_browser_window(
         let tab_rows = tab_rows.clone();
         let on_tool = on_tool.clone();
         let zoom_level = zoom_level.clone();
+        let show_picker = show_picker.clone();
         let page_builders = page_builders.clone();
+        let window_permissions = window_permissions.clone();
         let on_private = open_private_toggle.clone();
 
         Rc::new(move |starting_uri: Option<&str>| {
@@ -1040,7 +1099,7 @@ fn build_browser_window(
 
             BrowserEngine::configure(
                 &web_view,
-                state.settings.borrow().developer_tools,
+                state.settings.borrow().developer_tools && !private_mode,
                 state.settings.borrow().hardware_acceleration,
             );
 
@@ -1169,6 +1228,8 @@ fn build_browser_window(
                 let tab_rows = tab_rows.clone();
                 let on_tool = on_tool.clone();
                 let zoom_level = zoom_level.clone();
+                let show_picker = show_picker.clone();
+                let window_permissions = window_permissions.clone();
                 let state = state.clone();
                 let downloads = downloads.clone();
                 let on_private = on_private.clone();
@@ -1184,10 +1245,12 @@ fn build_browser_window(
                             on_history: local_history.clone(),
                             on_clear_browsing_data: local_clear_browsing_data.clone(),
                             history: window_history.clone(),
+                            permissions: window_permissions.clone(),
                             tab_rows: tab_rows.clone(),
                             on_close_tab: local_close_tab.clone(),
                             on_tool: on_tool.clone(),
                             zoom_level: zoom_level.clone(),
+                            show_picker: show_picker.clone(),
                         },
                         state.clone(),
                         downloads.clone(),
@@ -1838,6 +1901,15 @@ fn build_browser_window(
         tab_menu.set_margin_top(4);
 
         content_overlay.add_overlay(tab_menu);
+
+        // Settings/Welcome option lists: their position is set when they
+        // open, under (or above) the toggle that asked for them.
+        let picker = &toolbar.picker_panel.container;
+
+        picker.set_halign(gtk::Align::Start);
+        picker.set_valign(gtk::Align::Start);
+
+        content_overlay.add_overlay(picker);
     }
 
     if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
@@ -1956,9 +2028,16 @@ fn build_browser_window(
         let tab_rows = tab_rows.clone();
         let on_tool = on_tool.clone();
         let zoom_level = zoom_level.clone();
+        let show_picker = show_picker.clone();
+        let window_permissions = window_permissions.clone();
         let on_private = open_private_toggle.clone();
 
         Rc::new(move || {
+            // Rebuilding pages drops the toggles the picker may point at.
+            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                toolbar.close_panels();
+            }
+
             let tab_data = {
                 let tabs_ref = tabs.borrow();
 
@@ -2062,10 +2141,12 @@ fn build_browser_window(
                             on_history: local_history.clone(),
                             on_clear_browsing_data: local_clear_browsing_data.clone(),
                             history: window_history.clone(),
+                            permissions: window_permissions.clone(),
                             tab_rows: tab_rows.clone(),
                             on_close_tab: local_close_tab.clone(),
                             on_tool: on_tool.clone(),
                             zoom_level: zoom_level.clone(),
+                            show_picker: show_picker.clone(),
                         },
                         state.clone(),
                         downloads.clone(),

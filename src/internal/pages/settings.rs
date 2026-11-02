@@ -3,7 +3,7 @@ use gtk::{Box, Label, Orientation, ScrolledWindow, Switch};
 use std::rc::Rc;
 
 use crate::app_state::AppState;
-use crate::ui::menu::build_inline_picker;
+use crate::ui::menu::{ShowPicker, build_picker};
 
 fn row(title: &str, description: &str) -> Box {
     row_with_description(title, description).0
@@ -42,6 +42,8 @@ fn row_with_description(title: &str, description: &str) -> (Box, Label) {
 pub fn build_settings(
     state: Rc<AppState>,
     on_clear_browsing_data: crate::app_state::ClearBrowsingData,
+    show_picker: ShowPicker,
+    permissions: crate::browser::permissions::PermissionManager,
 ) -> ScrolledWindow {
     let page = Box::new(Orientation::Vertical, 18);
 
@@ -68,7 +70,7 @@ pub fn build_settings(
 
     let dark = state.settings.borrow().dark_mode;
 
-    let (appearance, appearance_options) = build_inline_picker(
+    let appearance = build_picker(
         vec![
             rust_i18n::t!("settings.dark").to_string(),
             rust_i18n::t!("settings.light").to_string(),
@@ -81,6 +83,7 @@ pub fn build_settings(
                 state.set_dark_mode(selected == 0);
             })
         },
+        show_picker.clone(),
     );
 
     appearance.set_halign(gtk::Align::Start);
@@ -101,15 +104,20 @@ pub fn build_settings(
         .position(|(id, _)| *id == state.settings.borrow().search_engine)
         .unwrap_or(0);
 
-    let (search, search_options) = build_inline_picker(engine_names, selected, {
-        let state = state.clone();
+    let search = build_picker(
+        engine_names,
+        selected,
+        {
+            let state = state.clone();
 
-        Rc::new(move |picked| {
-            if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
-                state.set_search_engine(id);
-            }
-        })
-    });
+            Rc::new(move |picked| {
+                if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
+                    state.set_search_engine(id);
+                }
+            })
+        },
+        show_picker.clone(),
+    );
 
     search.set_halign(gtk::Align::Start);
 
@@ -158,7 +166,7 @@ pub fn build_settings(
         _ => 0,
     };
 
-    let (cookies, cookies_options) = build_inline_picker(
+    let cookies = build_picker(
         vec![
             rust_i18n::t!("settings.cookies_no_third_party").to_string(),
             rust_i18n::t!("settings.cookies_always").to_string(),
@@ -178,6 +186,7 @@ pub fn build_settings(
                 state.set_cookie_policy(policy);
             })
         },
+        show_picker.clone(),
     );
 
     cookies_row.append(&cookies);
@@ -290,7 +299,7 @@ pub fn build_settings(
     let permissions_desc = format!(
         "{} ({})",
         rust_i18n::t!("settings.permissions_description"),
-        state.permissions.decision_count()
+        permissions.decision_count()
     );
 
     let (permissions_row, permissions_desc_label) =
@@ -305,18 +314,18 @@ pub fn build_settings(
     permissions_status.add_css_class("dim-label");
 
     {
-        let state = state.clone();
+        let permissions = permissions.clone();
         let permissions_status = permissions_status.clone();
         let permissions_desc_label = permissions_desc_label.clone();
 
         permissions_reset.connect_clicked(move |_| {
-            state.reset_permissions();
+            permissions.clear_all();
 
             // Refresh the count in place: the description is built once.
             permissions_desc_label.set_text(&format!(
                 "{} ({})",
                 rust_i18n::t!("settings.permissions_description"),
-                state.permissions.decision_count()
+                permissions.decision_count()
             ));
 
             permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
@@ -337,7 +346,7 @@ pub fn build_settings(
         _ => 0,
     };
 
-    let (language, language_options) = build_inline_picker(
+    let language = build_picker(
         vec![
             rust_i18n::t!("settings.english").to_string(),
             rust_i18n::t!("settings.spanish").to_string(),
@@ -350,6 +359,7 @@ pub fn build_settings(
                 state.set_language(if picked == 1 { "es" } else { "en" });
             })
         },
+        show_picker,
     );
 
     language.set_halign(gtk::Align::Start);
@@ -359,12 +369,10 @@ pub fn build_settings(
     page.append(&appearance_title);
 
     page.append(&appearance);
-    page.append(&appearance_options);
 
     page.append(&search_title);
 
     page.append(&search);
-    page.append(&search_options);
 
     page.append(&search_note);
 
@@ -373,10 +381,6 @@ pub fn build_settings(
     page.append(&tracking_row);
 
     page.append(&cookies_row);
-    // The toggle lives at the row's right end, so the list opens aligned
-    // to the right under it instead of at the page's left edge.
-    cookies_options.set_halign(gtk::Align::End);
-    page.append(&cookies_options);
 
     page.append(&clear_row);
 
@@ -391,7 +395,6 @@ pub fn build_settings(
     page.append(&language_title);
 
     page.append(&language);
-    page.append(&language_options);
     let scroller = ScrolledWindow::new();
 
     scroller.set_hexpand(true);

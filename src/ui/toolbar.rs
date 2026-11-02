@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::{WebView, prelude::WebViewExt};
 
-use super::menu::{MenuPanel, TabMenuPanel};
+use super::menu::{MenuPanel, PickerPanel, TabMenuPanel};
 use super::spinner::LoadingSpinner;
 
 use crate::app_state::AppState;
@@ -194,6 +194,8 @@ pub struct Toolbar {
     /// for why popups are in-window widgets, not surfaces).
     pub menu_panel: MenuPanel,
     pub tab_menu: TabMenuPanel,
+    /// Settings/Welcome option list, shown under its toggle.
+    pub picker_panel: PickerPanel,
     pub downloads_panel: Box,
     reload_button: Button,
     on_panel_toggled: Action,
@@ -497,6 +499,7 @@ impl Toolbar {
             page_available,
         );
         let tab_menu = TabMenuPanel::new(on_panel_toggled.clone());
+        let picker_panel = PickerPanel::new(on_panel_toggled.clone());
 
         {
             let menu_panel = menu_panel.clone();
@@ -732,6 +735,7 @@ impl Toolbar {
             bookmark_refresh: bookmark_refresh.clone(),
             menu_panel,
             tab_menu,
+            picker_panel,
             reload_button: reload.clone(),
             downloads_panel,
             on_panel_toggled,
@@ -747,6 +751,7 @@ impl Toolbar {
     pub fn any_panel_open(&self) -> bool {
         self.menu_panel.is_visible()
             || self.tab_menu.is_visible()
+            || self.picker_panel.is_visible()
             || self.downloads_panel.is_visible()
     }
 
@@ -755,6 +760,7 @@ impl Toolbar {
     pub fn close_panels(&self) {
         self.menu_panel.hide();
         self.tab_menu.hide();
+        self.picker_panel.hide();
         self.downloads_panel.set_visible(false);
         (self.on_panel_toggled)();
     }

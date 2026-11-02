@@ -4,9 +4,13 @@ use std::rc::Rc;
 
 use crate::app_state::AppState;
 use crate::browser::address::KNOWN_ENGINES;
-use crate::ui::menu::build_inline_picker;
+use crate::ui::menu::{ShowPicker, build_picker};
 
-pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Box {
+pub fn build_welcome(
+    state: Rc<AppState>,
+    on_continue: Rc<dyn Fn(String)>,
+    show_picker: ShowPicker,
+) -> Box {
     let page = Box::new(Orientation::Vertical, 18);
 
     page.set_vexpand(true);
@@ -38,15 +42,20 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
         .position(|(id, _)| *id == current)
         .unwrap_or(0);
 
-    let (search, search_options) = build_inline_picker(names, selected, {
-        let state = state.clone();
+    let search = build_picker(
+        names,
+        selected,
+        {
+            let state = state.clone();
 
-        Rc::new(move |picked| {
-            if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
-                state.set_search_engine(id);
-            }
-        })
-    });
+            Rc::new(move |picked| {
+                if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
+                    state.set_search_engine(id);
+                }
+            })
+        },
+        show_picker,
+    );
 
     let notice = Label::new(Some(&rust_i18n::t!("welcome.search_note")));
 
@@ -56,10 +65,7 @@ pub fn build_welcome(state: Rc<AppState>, on_continue: Rc<dyn Fn(String)>) -> Bo
 
     section.append(&search_label);
     section.append(&search);
-    // Centered column: keep toggle and list centered together.
     search.set_halign(gtk::Align::Center);
-    search_options.set_halign(gtk::Align::Center);
-    section.append(&search_options);
     section.append(&notice);
 
     let separator = Separator::new(Orientation::Horizontal);
