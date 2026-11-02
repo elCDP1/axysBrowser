@@ -788,17 +788,27 @@ impl PickerPanel {
 
         *self.anchor.borrow_mut() = Some(anchor.downgrade());
 
-        // Keep the panel inside the window near the right edge.
+        self.container.set_margin_start(left.max(0));
+        self.container.set_margin_top(top.max(0));
+        self.container.set_visible(true);
+
+        // Clamp with the real width once the rows exist: localized labels
+        // can be wider than PICKER_WIDTH and would otherwise spill past the
+        // right edge of the window.
         let window_width = self
             .container
             .root()
             .map(|root| root.width())
             .unwrap_or(i32::MAX);
 
+        let panel_width = self
+            .container
+            .measure(gtk::Orientation::Horizontal, -1)
+            .1
+            .max(PICKER_WIDTH);
+
         self.container
-            .set_margin_start(left.max(0).min((window_width - PICKER_WIDTH).max(0)));
-        self.container.set_margin_top(top.max(0));
-        self.container.set_visible(true);
+            .set_margin_start(left.max(0).min((window_width - panel_width).max(0)));
 
         (self.on_close)();
     }
