@@ -458,7 +458,7 @@ fn cap_filename_bytes(name: &str, max_bytes: usize) -> String {
 /// dialog's initial name: strips directory components (a remote name can
 /// contain `../` or be an absolute path), control characters, and caps the
 /// length. Returns an empty string when nothing usable remains.
-fn sanitize_download_name(suggested: &str) -> String {
+pub(crate) fn sanitize_download_name(suggested: &str) -> String {
     let base = Path::new(suggested)
         .file_name()
         .and_then(|name| name.to_str())

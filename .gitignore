@@ -12,5 +12,8 @@ Cargo.toml.backup-beta1
 .vscode/
 .idea/
 
+# Local agent skills and session files.
+.opencode/
+
 # Stray files created by mis-quoted shell redirections (e.g. `=80`).
 /=*

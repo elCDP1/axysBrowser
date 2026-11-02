@@ -28,7 +28,48 @@ pub struct WindowActions {
     pub zoom_reset: Rc<dyn Fn()>,
     /// Open the downloads directory in the system file manager.
     pub open_downloads_folder: Rc<dyn Fn()>,
+    /// Print the active page (system print dialog).
+    pub print: Rc<dyn Fn()>,
+    /// Save the active page to a file (MHTML).
+    pub save_page: Rc<dyn Fn()>,
+    /// Open the find-in-page bar.
+    pub find: Rc<dyn Fn()>,
+    /// Toggle fullscreen for the window.
+    pub fullscreen: Rc<dyn Fn()>,
+    /// Bookmark (or edit the bookmark of) the active page.
+    pub bookmark_page: Rc<dyn Fn()>,
+    /// Focus the window's Settings tab, opening one only if it has none.
+    pub focus_settings: Rc<dyn Fn()>,
 }
+
+/// Every `win.*` action registered below, without the `win.` prefix.
+/// `register_window_actions` checks this list against what it really
+/// registered (debug builds, which is what the smoke tests run), and a test
+/// checks the hamburger menu against it, so a menu row can never point at an
+/// action that does not exist.
+pub const WINDOW_ACTION_NAMES: &[&str] = &[
+    "new-tab",
+    "new-window",
+    "reopen-tab",
+    "privacy",
+    "tools",
+    "downloads",
+    "history",
+    "bookmarks",
+    "resources",
+    "settings",
+    "clear-data",
+    "view-source",
+    "zoom-in",
+    "zoom-out",
+    "zoom-reset",
+    "open-downloads-folder",
+    "print",
+    "save-page",
+    "find",
+    "fullscreen",
+    "bookmark-page",
+];
 
 /// Registers every `win.*` action on `window`.
 pub fn register_window_actions(window: &ApplicationWindow, actions: WindowActions) {
@@ -99,6 +140,21 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
         window.add_action(&action);
     }
 
+    {
+        // Chromium's "Clear browsing data": the Privacy section lives in the
+        // settings page here. Reuse an open Settings tab instead of stacking
+        // a new one on every click.
+        let focus_settings = actions.focus_settings.clone();
+
+        let action = gio::SimpleAction::new("clear-data", None);
+
+        action.connect_activate(move |_, _| {
+            focus_settings();
+        });
+
+        window.add_action(&action);
+    }
+
     for (name, callback) in [
         ("view-source", actions.view_source.clone()),
         ("zoom-in", actions.zoom_in.clone()),
@@ -108,6 +164,11 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
             "open-downloads-folder",
             actions.open_downloads_folder.clone(),
         ),
+        ("print", actions.print.clone()),
+        ("save-page", actions.save_page.clone()),
+        ("find", actions.find.clone()),
+        ("fullscreen", actions.fullscreen.clone()),
+        ("bookmark-page", actions.bookmark_page.clone()),
     ] {
         let action = gio::SimpleAction::new(name, None);
 
@@ -116,5 +177,40 @@ pub fn register_window_actions(window: &ApplicationWindow, actions: WindowAction
         });
 
         window.add_action(&action);
+    }
+
+    debug_assert!(
+        WINDOW_ACTION_NAMES
+            .iter()
+            .all(|name| window.has_action(name)),
+        "WINDOW_ACTION_NAMES lists an action that was not registered"
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WINDOW_ACTION_NAMES;
+    use crate::ui::menu::MENU_ACTIONS;
+
+    #[test]
+    fn menu_actions_are_all_registered_window_actions() {
+        for action in MENU_ACTIONS {
+            let name = action.strip_prefix("win.").expect("menu actions are win.*");
+
+            assert!(
+                WINDOW_ACTION_NAMES.contains(&name),
+                "{action} is in the menu but not registered"
+            );
+        }
+    }
+
+    #[test]
+    fn registered_action_names_are_unique() {
+        let mut names = WINDOW_ACTION_NAMES.to_vec();
+
+        names.sort_unstable();
+        names.dedup();
+
+        assert_eq!(names.len(), WINDOW_ACTION_NAMES.len());
     }
 }

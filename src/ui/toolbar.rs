@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::{WebView, prelude::WebViewExt};
 
-use super::menu::MenuPanel;
+use super::menu::{MenuPanel, TabMenuPanel};
 use super::spinner::LoadingSpinner;
 
 use crate::app_state::AppState;
@@ -193,7 +193,9 @@ pub struct Toolbar {
     /// Overlay panels owned here but parented by the window (see ui::menu
     /// for why popups are in-window widgets, not surfaces).
     pub menu_panel: MenuPanel,
+    pub tab_menu: TabMenuPanel,
     pub downloads_panel: Box,
+    reload_button: Button,
     on_panel_toggled: Action,
     _downloads_refresh: Action,
     _language_refresh: Action,
@@ -210,6 +212,8 @@ pub struct ToolbarOptions {
     /// Called after any panel toggles so the window can sync its
     /// click-catcher (visible while any panel is open).
     pub on_panel_toggled: Rc<dyn Fn()>,
+    /// Zoom of the page the zoom controls act on (hamburger menu readout).
+    pub zoom_level: Rc<dyn Fn() -> Option<f64>>,
 }
 
 impl Toolbar {
@@ -227,6 +231,7 @@ impl Toolbar {
             private_mode,
             downloads,
             on_panel_toggled,
+            zoom_level,
         } = options;
         let toolbar = CenterBox::new();
 
@@ -466,8 +471,32 @@ impl Toolbar {
         downloads_button.add_css_class("flat");
         downloads_button.set_visible(false);
 
+        // Whether the visible tab holds real web content: print, save and
+        // bookmark are disabled on internal `axys://` pages.
+        let page_available: Rc<dyn Fn() -> bool> = {
+            let current_web_view = current_web_view.clone();
+
+            Rc::new(move || {
+                current_web_view.borrow().as_ref().is_some_and(|view| {
+                    view.uri().is_some_and(|uri| {
+                        let uri = uri.as_str();
+
+                        uri.starts_with("http://")
+                            || uri.starts_with("https://")
+                            || uri.starts_with("file://")
+                    })
+                })
+            })
+        };
+
         // Hamburger panel (rows built by ui::menu).
-        let menu_panel = MenuPanel::new(private_mode, on_panel_toggled.clone());
+        let menu_panel = MenuPanel::new(
+            private_mode,
+            on_panel_toggled.clone(),
+            zoom_level,
+            page_available,
+        );
+        let tab_menu = TabMenuPanel::new(on_panel_toggled.clone());
 
         {
             let menu_panel = menu_panel.clone();
@@ -702,6 +731,8 @@ impl Toolbar {
             bookmark,
             bookmark_refresh: bookmark_refresh.clone(),
             menu_panel,
+            tab_menu,
+            reload_button: reload.clone(),
             downloads_panel,
             on_panel_toggled,
             _downloads_refresh: downloads_refresh,
@@ -710,12 +741,27 @@ impl Toolbar {
         }
     }
 
+    /// True while any of the toolbar's overlay panels is showing. The single
+    /// list of those panels: the Escape handler and the window's click
+    /// catcher both ask here, so a new panel only has to be added once.
+    pub fn any_panel_open(&self) -> bool {
+        self.menu_panel.is_visible()
+            || self.tab_menu.is_visible()
+            || self.downloads_panel.is_visible()
+    }
+
     /// Hides both panels and syncs the window catcher. Called on tab
     /// switch, Escape and anywhere a panel must go away.
     pub fn close_panels(&self) {
         self.menu_panel.hide();
+        self.tab_menu.hide();
         self.downloads_panel.set_visible(false);
         (self.on_panel_toggled)();
+    }
+
+    /// Reloads (or stops, while loading) the active page, like the button.
+    pub fn reload(&self) {
+        self.reload_button.emit_clicked();
     }
 
     /// Refreshes the bookmark star for the currently shown view. Called on

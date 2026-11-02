@@ -21,6 +21,7 @@ use crate::internal::router::PageCallbacks;
 use super::actions::{WindowActions, register_window_actions};
 use super::bookmarks::BookmarkBar;
 use super::findbar::FindBar;
+use super::menu::{TabAction, TabMenuState, tab_menu_entries};
 use super::navigation::{address_text_for, begin_web_load, is_tab_target, resolve_target};
 use super::tabs::TabBar;
 use super::toolbar::{Toolbar, ToolbarOptions};
@@ -254,12 +255,14 @@ fn build_browser_window(
         let catcher = catcher.clone();
 
         Rc::new(move || {
-            let any_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
-                toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
-            }) || bookmark_bar_slot
+            let any_open = toolbar_slot
                 .borrow()
                 .as_ref()
-                .is_some_and(|bar| bar.overflow_panel.is_visible());
+                .is_some_and(|toolbar| toolbar.any_panel_open())
+                || bookmark_bar_slot
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|bar| bar.overflow_panel.is_visible());
 
             catcher.set_visible(any_open);
         })
@@ -479,6 +482,21 @@ fn build_browser_window(
                 .borrow()
                 .as_ref()
                 .and_then(|weak| weak.upgrade())
+        })
+    };
+
+    // Strictly the visible tab. Print and Save must never fall back to
+    // `last_web_view`: on an internal page that would print or save a hidden
+    // page from another tab.
+    let current_page_view: Rc<dyn Fn() -> Option<WebView>> = {
+        let current_web_view = current_web_view.clone();
+
+        Rc::new(move || {
+            current_web_view
+                .borrow()
+                .as_ref()
+                .filter(|view| view.uri().map(|uri| is_web_uri(&uri)).unwrap_or(false))
+                .cloned()
         })
     };
 
@@ -1591,6 +1609,96 @@ fn build_browser_window(
         })
     };
 
+    // Right-click on a tab: build the menu for that tab and show it under it.
+    let on_tab_context: Rc<dyn Fn(usize, f64)> = {
+        let tabs = tabs.clone();
+        let toolbar_slot = toolbar_slot.clone();
+        let new_tab = new_tab.clone();
+        let close_tab = close_tab.clone();
+        let select_tab = select_tab.clone();
+
+        Rc::new(move |id: usize, left: f64| {
+            let (state, uri, others, to_the_right) = {
+                let tabs = tabs.borrow();
+
+                let Some(position) = tabs.iter().position(|tab| tab.id == id) else {
+                    return;
+                };
+
+                let tab = &tabs[position];
+
+                let ids = |range: &[Tab]| range.iter().map(|tab| tab.id).collect::<Vec<_>>();
+
+                let others = [ids(&tabs[..position]), ids(&tabs[position + 1..])].concat();
+                let to_the_right = ids(&tabs[position + 1..]);
+
+                (
+                    TabMenuState {
+                        muted: tab.web_view.is_muted(),
+                        is_web_page: tab.uri.starts_with("http://")
+                            || tab.uri.starts_with("https://")
+                            || tab.uri.starts_with("file://"),
+                        others: others.len(),
+                        to_the_right: to_the_right.len(),
+                    },
+                    tab.uri.clone(),
+                    others,
+                    to_the_right,
+                )
+            };
+
+            let toolbar = toolbar_slot.borrow();
+
+            let Some(toolbar) = toolbar.as_ref() else {
+                return;
+            };
+
+            // Reaching the toolbar again from the action would make the
+            // panel own a strong path back to itself; go through the slot
+            // at action time instead.
+            let run: Rc<dyn Fn(TabAction)> = {
+                let tabs = tabs.clone();
+                let toolbar_slot = toolbar_slot.clone();
+                let new_tab = new_tab.clone();
+                let close_tab = close_tab.clone();
+                let select_tab = select_tab.clone();
+
+                Rc::new(move |action| match action {
+                    TabAction::Reload => {
+                        select_tab(id);
+
+                        if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                            toolbar.reload();
+                        }
+                    }
+                    TabAction::Duplicate => {
+                        new_tab(Some(&uri));
+                    }
+                    TabAction::ToggleMute => {
+                        if let Some(tab) = tabs.borrow().iter().find(|tab| tab.id == id) {
+                            tab.web_view.set_is_muted(!tab.web_view.is_muted());
+                        }
+                    }
+                    TabAction::Close => close_tab(id),
+                    TabAction::CloseOthers => {
+                        for other in &others {
+                            close_tab(*other);
+                        }
+                    }
+                    TabAction::CloseToTheRight => {
+                        for other in &to_the_right {
+                            close_tab(*other);
+                        }
+                    }
+                })
+            };
+
+            toolbar
+                .tab_menu
+                .show(left as i32, &tab_menu_entries(&state), run);
+        })
+    };
+
     let tabbar = TabBar::new(
         {
             let new_tab = new_tab.clone();
@@ -1601,6 +1709,7 @@ fn build_browser_window(
         },
         select_tab.clone(),
         close_tab.clone(),
+        on_tab_context,
         {
             let navigate_tab = navigate_tab.clone();
             let active_id = active_id.clone();
@@ -1668,6 +1777,7 @@ fn build_browser_window(
             private_mode,
             downloads: downloads.clone(),
             on_panel_toggled: sync_panels.clone(),
+            zoom_level: zoom_level.clone(),
         },
     );
 
@@ -1719,6 +1829,15 @@ fn build_browser_window(
 
             content_overlay.add_overlay(panel);
         }
+
+        // The tab menu opens under the clicked tab (left edge set on show).
+        let tab_menu = &toolbar.tab_menu.container;
+
+        tab_menu.set_halign(gtk::Align::Start);
+        tab_menu.set_valign(gtk::Align::Start);
+        tab_menu.set_margin_top(4);
+
+        content_overlay.add_overlay(tab_menu);
     }
 
     if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
@@ -2115,6 +2234,138 @@ fn build_browser_window(
         },
     );
 
+    let print: Rc<dyn Fn()> = {
+        let current_page_view = current_page_view.clone();
+        let window_weak = window_weak.clone();
+
+        Rc::new(move || {
+            if let Some(view) = current_page_view() {
+                let operation = webkit6::PrintOperation::new(&view);
+
+                let _ = operation.run_dialog(window_weak.upgrade().as_ref());
+            }
+        })
+    };
+
+    let save_page: Rc<dyn Fn()> = {
+        let current_page_view = current_page_view.clone();
+        let window_weak = window_weak.clone();
+
+        Rc::new(move || {
+            let Some(view) = current_page_view() else {
+                return;
+            };
+
+            let Some(parent) = window_weak.upgrade() else {
+                return;
+            };
+
+            // Only real documents: internal axys:// pages are not web content.
+            let saveable = view.uri().is_some_and(|uri| {
+                uri.starts_with("http://")
+                    || uri.starts_with("https://")
+                    || uri.starts_with("file://")
+            });
+
+            if !saveable {
+                return;
+            }
+
+            let title = view
+                .title()
+                .map(|title| title.to_string())
+                .filter(|title| !title.trim().is_empty())
+                .unwrap_or_else(|| "page".to_string());
+
+            // Sanitizing can leave nothing (a title made only of control
+            // characters or separators), which would suggest ".mhtml".
+            let mut name = crate::browser::downloads::sanitize_download_name(&title);
+
+            if name.is_empty() {
+                name = "page".to_string();
+            }
+
+            let dialog = gtk::FileDialog::builder()
+                .title(rust_i18n::t!("menu.save_page").to_string())
+                .initial_name(format!("{name}.mhtml"))
+                .build();
+
+            dialog.set_initial_folder(Some(&gio::File::for_path(
+                crate::browser::downloads::DownloadManager::downloads_dir(),
+            )));
+
+            dialog.save(Some(&parent), gio::Cancellable::NONE, move |result| {
+                if let Ok(file) = result {
+                    view.save_to_file(
+                        &file,
+                        webkit6::SaveMode::Mhtml,
+                        gio::Cancellable::NONE,
+                        |result| {
+                            if let Err(error) = result {
+                                eprintln!("Could not save the page: {error}");
+                            }
+                        },
+                    );
+                }
+            });
+        })
+    };
+
+    let find: Rc<dyn Fn()> = {
+        let findbar_slot = findbar_slot.clone();
+
+        Rc::new(move || {
+            if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                findbar.show();
+            }
+        })
+    };
+
+    let fullscreen: Rc<dyn Fn()> = {
+        let window_weak = window_weak.clone();
+
+        Rc::new(move || {
+            if let Some(window) = window_weak.upgrade() {
+                if window.is_fullscreen() {
+                    window.unfullscreen();
+                } else {
+                    window.fullscreen();
+                }
+            }
+        })
+    };
+
+    let bookmark_page: Rc<dyn Fn()> = {
+        let toolbar_slot = toolbar_slot.clone();
+
+        Rc::new(move || {
+            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                toolbar.activate_bookmark();
+            }
+        })
+    };
+
+    let focus_settings: Rc<dyn Fn()> = {
+        let tabs = tabs.clone();
+        let select_tab = select_tab.clone();
+        let new_tab = new_tab.clone();
+
+        Rc::new(move || {
+            let existing = tabs
+                .borrow()
+                .iter()
+                .find(|tab| tab.uri == "axys://settings")
+                .map(|tab| tab.id);
+
+            match existing {
+                Some(id) => select_tab(id),
+                None => {
+                    new_tab(Some("axys://settings"));
+                }
+            }
+        })
+    };
+
     register_window_actions(
         &window,
         WindowActions {
@@ -2135,6 +2386,12 @@ fn build_browser_window(
             zoom_out: zoom_out.clone(),
             zoom_reset: zoom_reset.clone(),
             open_downloads_folder: open_downloads_folder.clone(),
+            print,
+            save_page,
+            find,
+            fullscreen,
+            bookmark_page,
+            focus_settings,
         },
     );
 

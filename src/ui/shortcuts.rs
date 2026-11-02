@@ -90,9 +90,48 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
 
             let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
 
+            // Runs a `win.*` action (the same ones the hamburger menu uses).
+            let activate = |name: &str| {
+                if let Some(window) = window_weak.upgrade() {
+                    let _ = gtk::prelude::WidgetExt::activate_action(&window, name, None);
+                }
+            };
+
+            // Chromium's Ctrl+Shift+Delete: clear browsing data.
+            if ctrl && shift && key == gdk::Key::Delete {
+                activate("win.clear-data");
+
+                return Propagation::Stop;
+            }
+
             if ctrl {
                 if let Some(ch) = key.to_unicode() {
                     match ch.to_ascii_lowercase() {
+                        'p' => {
+                            activate("win.print");
+
+                            return Propagation::Stop;
+                        }
+
+                        's' => {
+                            activate("win.save-page");
+
+                            return Propagation::Stop;
+                        }
+
+                        'u' => {
+                            activate("win.view-source");
+
+                            return Propagation::Stop;
+                        }
+
+                        // Chromium's Ctrl+Shift+O: bookmarks manager.
+                        'o' if shift => {
+                            new_tab(Some("axys://bookmarks"));
+
+                            return Propagation::Stop;
+                        }
+
                         'n' => {
                             if shift {
                                 // Same toggle as the menu item: entering
@@ -129,7 +168,14 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                         }
 
                         'w' => {
-                            close_tab(active_id.get());
+                            // Chromium: Ctrl+Shift+W closes the window.
+                            if shift {
+                                if let Some(window) = window_weak.upgrade() {
+                                    window.close();
+                                }
+                            } else {
+                                close_tab(active_id.get());
+                            }
 
                             return Propagation::Stop;
                         }
@@ -386,12 +432,14 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
             // Esc closes menu panels first, then the findbar, otherwise
             // stops loading.
             if key == gdk::Key::Escape {
-                let panels_open = toolbar_slot.borrow().as_ref().is_some_and(|toolbar| {
-                    toolbar.menu_panel.is_visible() || toolbar.downloads_panel.is_visible()
-                }) || bookmark_bar_slot
+                let panels_open = toolbar_slot
                     .borrow()
                     .as_ref()
-                    .is_some_and(|bar| bar.overflow_panel.is_visible());
+                    .is_some_and(|toolbar| toolbar.any_panel_open())
+                    || bookmark_bar_slot
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|bar| bar.overflow_panel.is_visible());
 
                 if panels_open {
                     if let Some(toolbar) = toolbar_slot.borrow().as_ref() {

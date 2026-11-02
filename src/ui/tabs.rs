@@ -25,6 +25,9 @@ pub struct TabBar {
     new_button: Button,
     on_select: Rc<dyn Fn(usize)>,
     on_close: Rc<dyn Fn(usize)>,
+    /// Right-click on a tab: (tab id, x of the tab's left edge in window
+    /// coordinates).
+    on_context: Rc<dyn Fn(usize, f64)>,
     rendered: RefCell<Option<Rendered>>,
 }
 
@@ -33,6 +36,7 @@ impl TabBar {
         on_new: Rc<dyn Fn()>,
         on_select: Rc<dyn Fn(usize)>,
         on_close: Rc<dyn Fn(usize)>,
+        on_context: Rc<dyn Fn(usize, f64)>,
         on_about: Rc<dyn Fn()>,
     ) -> Self {
         let root = Box::new(Orientation::Horizontal, 5);
@@ -84,6 +88,7 @@ impl TabBar {
             new_button,
             on_select,
             on_close,
+            on_context,
             rendered: RefCell::new(None),
         }
     }
@@ -209,6 +214,36 @@ impl TabBar {
             });
 
             tab.add_controller(middle_click);
+
+            let on_context = self.on_context.clone();
+
+            let right_click = GestureClick::new();
+
+            right_click.set_button(3);
+
+            right_click.set_propagation_phase(PropagationPhase::Capture);
+
+            right_click.connect_pressed(move |gesture, _, _, _| {
+                let Some(tab) = gesture.widget() else {
+                    return;
+                };
+
+                // Left edge of the tab in window coordinates: the menu opens
+                // under it.
+                let left = tab
+                    .root()
+                    .and_then(|root| {
+                        tab.compute_point(
+                            root.upcast_ref::<gtk::Widget>(),
+                            &gtk::graphene::Point::new(0.0, 0.0),
+                        )
+                    })
+                    .map_or(0.0, |point| f64::from(point.x()));
+
+                on_context(id, left);
+            });
+
+            tab.add_controller(right_click);
 
             tab.append(&select);
 

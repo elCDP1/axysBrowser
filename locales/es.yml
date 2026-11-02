@@ -200,3 +200,22 @@ dialog:
 external:
   title: "¿Abrir este enlace en otra aplicación?"
   open: "Abrir"
+
+menu:
+  zoom: "Zoom"
+  zoom_reset: "Restablecer zoom"
+  fullscreen: "Pantalla completa"
+  print: "Imprimir…"
+  find: "Buscar…"
+  save_page: "Guardar página como…"
+  bookmark_page: "Añadir esta página a marcadores"
+  clear_data: "Borrar datos de navegación…"
+
+tabs:
+  reload: "Recargar"
+  duplicate: "Duplicar"
+  mute: "Silenciar sitio"
+  unmute: "Dejar de silenciar sitio"
+  close: "Cerrar"
+  close_others: "Cerrar otras pestañas"
+  close_right: "Cerrar pestañas a la derecha"

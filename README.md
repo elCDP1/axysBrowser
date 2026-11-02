@@ -28,6 +28,12 @@ GTK4 and WebKitGTK 6.
 - Tools page: bookmarks manager (`axys://bookmarks`), resources overview
   (`axys://resources`: open tabs + browser memory), zoom controls and
   "open downloads folder"
+- Chromium-style three-dot menu: grouped entries with their shortcuts, a zoom
+  row (− / 100% / + / full screen, stays open while you adjust), Print…,
+  Find…, Save page as… (MHTML), Bookmark this page and Clear browsing data…;
+  Settings stays pinned at the bottom and the rest scrolls on short windows
+- Right-click on a tab: reload, duplicate, mute / unmute site, close, close
+  other tabs, close tabs to the right
 - Right-click menu on web content: WebKit's standard actions plus
   "View page source" (and "Inspect Element" when developer tools are on)
 - Privacy window (ephemeral session, nothing is stored; toggled from the same menu item)
@@ -106,6 +112,12 @@ xdg-settings set default-web-browser axysbrowser.desktop
 | Ctrl+R, Ctrl+Shift+R, F5 | Reload (Ctrl+Shift+R bypasses cache) |
 | Ctrl+F, Enter / Esc | Find in page (next match / close) |
 | Ctrl+O | Open a local file |
+| Ctrl+P | Print the page |
+| Ctrl+S | Save the page as a file (MHTML) |
+| Ctrl+U | View page source |
+| Ctrl+Shift+O | Bookmarks manager |
+| Ctrl+Shift+Delete | Clear browsing data (opens Settings) |
+| Ctrl+Shift+W | Close the window |
 | F11 | Toggle fullscreen |
 | Esc | Close find bar, else stop loading |
 | Ctrl+Tab, Ctrl+Shift+Tab, Ctrl+PgUp/PgDn, Ctrl+1…9 | Switch tabs |
@@ -113,6 +125,10 @@ xdg-settings set default-web-browser axysbrowser.desktop
 | Ctrl++ / Ctrl+- / Ctrl+0 | Zoom |
 | Ctrl+D | Bookmark page |
 | Ctrl+H / Ctrl+J | History / downloads |
+
+As in Chromium, a page that handles one of these keys itself (for example
+Ctrl+S in an online editor, with `preventDefault`) gets it first, and the
+browser only acts when the page did not.
 
 ## Project structure
 

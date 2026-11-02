@@ -68,7 +68,7 @@ fn shorten_for_dialog(text: &str, max_chars: usize) -> String {
 /// URI form that is safe to write to stderr: scheme, host and port only.
 /// Credentials, path, query and fragment are dropped, because popup URLs and
 /// external links can carry session tokens and end up in the journal.
-fn log_safe_uri(uri: &str) -> String {
+pub(crate) fn log_safe_uri(uri: &str) -> String {
     let Some(colon) = uri.find(':') else {
         return "(url)".to_string();
     };
@@ -1304,7 +1304,10 @@ impl BrowserEngine {
                 ),
             };
 
-            eprintln!("Web process terminated ({reason:?}) on {uri}");
+            eprintln!(
+                "Web process terminated ({reason:?}) on {}",
+                log_safe_uri(&uri)
+            );
 
             Self::mark_error_page(view, &uri);
 
@@ -1326,7 +1329,10 @@ impl BrowserEngine {
                 return false;
             }
 
-            eprintln!("Load failed ({event:?}) {failing_uri}: {message}");
+            eprintln!(
+                "Load failed ({event:?}) {}: {message}",
+                log_safe_uri(failing_uri)
+            );
 
             let title = rust_i18n::t!("error.load_title").to_string();
 

@@ -200,3 +200,22 @@ dialog:
 external:
   title: "Open this link in another application?"
   open: "Open"
+
+menu:
+  zoom: "Zoom"
+  zoom_reset: "Reset zoom"
+  fullscreen: "Full screen"
+  print: "Print…"
+  find: "Find…"
+  save_page: "Save page as…"
+  bookmark_page: "Bookmark this page"
+  clear_data: "Clear browsing data…"
+
+tabs:
+  reload: "Reload"
+  duplicate: "Duplicate"
+  mute: "Mute site"
+  unmute: "Unmute site"
+  close: "Close"
+  close_others: "Close other tabs"
+  close_right: "Close tabs to the right"

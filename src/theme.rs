@@ -370,14 +370,57 @@ pub fn stylesheet(dark: bool) -> String {
             box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
         }}
 
+        /* Flat rows (hover highlight only), like a real menu: a plain
+         * GtkButton would draw a bordered button per row. */
         .menu-row {{
-            padding: 6px 12px;
+            padding: 2px 12px;
             border-radius: 8px;
-            min-height: 30px;
+            min-height: 28px;
+            background: none;
+            background-image: none;
+            border: 1px solid transparent;
+            box-shadow: none;
         }}
 
-        .menu-row:hover {{
+        .menu-row:hover,
+        .menu-row:focus-visible {{
             background-color: alpha(@axys_fg, 0.08);
+        }}
+
+        .menu-shortcut {{
+            color: alpha(@axys_fg, 0.55);
+            font-size: 0.9em;
+        }}
+
+        .menu-separator {{
+            margin: 4px 6px;
+            min-height: 1px;
+            background-color: alpha(@axys_fg, 0.12);
+        }}
+
+        .menu-zoom-row {{
+            padding: 2px 12px;
+            min-height: 32px;
+        }}
+
+        .menu-zoom-button {{
+            min-width: 30px;
+            min-height: 26px;
+            padding: 0 6px;
+            border-radius: 8px;
+            background: none;
+            background-image: none;
+            border: 1px solid alpha(@axys_fg, 0.18);
+            box-shadow: none;
+        }}
+
+        .menu-zoom-button:hover {{
+            background-color: alpha(@axys_fg, 0.08);
+        }}
+
+        .menu-zoom-value {{
+            min-width: 44px;
+            padding: 0 2px;
         }}
 
         .option-picker {{

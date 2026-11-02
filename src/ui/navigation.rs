@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::browser::address::{SearchConfig, resolve_input};
-use crate::browser::engine::BrowserEngine;
+use crate::browser::engine::{BrowserEngine, log_safe_uri};
 use crate::browser::tabs::Tab;
 use crate::internal::router;
 use webkit6::WebView;
@@ -95,7 +95,7 @@ pub fn begin_web_load(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize, web_view: &WebVie
                 .is_some_and(|tab| tab.nav_serial == serial && !tab.committed);
 
             if stuck && view.is_loading() {
-                eprintln!("Load timed out: {target}");
+                eprintln!("Load timed out: {}", log_safe_uri(&target));
 
                 view.stop_loading();
 
