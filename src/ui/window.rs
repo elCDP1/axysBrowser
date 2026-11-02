@@ -538,7 +538,6 @@ fn build_browser_window(
         // those pages; a strong capture would be a page <-> stack cycle that
         // keeps the closed window's WebViews alive.
         let toolbar_slot = Rc::downgrade(&toolbar_slot);
-        let top_stack = top_stack.downgrade();
 
         Rc::new(
             move |anchor: gtk::Button,
@@ -549,40 +548,15 @@ fn build_browser_window(
                     return;
                 };
 
-                let Some(top_stack) = top_stack.upgrade() else {
-                    return;
-                };
-
                 let toolbar = toolbar_slot.borrow();
 
                 let Some(toolbar) = toolbar.as_ref() else {
                     return;
                 };
 
-                let Some(point) =
-                    anchor.compute_point(&top_stack, &gtk::graphene::Point::new(0.0, 0.0))
-                else {
-                    return;
-                };
-
-                let left = point.x() as i32;
-                let anchor_top = point.y() as i32;
-
-                // Open below, or above when the window is too short; the
-                // estimate only has to be close enough to flip the side.
-                let estimated = options.len() as i32 * 34 + 12;
-                let below = anchor_top + anchor.height() + 4;
-                let above = anchor_top - estimated - 4;
-
-                let top = if below + estimated > top_stack.height() && above >= 0 {
-                    above
-                } else {
-                    below
-                };
-
                 toolbar
                     .picker_panel
-                    .show(&anchor, left, top, &options, selected, on_pick);
+                    .show(&anchor, &options, selected, on_pick);
             },
         )
     };

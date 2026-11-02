@@ -731,13 +731,14 @@ impl PickerPanel {
         self.container.is_visible()
     }
 
-    /// Shows the options under `anchor` in overlay coordinates. Clicking the
-    /// same toggle again closes the list.
+    /// Shows the options under `anchor`. Clicking the same toggle again
+    /// closes the list.
+    ///
+    /// The position is computed against the overlay that owns this panel, so
+    /// it stays correct inside scrolled pages and when the window resizes.
     pub fn show(
         &self,
         anchor: &Button,
-        left: i32,
-        top: i32,
         options: &[String],
         selected: usize,
         on_pick: Rc<dyn Fn(usize)>,
@@ -755,6 +756,32 @@ impl PickerPanel {
 
             return;
         }
+
+        // The window parents this panel to its content overlay; without it
+        // there is nowhere to place the list (page built before the toolbar).
+        let Some(overlay) = self.container.parent() else {
+            return;
+        };
+
+        let Some(point) = anchor.compute_point(&overlay, &gtk::graphene::Point::new(0.0, 0.0))
+        else {
+            return;
+        };
+
+        let left = point.x() as i32;
+        let anchor_top = point.y() as i32;
+
+        // Open below, or above when there is no room; the estimate only has
+        // to be close enough to pick the side.
+        let estimated = options.len() as i32 * 34 + 12;
+        let below = anchor_top + anchor.height() + 4;
+        let above = anchor_top - estimated - 4;
+
+        let top = if below + estimated > overlay.height() && above >= 0 {
+            above
+        } else {
+            below
+        };
 
         while let Some(child) = self.rows.first_child() {
             self.rows.remove(&child);
@@ -794,12 +821,8 @@ impl PickerPanel {
 
         // Clamp with the real width once the rows exist: localized labels
         // can be wider than PICKER_WIDTH and would otherwise spill past the
-        // right edge of the window.
-        let window_width = self
-            .container
-            .root()
-            .map(|root| root.width())
-            .unwrap_or(i32::MAX);
+        // right edge of the content area.
+        let window_width = overlay.width();
 
         let panel_width = self
             .container
@@ -807,8 +830,21 @@ impl PickerPanel {
             .1
             .max(PICKER_WIDTH);
 
+        // Right-side controls (the cookies row puts its toggle at the end)
+        // align their menu's right edge with the toggle, so it opens under
+        // the control instead of jumping left to fit.
+        let anchor_left = left.max(0);
+        let anchor_right = anchor_left + anchor.width();
+        let max_left = (window_width - panel_width).max(0);
+
+        let aligned = if anchor_left + anchor.width() / 2 > window_width / 2 {
+            anchor_right - panel_width
+        } else {
+            anchor_left
+        };
+
         self.container
-            .set_margin_start(left.max(0).min((window_width - panel_width).max(0)));
+            .set_margin_start(aligned.max(0).min(max_left));
 
         (self.on_close)();
     }
