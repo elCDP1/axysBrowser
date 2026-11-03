@@ -370,6 +370,12 @@ pub fn stylesheet(dark: bool) -> String {
             box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
         }}
 
+        /* The picker's scrolling viewport must not paint its own frame. */
+        .picker-scroller {{
+            background: none;
+            border: none;
+        }}
+
         /* Flat rows (hover highlight only), like a real menu: a plain
          * GtkButton would draw a bordered button per row. */
         .menu-row {{

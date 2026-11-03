@@ -690,11 +690,68 @@ pub fn build_picker(
     toggle
 }
 
+/// Where an option list goes inside the content area.
+///
+/// Pure so the edge cases (flip above, tiny window, right-side control) can
+/// be tested without a display. Prefers below the toggle, falls back to
+/// above, and finally pins the panel inside the area so it can never be
+/// placed off-screen.
+#[allow(clippy::too_many_arguments)]
+fn picker_position(
+    anchor_left: i32,
+    anchor_top: i32,
+    anchor_width: i32,
+    anchor_height: i32,
+    panel_width: i32,
+    panel_height: i32,
+    area_width: i32,
+    area_height: i32,
+) -> (i32, i32) {
+    let below = anchor_top + anchor_height + 4;
+    let above = anchor_top - panel_height - 4;
+
+    let top = if below + panel_height <= area_height {
+        below
+    } else if above >= 0 {
+        above
+    } else {
+        (area_height - panel_height - 8).max(0)
+    };
+
+    // Right-side controls (the cookies row puts its toggle at the end) align
+    // their menu's right edge with the toggle, so it opens under the control
+    // instead of jumping left to fit. Everything else keeps the left edge.
+    let anchor_left = anchor_left.max(0);
+    let anchor_right = anchor_left + anchor_width;
+    let max_left = (area_width - panel_width).max(0);
+
+    let left = if anchor_left + anchor_width / 2 > area_width / 2 {
+        anchor_right - panel_width
+    } else {
+        anchor_left
+    };
+
+    (left.max(0).min(max_left), top.max(0))
+}
+
+/// Closes the panels when `area` changes size, per the module contract
+/// (item 4: resize closes). `area` is the overlay that holds the panels.
+pub fn close_panels_on_resize<W>(area: &W, on_close: Rc<dyn Fn()>)
+where
+    W: IsA<gtk::Widget> + 'static,
+{
+    let width_close = on_close.clone();
+
+    area.connect_notify_local(Some("width"), move |_, _| width_close());
+    area.connect_notify_local(Some("height"), move |_, _| on_close());
+}
+
 /// Floating option list, parented by the window overlay like [`MenuPanel`],
 /// so opening it never reflows the page.
 #[derive(Clone)]
 pub struct PickerPanel {
     pub container: Box,
+    scroller: ScrolledWindow,
     rows: Box,
     /// Toggle this picker is open for, so clicking it again closes the list.
     anchor: RefCell<Option<gtk::glib::WeakRef<Button>>>,
@@ -712,10 +769,22 @@ impl PickerPanel {
 
         rows.set_width_request(180);
 
-        container.append(&rows);
+        // Long option lists must scroll inside the panel instead of growing
+        // past the content area. The maximum height is refreshed on show.
+        let scroller = ScrolledWindow::new();
+
+        scroller.add_css_class("picker-scroller");
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_propagate_natural_width(true);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_has_frame(false);
+        scroller.set_child(Some(&rows));
+
+        container.append(&scroller);
 
         Self {
             container,
+            scroller,
             rows,
             anchor: RefCell::new(None),
             on_close,
@@ -768,20 +837,8 @@ impl PickerPanel {
             return;
         };
 
-        let left = point.x() as i32;
+        let anchor_left = point.x() as i32;
         let anchor_top = point.y() as i32;
-
-        // Open below, or above when there is no room; the estimate only has
-        // to be close enough to pick the side.
-        let estimated = options.len() as i32 * 34 + 12;
-        let below = anchor_top + anchor.height() + 4;
-        let above = anchor_top - estimated - 4;
-
-        let top = if below + estimated > overlay.height() && above >= 0 {
-            above
-        } else {
-            below
-        };
 
         while let Some(child) = self.rows.first_child() {
             self.rows.remove(&child);
@@ -815,14 +872,20 @@ impl PickerPanel {
 
         *self.anchor.borrow_mut() = Some(anchor.downgrade());
 
-        self.container.set_margin_start(left.max(0));
-        self.container.set_margin_top(top.max(0));
+        // Never let the list grow past the content area: long option lists
+        // scroll inside the panel instead of being clipped by the window.
+        // The 20 px reserve covers the panel's padding and border.
+        self.scroller
+            .set_max_content_height((overlay.height() - 20).max(40));
+
+        // Show at the origin first so the real (not estimated) size can be
+        // measured; the final placement is applied before the next paint.
+        self.container.set_margin_start(0);
+        self.container.set_margin_top(0);
         self.container.set_visible(true);
 
-        // Clamp with the real width once the rows exist: localized labels
-        // can be wider than PICKER_WIDTH and would otherwise spill past the
-        // right edge of the content area.
-        let window_width = overlay.width();
+        let area_width = overlay.width();
+        let area_height = overlay.height();
 
         let panel_width = self
             .container
@@ -830,21 +893,24 @@ impl PickerPanel {
             .1
             .max(PICKER_WIDTH);
 
-        // Right-side controls (the cookies row puts its toggle at the end)
-        // align their menu's right edge with the toggle, so it opens under
-        // the control instead of jumping left to fit.
-        let anchor_left = left.max(0);
-        let anchor_right = anchor_left + anchor.width();
-        let max_left = (window_width - panel_width).max(0);
+        let panel_height = self
+            .container
+            .measure(gtk::Orientation::Vertical, panel_width)
+            .1;
 
-        let aligned = if anchor_left + anchor.width() / 2 > window_width / 2 {
-            anchor_right - panel_width
-        } else {
-            anchor_left
-        };
+        let (left, top) = picker_position(
+            anchor_left,
+            anchor_top,
+            anchor.width(),
+            anchor.height(),
+            panel_width,
+            panel_height,
+            area_width,
+            area_height,
+        );
 
-        self.container
-            .set_margin_start(aligned.max(0).min(max_left));
+        self.container.set_margin_start(left);
+        self.container.set_margin_top(top);
 
         (self.on_close)();
     }
@@ -854,8 +920,70 @@ impl PickerPanel {
 mod tests {
     use super::{
         Entry, MENU_ACTIONS, MENU_MAX_HEIGHT, MENU_MIN_HEIGHT, TabAction, TabEntry, TabMenuState,
-        format_zoom, menu_entries, menu_max_height, split_footer, tab_menu_entries,
+        format_zoom, menu_entries, menu_max_height, picker_position, split_footer,
+        tab_menu_entries,
     };
+
+    /// Convenience wrapper: a 100x30 toggle at (x, y) in an 800x600 area.
+    fn place(anchor_left: i32, anchor_top: i32, panel_width: i32, panel_height: i32) -> (i32, i32) {
+        picker_position(
+            anchor_left,
+            anchor_top,
+            100,
+            30,
+            panel_width,
+            panel_height,
+            800,
+            600,
+        )
+    }
+
+    #[test]
+    fn picker_opens_below_when_it_fits() {
+        assert_eq!(place(100, 100, 200, 120), (100, 134));
+    }
+
+    #[test]
+    fn picker_flips_above_when_the_bottom_is_too_close() {
+        // 534 + 120 > 600, and the real panel height leaves room above.
+        assert_eq!(place(100, 500, 200, 120), (100, 376));
+    }
+
+    #[test]
+    fn picker_pins_inside_when_neither_side_fits() {
+        let (_, top) = picker_position(100, 80, 100, 30, 200, 120, 800, 200);
+
+        assert_eq!(top, 72);
+    }
+
+    #[test]
+    fn right_side_controls_align_their_right_edges() {
+        let (left, _) = picker_position(700, 100, 80, 30, 200, 120, 800, 600);
+
+        // Panel spans 580..780: the right edge matches the toggle's.
+        assert_eq!(left, 580);
+    }
+
+    #[test]
+    fn left_side_controls_keep_their_left_edge() {
+        let (left, _) = place(40, 100, 200, 120);
+
+        assert_eq!(left, 40);
+    }
+
+    #[test]
+    fn picker_never_spills_past_the_right_edge() {
+        let (left, _) = picker_position(780, 100, 100, 30, 200, 120, 800, 600);
+
+        assert_eq!(left, 600);
+    }
+
+    #[test]
+    fn picker_never_goes_off_the_left_edge() {
+        let (left, _) = picker_position(0, 100, 100, 30, 900, 120, 800, 600);
+
+        assert_eq!(left, 0);
+    }
 
     fn items(private_mode: bool) -> Vec<(&'static str, &'static str, &'static str)> {
         menu_entries(private_mode)

@@ -1898,18 +1898,35 @@ fn build_browser_window(
     }
 
     {
-        let toolbar_slot = toolbar_slot.clone();
-        let bookmark_bar_slot = bookmark_bar_slot.clone();
+        // Contract item 4: resizing the window closes any open panel instead
+        // of leaving it anchored to the old layout.
+        let resize_toolbar_slot = toolbar_slot.clone();
+        let resize_bookmark_slot = bookmark_bar_slot.clone();
+        let click_toolbar_slot = toolbar_slot.clone();
+        let click_bookmark_slot = bookmark_bar_slot.clone();
 
         catcher.connect_clicked(move |_| {
-            if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+            if let Some(toolbar) = click_toolbar_slot.borrow().as_ref() {
                 toolbar.close_panels();
             }
 
-            if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+            if let Some(bar) = click_bookmark_slot.borrow().as_ref() {
                 bar.close_panels();
             }
         });
+
+        super::menu::close_panels_on_resize(
+            &content_overlay,
+            Rc::new(move || {
+                if let Some(toolbar) = resize_toolbar_slot.borrow().as_ref() {
+                    toolbar.close_panels();
+                }
+
+                if let Some(bar) = resize_bookmark_slot.borrow().as_ref() {
+                    bar.close_panels();
+                }
+            }),
+        );
     }
 
     root.append(&content_overlay);
