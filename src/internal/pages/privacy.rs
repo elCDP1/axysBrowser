@@ -5,12 +5,13 @@ use std::rc::Rc;
 use super::background::build_waves_background;
 
 /// Privacy landing page: same look as the new tab page (shared waves
-/// background), with just a short private-mode heading and a continue
-/// button. Deliberately minimal — no long warning text.
+/// background), with just a short private-mode heading and one button that
+/// says what it does. Deliberately minimal — no long warning text.
 ///
-/// Private mode lives in its own window, so "continue" opens that window and
+/// Private mode lives in its own window, so the button opens that window and
 /// leaves the current tab on the New Tab page: the landing page must not be a
-/// dead end that looks like nothing happened.
+/// dead end that looks like nothing happened, and "Continue browsing" read as
+/// if nothing would change.
 pub fn build_privacy(on_search: Rc<dyn Fn(String)>, on_private: Rc<dyn Fn()>) -> Box {
     let page = Box::new(Orientation::Vertical, 0);
 
@@ -41,19 +42,19 @@ pub fn build_privacy(on_search: Rc<dyn Fn(String)>, on_private: Rc<dyn Fn()>) ->
     subtitle.set_max_width_chars(48);
     subtitle.set_justify(gtk::Justification::Center);
 
-    let continue_button = Button::with_label(&rust_i18n::t!("privacy.continue"));
-    continue_button.add_css_class("suggested-action");
-    continue_button.set_halign(gtk::Align::Center);
-    continue_button.set_margin_top(8);
+    let activate_button = Button::with_label(&rust_i18n::t!("privacy.activate"));
+    activate_button.add_css_class("suggested-action");
+    activate_button.set_halign(gtk::Align::Center);
+    activate_button.set_margin_top(8);
 
-    continue_button.connect_clicked(move |_| {
+    activate_button.connect_clicked(move |_| {
         on_private();
         on_search("axys://newtab".to_string());
     });
 
     content.append(&title);
     content.append(&subtitle);
-    content.append(&continue_button);
+    content.append(&activate_button);
 
     overlay.add_overlay(&content);
     overlay.set_measure_overlay(&content, true);

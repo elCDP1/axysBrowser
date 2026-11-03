@@ -52,6 +52,94 @@ fn page_action_target(is_mapped: bool, uri: Option<&str>) -> bool {
     is_mapped && uri.is_some_and(is_web_uri)
 }
 
+/// Whether an asynchronous "Save page as…" may still export.
+///
+/// The file dialog is modal but the browser is not frozen: the user can close
+/// the tab, switch away from it or navigate while the dialog is open. Only a
+/// still-mapped view holding the very document the dialog was opened for may
+/// be written out; anything else would export a page nobody asked for.
+fn save_target_unchanged(
+    is_mapped: bool,
+    current_uri: Option<&str>,
+    expected_uri: Option<&str>,
+) -> bool {
+    is_mapped && current_uri == expected_uri
+}
+
+/// Window title, Chromium style: the active page's title plus the app name.
+///
+/// Private windows name themselves, so a private page can never be mistaken
+/// for a normal one from the task switcher.
+fn window_title_for(page_title: &str, private_mode: bool) -> String {
+    let app = if private_mode {
+        rust_i18n::t!("privacy.title").to_string()
+    } else {
+        "axysBrowser".to_string()
+    };
+
+    let page_title = page_title.trim();
+
+    if page_title.is_empty() {
+        app
+    } else {
+        format!("{page_title} — {app}")
+    }
+}
+
+#[cfg(test)]
+mod page_export_tests {
+    use super::{page_action_target, save_target_unchanged};
+
+    #[test]
+    fn an_async_save_follows_the_document_the_dialog_was_opened_for() {
+        let page = Some("https://example.com/a");
+
+        assert!(save_target_unchanged(true, page, page));
+
+        // Navigated while the file dialog was open: export the wrong page?
+        assert!(!save_target_unchanged(
+            true,
+            Some("https://example.com/b"),
+            page
+        ));
+
+        // Tab closed (its view is gone) or switched away from (unmapped).
+        assert!(!save_target_unchanged(false, page, page));
+        assert!(!save_target_unchanged(true, None, page));
+    }
+
+    #[test]
+    fn the_window_title_names_the_page_and_the_browser() {
+        assert_eq!(
+            super::window_title_for("Rust — Learn", false),
+            "Rust — Learn — axysBrowser"
+        );
+
+        // No page title yet (a fresh tab): just the app name.
+        assert_eq!(super::window_title_for("", false), "axysBrowser");
+        assert_eq!(super::window_title_for("   ", false), "axysBrowser");
+
+        // Private windows say so instead of posing as a normal window.
+        let private = super::window_title_for("Inbox", true);
+
+        assert!(private.starts_with("Inbox — "), "got {private:?}");
+        assert!(!private.contains("axysBrowser"), "got {private:?}");
+    }
+
+    #[test]
+    fn page_tools_only_act_on_a_mapped_web_page() {
+        assert!(page_action_target(true, Some("https://example.com")));
+        assert!(page_action_target(true, Some("file:///tmp/a.html")));
+
+        // Internal pages are not documents a print/export action can use.
+        assert!(!page_action_target(true, Some("axys://newtab")));
+
+        // A background tab keeps its WebView alive but unmapped.
+        assert!(!page_action_target(false, Some("https://example.com")));
+        assert!(!page_action_target(true, None));
+    }
+}
+
 pub fn build_window(app: &Application, state: Rc<AppState>) {
     build_window_with_url(app, state, None);
 }
@@ -2214,13 +2302,16 @@ fn build_browser_window(
             }
 
             if let Some(window) = window_weak.upgrade() {
-                if private_mode {
-                    let title = rust_i18n::t!("privacy.title").to_string();
+                // The active page's title, so the task switcher says which
+                // page this window is showing.
+                let page_title = tabs
+                    .borrow()
+                    .iter()
+                    .find(|tab| tab.id == active_id.get())
+                    .map(|tab| tab.title.clone())
+                    .unwrap_or_default();
 
-                    window.set_title(Some(&title));
-                } else {
-                    window.set_title(Some("axysBrowser"));
-                }
+                window.set_title(Some(&window_title_for(&page_title, private_mode)));
             }
         })
     };
@@ -2412,7 +2503,11 @@ fn build_browser_window(
                 // The dialog is asynchronous: the user may have switched,
                 // navigated or closed the tab while it was open. Saving then
                 // would export a page that is no longer the visible one.
-                if !view.is_mapped() || view.uri() != expected_uri {
+                if !save_target_unchanged(
+                    view.is_mapped(),
+                    view.uri().as_deref(),
+                    expected_uri.as_deref(),
+                ) {
                     return;
                 }
 

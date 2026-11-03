@@ -41,6 +41,23 @@ pub struct ShortcutContext {
     pub bookmark_bar_slot: Rc<RefCell<Option<BookmarkBar>>>,
 }
 
+/// Which tab `Ctrl+<digit>` selects out of `len` tabs, in Chromium's order:
+/// `Ctrl+1`…`Ctrl+8` are the first eight tabs and `Ctrl+9` is always the
+/// *last* one, not the ninth. `None` when there is nothing to select.
+pub fn tab_index_for_shortcut(digit: u32, len: usize) -> Option<usize> {
+    if len == 0 || !(1..=9).contains(&digit) {
+        return None;
+    }
+
+    if digit == 9 {
+        return Some(len - 1);
+    }
+
+    let index = digit as usize - 1;
+
+    (index < len).then_some(index)
+}
+
 /// Installs the key-pressed controller on `window`.
 pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutContext) {
     let ShortcutContext {
@@ -366,11 +383,9 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                     && let Some(digit) = ch.to_digit(10)
                     && (1..=9).contains(&digit)
                 {
-                    let index = digit as usize - 1;
-
                     let tabs_ref = tabs.borrow();
 
-                    if index < tabs_ref.len() {
+                    if let Some(index) = tab_index_for_shortcut(digit, tabs_ref.len()) {
                         let id = tabs_ref[index].id;
 
                         drop(tabs_ref);
@@ -474,5 +489,40 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
         });
 
         window.add_controller(keyboard);
+    }
+}
+
+#[cfg(test)]
+mod tab_shortcut_tests {
+    use super::tab_index_for_shortcut;
+
+    #[test]
+    fn ctrl_nine_selects_the_last_tab_whatever_the_count() {
+        assert_eq!(tab_index_for_shortcut(9, 3), Some(2));
+        assert_eq!(tab_index_for_shortcut(9, 1), Some(0));
+        assert_eq!(tab_index_for_shortcut(9, 40), Some(39));
+    }
+
+    #[test]
+    fn the_first_eight_digits_index_their_tab() {
+        for digit in 1..=8 {
+            assert_eq!(tab_index_for_shortcut(digit, 10), Some(digit as usize - 1));
+        }
+
+        // A digit past the end of the strip selects nothing (it must not wrap
+        // into another tab).
+        assert_eq!(tab_index_for_shortcut(5, 3), None);
+        assert_eq!(tab_index_for_shortcut(8, 8), Some(7));
+    }
+
+    #[test]
+    fn a_window_without_tabs_has_nothing_to_select() {
+        for digit in 1..=9 {
+            assert_eq!(tab_index_for_shortcut(digit, 0), None);
+        }
+
+        // And no other key is a tab shortcut.
+        assert_eq!(tab_index_for_shortcut(0, 5), None);
+        assert_eq!(tab_index_for_shortcut(10, 5), None);
     }
 }

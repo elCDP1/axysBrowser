@@ -168,6 +168,10 @@ impl TabBar {
 
             select.set_halign(gtk::Align::Fill);
 
+            // The label is ellipsized at 24 characters: hover shows the whole
+            // title instead of leaving long page names unreadable.
+            select.set_tooltip_text(Some(title));
+
             select.add_css_class("tab-select");
 
             let close = Button::builder()

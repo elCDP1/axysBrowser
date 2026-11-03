@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.1.7`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.1.8`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -189,12 +189,14 @@ its web process exited, that closing a whole window frees its tabs'
 pages caused.
 
 `rest-smoke.sh` opens nothing but `axys://resources` and checks that the
-whole process tree stays under 200 MiB PSS while idle, that no web process
-is left running for a native page, and — on a host without a GPU
-(`/dev/dri`) — that the window really chose the software renderer. It is
-the regression guard for the renderer choice described under
-[Rendering and GPU](#rendering-and-gpu): falling back to software GL costs
-about 100 MiB and fails there.
+whole process tree stays under 160 MiB PSS while idle and that no web
+process is left running for a native page. It also recomputes the GL
+evidence itself (render node, kernel driver, `LIBGL_ALWAYS_SOFTWARE`,
+Mesa driver) and fails unless the renderer the app picked matches it, so a
+`/dev/dri` entry backed by a fake driver cannot pass as hardware. It is the
+regression guard for the choice described under
+[Rendering and GPU](#rendering-and-gpu): software GL costs about 100 MiB and
+fails there.
 
 The strict variants need a host where `bwrap` can create and configure
 user and network namespaces. Ubuntu 24.04 gates that behind AppArmor;
@@ -246,15 +248,29 @@ disabled automatically under WSL, where it can freeze the browser. If you
 hit freezes on a Mesa/X11 setup, run with `AXYS_DMABUF=0` (or WebKit's own
 `WEBKIT_DISABLE_DMABUF_RENDERER=1`); `AXYS_DMABUF=1` forces it back on.
 
-Hardware acceleration can be toggled in Settings and applies to open tabs
-immediately. The window itself picks its GTK renderer automatically: a real
-GPU keeps the default GL renderer, while a software GL path (no `/dev/dri`,
-Mesa forced to software, or WSLg) uses `cairo`. Every widget renders the
-same; what changes is memory — with one internal page open, the main process
-measured 168 MiB PSS with GL on WSLg and 58 MiB with cairo (under Xvfb the
-same comparison is ~240 vs ~105 MiB). Set `AXYS_GSK=gl` to force GPU
-rendering anyway, `AXYS_GSK=cairo` to force software, or set `GSK_RENDERER`
-yourself, which always wins.
+Hardware acceleration in Settings is WebKit's GPU use for pages — a
+different switch from the one below, which is GTK's renderer for the window.
+The window picks its renderer from what GL actually is, not from whether
+`/dev/dri` exists: the DRM node's kernel driver (`faux_driver`, `vgem` and
+`vkms` mean no 3D engine — WSLg exposes `faux_driver` beside a real
+`renderD128`, which is why the node alone proves nothing), a
+`LIBGL_ALWAYS_SOFTWARE` that is switched on (`=0` is off), and Mesa's driver
+override naming the CPU rasterizer (`llvmpipe`, `softpipe`, `swrast`,
+`swiftshader`). A real GPU keeps the default GL renderer; anything software
+gets `cairo`, which draws every widget identically for a fraction of the
+memory — with one internal page open, the main process measured 168 MiB PSS
+with GL on WSLg and 58 MiB with cairo (under Xvfb the same comparison is
+~240 vs ~105 MiB). Set `AXYS_GSK=gl` to force GPU rendering anyway,
+`AXYS_GSK=cairo` to force software, or set `GSK_RENDERER` yourself, which
+always wins. The chosen renderer and the evidence behind it are printed at
+startup.
+
+Web processes get a memory ceiling sized to the machine: 35 % of RAM,
+clamped to 2–4 GiB (4 GiB when RAM cannot be read), instead of a fixed
+4 GiB that let a single tab reach half of an 8 GB machine. It is printed at
+startup, and `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it. A tab is still only
+killed when it really exceeds the ceiling, which no realistic page does:
+Discord, Slack and Figma sit well under 2 GB.
 
 ## Contributing
 

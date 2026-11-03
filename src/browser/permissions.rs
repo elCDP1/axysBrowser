@@ -192,7 +192,10 @@ pub fn origin_for_uri(uri: Option<&str>) -> String {
 
     let port = parsed.port();
 
-    let effective = if port > 0 {
+    // GLib reports `-1` when the URI carries no port at all. An explicit `:0`
+    // is a port like any other (a service on an ephemeral port is still its
+    // own origin), so only `-1` falls back to the scheme's default.
+    let effective = if port >= 0 {
         port
     } else if scheme == "http" {
         80
@@ -806,6 +809,37 @@ mod tests {
         assert_eq!(
             origin_for_uri(Some("HTTPS://example.com")),
             origin_for_uri(Some("https://example.com"))
+        );
+    }
+
+    #[test]
+    fn an_explicit_port_zero_is_its_own_origin() {
+        // GLib reports `-1` for "no port"; an explicit `:0` is a real port and
+        // must not be folded into the scheme default.
+        assert_eq!(
+            origin_for_uri(Some("http://example.com:0/")),
+            "http://example.com:0"
+        );
+        assert_eq!(
+            origin_for_uri(Some("https://example.com:0/")),
+            "https://example.com:0"
+        );
+
+        assert_ne!(
+            origin_for_uri(Some("http://example.com:0")),
+            origin_for_uri(Some("http://example.com")),
+            ":0 must not share a grant with the default HTTP port"
+        );
+        assert_ne!(
+            origin_for_uri(Some("https://example.com:0")),
+            origin_for_uri(Some("https://example.com")),
+            ":0 must not share a grant with the default HTTPS port"
+        );
+
+        // The omitted port still means the scheme default.
+        assert_eq!(
+            origin_for_uri(Some("https://example.com/")),
+            "https://example.com:443"
         );
     }
 

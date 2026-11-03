@@ -141,7 +141,7 @@ about:
 privacy:
   title: "Modo privado"
   subtitle: "Una sesión de navegación temporal"
-  continue: "Seguir navegando"
+  activate: "Activar modo privado"
   exit: "Salir"
 
 history:

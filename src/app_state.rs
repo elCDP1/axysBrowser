@@ -121,6 +121,36 @@ type LanguageListeners = Rc<RefCell<Vec<LanguageListener>>>;
 type SettingsListener = Weak<dyn Fn()>;
 type SettingsListeners = Rc<RefCell<Vec<SettingsListener>>>;
 
+/// Appends a listener, dropping the entries whose owner is gone: windows are
+/// opened and closed over a long session, so the list must not accumulate
+/// dead callbacks.
+fn register_listener(listeners: &mut Vec<SettingsListener>, callback: &Rc<dyn Fn()>) {
+    listeners.retain(|listener| listener.strong_count() > 0);
+    listeners.push(Rc::downgrade(callback));
+}
+
+/// Calls every listener that is still alive, pruning the dead ones first.
+///
+/// The list is borrowed only for the prune and the snapshot, and the borrow
+/// is released before any callback runs: a listener is free to change state
+/// or subscribe another one without hitting a `RefCell` already-borrowed
+/// panic.
+fn notify_listeners(listeners: &RefCell<Vec<SettingsListener>>) {
+    let active = {
+        let mut listeners = listeners.borrow_mut();
+
+        listeners.retain(|listener| listener.strong_count() > 0);
+
+        listeners.clone()
+    };
+
+    for listener in active {
+        if let Some(callback) = listener.upgrade() {
+            callback();
+        }
+    }
+}
+
 /// `GtkInterfaceColorScheme` values (GTK 4.20+): `DARK` and `LIGHT`.
 ///
 /// `DEFAULT` (1) is deliberately never used for the light side: it defers to
@@ -359,47 +389,21 @@ impl AppState {
         // long session, and this list only got pruned while notifying, so a
         // window closed right after opening could linger until the next
         // language change.
-        listeners.retain(|listener| listener.strong_count() > 0);
-        listeners.push(Rc::downgrade(callback));
+        register_listener(&mut listeners, callback);
     }
 
     pub fn subscribe_settings(&self, callback: &Rc<dyn Fn()>) {
         let mut listeners = self.settings_listeners.borrow_mut();
 
-        listeners.retain(|listener| listener.strong_count() > 0);
-        listeners.push(Rc::downgrade(callback));
+        register_listener(&mut listeners, callback);
     }
 
     fn notify_settings_changed(&self) {
-        let mut listeners = self.settings_listeners.borrow_mut();
-
-        listeners.retain(|listener| listener.strong_count() > 0);
-
-        let active_listeners = listeners.clone();
-
-        drop(listeners);
-
-        for listener in active_listeners {
-            if let Some(callback) = listener.upgrade() {
-                callback();
-            }
-        }
+        notify_listeners(&self.settings_listeners);
     }
 
     fn notify_language_changed(&self) {
-        let mut listeners = self.language_listeners.borrow_mut();
-
-        listeners.retain(|listener| listener.strong_count() > 0);
-
-        let active_listeners = listeners.clone();
-
-        drop(listeners);
-
-        for listener in active_listeners {
-            if let Some(callback) = listener.upgrade() {
-                callback();
-            }
-        }
+        notify_listeners(&self.language_listeners);
     }
 
     pub fn set_search_engine(&self, engine: &str) {
@@ -474,6 +478,12 @@ impl AppState {
         crate::browser::engine::apply_cookie_policy(&self.network_session, &normalized);
 
         self.save();
+
+        // Every window's `settings_refresh` listener re-applies the policy to
+        // its own session, which is the only way an already-open private
+        // window (whose ephemeral session `set_cookie_policy` cannot reach)
+        // ever sees the change.
+        self.notify_settings_changed();
     }
 
     /// Real "clear browsing data": history, all cookies, favicon cache,
@@ -738,6 +748,98 @@ mod tests {
         assert_eq!(settings.search_engine, defaults.search_engine);
         assert_eq!(settings.cookie_policy, defaults.cookie_policy);
         assert_eq!(settings.language, defaults.language);
+    }
+
+    #[test]
+    fn every_live_settings_listener_is_notified_once() {
+        let buttons = Rc::new(RefCell::new(Vec::<bool>::new()));
+        let mut listeners: Vec<SettingsListener> = Vec::new();
+        // A window keeps its own strong reference: `subscribe` only stores a
+        // weak one, so without it the listener would be pruned as dead.
+        let mut owners: Vec<Rc<dyn Fn()>> = Vec::new();
+
+        for index in 0..2 {
+            let sink = buttons.clone();
+            let listener: Rc<dyn Fn()> = Rc::new(move || sink.borrow_mut().push(index == 0));
+
+            register_listener(&mut listeners, &listener);
+            owners.push(listener);
+        }
+
+        let registry = RefCell::new(listeners);
+
+        notify_listeners(&registry);
+
+        assert_eq!(registry.borrow().len(), 2);
+        assert_eq!(
+            *buttons.borrow(),
+            vec![true, false],
+            "each listener runs exactly once"
+        );
+    }
+
+    #[test]
+    fn dead_listeners_are_dropped_and_never_called() {
+        let calls = Rc::new(RefCell::new(0usize));
+        let sink = calls.clone();
+        let mut listeners: Vec<SettingsListener> = Vec::new();
+
+        {
+            // Scoped so the only strong reference dies with the block.
+            let transient: Rc<dyn Fn()> = Rc::new(move || *sink.borrow_mut() += 1);
+
+            register_listener(&mut listeners, &transient);
+        }
+
+        assert_eq!(listeners.len(), 1);
+
+        let counter = Rc::new(RefCell::new(0usize));
+        let increment = counter.clone();
+
+        let listener: Rc<dyn Fn()> = Rc::new(move || *increment.borrow_mut() += 1);
+
+        register_listener(&mut listeners, &listener);
+
+        let registry = RefCell::new(listeners);
+
+        notify_listeners(&registry);
+
+        assert_eq!(*counter.borrow(), 1, "the live listener still runs");
+        assert_eq!(*calls.borrow(), 0, "a dead listener is never called");
+        assert_eq!(registry.borrow().len(), 1, "notify prunes the dead entry");
+    }
+
+    #[test]
+    fn a_settings_notification_may_register_another_listener() {
+        // `notify_listeners` must not hold the `RefCell` borrow while calling
+        // out: a window that subscribes from inside its own callback would
+        // otherwise panic.
+        let calls = Rc::new(RefCell::new(0usize));
+        let counter = calls.clone();
+        let listeners = Rc::new(RefCell::new(Vec::<SettingsListener>::new()));
+        let registry = listeners.clone();
+
+        let subscriber: Rc<dyn Fn()> = {
+            let registry = registry.clone();
+
+            Rc::new(move || {
+                *counter.borrow_mut() += 1;
+
+                let added: Rc<dyn Fn()> = Rc::new(|| ());
+
+                register_listener(&mut registry.borrow_mut(), &added);
+            })
+        };
+
+        register_listener(&mut listeners.borrow_mut(), &subscriber);
+
+        notify_listeners(&listeners);
+
+        assert_eq!(
+            *calls.borrow(),
+            1,
+            "the callback ran without a borrow panic"
+        );
     }
 
     #[test]

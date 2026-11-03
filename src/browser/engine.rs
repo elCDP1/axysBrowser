@@ -251,16 +251,132 @@ fn ensure_dirs() -> (String, String) {
     )
 }
 
+/// Per-web-process memory ceiling, in MiB, for a machine with `total_ram_mb`.
+///
+/// WebKit kills a web process that exceeds this limit. The old fixed 4096 MiB
+/// was right on a 16 GB machine and reckless on an 8 GB one, where a single
+/// runaway tab could reach half of RAM before WebKit reacted. 35 % of RAM,
+/// clamped to [2048, 4096], keeps the Discord/Slack/Figma class of page —
+/// which sits far below 2 GB — working exactly as before while leaving the
+/// rest of the machine to the browser's own tabs and the user's programs.
+/// `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it, so the policy can be measured
+/// on any machine.
+fn web_process_memory_limit(total_ram_mb: u64) -> u32 {
+    if total_ram_mb == 0 {
+        // No `/proc/meminfo` (not Linux, or hidden): keep the old ceiling.
+        return 4096;
+    }
+
+    (total_ram_mb * 35 / 100).clamp(2048, 4096) as u32
+}
+
+/// Total RAM in MiB from `/proc/meminfo`; 0 when it cannot be read.
+fn total_ram_mb() -> u64 {
+    let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
+        return 0;
+    };
+
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+
+        if fields.next() == Some("MemTotal:") {
+            return fields
+                .next()
+                .and_then(|kb| kb.parse::<u64>().ok())
+                .map(|kb| kb / 1024)
+                .unwrap_or(0);
+        }
+    }
+
+    0
+}
+
+/// `AXYS_WEB_MEMORY_LIMIT` in MiB, clamped to something WebKit accepts.
+fn memory_limit_override() -> Option<u32> {
+    let raw = std::env::var("AXYS_WEB_MEMORY_LIMIT").ok()?;
+
+    raw.trim()
+        .parse::<u32>()
+        .ok()
+        .map(|mib| mib.clamp(512, 16384))
+}
+
 fn tune_memory_pressure() {
     // Discord / Slack / Figma easily exceed WebKit's default web-process
     // memory limit and get killed with ExceededMemoryLimit. Raise the ceiling
-    // globally (once per process is enough; the call is process-wide).
+    // globally (once per process is enough; the call is process-wide), sized
+    // to the machine instead of a fixed 4 GiB.
+    let total = total_ram_mb();
+    let limit = memory_limit_override().unwrap_or_else(|| web_process_memory_limit(total));
+
     let mut settings = MemoryPressureSettings::new();
 
-    settings.set_memory_limit(4096);
-    settings.set_poll_interval(5.0);
+    settings.set_memory_limit(limit);
+
+    // How often each web process re-checks memory pressure. WebKit's default
+    // is one second, which keeps every tab waking up even when nothing is
+    // happening; half a minute is soon enough for a tab that has to release
+    // memory, and it cuts the idle wakeups by 30x.
+    settings.set_poll_interval(30.0);
 
     NetworkSession::set_memory_pressure_settings(&mut settings);
+
+    eprintln!(
+        "Web process memory ceiling: {limit} MiB ({} MiB RAM)",
+        if total == 0 {
+            "unknown".to_string()
+        } else {
+            total.to_string()
+        }
+    );
+}
+
+#[cfg(test)]
+mod memory_policy_tests {
+    use super::web_process_memory_limit;
+
+    #[test]
+    fn the_ceiling_follows_the_machine_not_a_fixed_four_gigabytes() {
+        // 8 GB (the common low-end desktop): 35 % is ~2.7 GiB, far from half
+        // of RAM, and still twice what a heavy SPA needs.
+        assert_eq!(web_process_memory_limit(7793), 2727);
+
+        // 16 GB and up keep the historical ceiling.
+        assert_eq!(web_process_memory_limit(16384), 4096);
+        assert_eq!(web_process_memory_limit(32768), 4096);
+
+        // Small machines never drop below 2 GiB: Discord/Slack/Figma class
+        // pages must keep working exactly as before.
+        assert_eq!(web_process_memory_limit(4096), 2048);
+        assert_eq!(web_process_memory_limit(2048), 2048);
+
+        // Unreadable `/proc/meminfo`: the old behaviour, not a tiny ceiling.
+        assert_eq!(web_process_memory_limit(0), 4096);
+    }
+
+    #[test]
+    fn the_ceiling_never_shrinks_between_neighbouring_machines() {
+        let mut previous = 0;
+
+        for ram in [1024, 2048, 4096, 6000, 7793, 12000, 16384, 65536] {
+            let limit = web_process_memory_limit(ram);
+
+            assert!(limit >= previous, "{ram} MiB of RAM lowered the ceiling");
+            assert!((2048..=4096).contains(&limit), "{ram} MiB: {limit}");
+
+            previous = limit;
+        }
+    }
+
+    #[test]
+    fn the_live_ceiling_is_readable_from_this_machine() {
+        // Not a policy assertion: it just proves the /proc parsing works here
+        // (the value is what the startup log prints).
+        let ram = super::total_ram_mb();
+
+        assert!(ram > 0, "MemTotal must be readable on Linux");
+        assert!((2048..=4096).contains(&super::web_process_memory_limit(ram)));
+    }
 }
 
 impl BrowserEngine {
@@ -1311,7 +1427,9 @@ impl BrowserEngine {
         });
 
         view.connect_load_failed_with_tls_errors(|view, failing_uri, _cert, _errors| {
-            eprintln!("TLS failure on {failing_uri}");
+            // A failing URL can carry a session token, a reset link or a query
+            // full of personal data; the log only needs scheme and host.
+            eprintln!("TLS failure on {}", log_safe_uri(failing_uri));
 
             let title = rust_i18n::t!("error.tls_title").to_string();
             let detail = rust_i18n::t!("error.tls_detail").to_string();

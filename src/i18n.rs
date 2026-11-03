@@ -10,7 +10,7 @@ pub fn set_locale(locale: &str) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use super::*;
 
@@ -28,15 +28,15 @@ mod tests {
         }
     }
 
-    /// Raw `section.key` leaves of a locale file.
+    /// Raw `section.key` → value leaves of a locale file.
     ///
-    /// The test must not go through `rust_i18n::t!`: a key missing from
+    /// The tests must not go through `rust_i18n::t!`: a key missing from
     /// Spanish silently falls back to English there, so the old check passed
     /// even when `es.yml` had lost entries. Reading the YAML itself keeps the
     /// two files honest. `str::lines` already drops a trailing `\r`, so a
     /// CRLF checkout parses the same as an LF one.
-    fn translation_keys(contents: &str) -> BTreeSet<String> {
-        let mut keys = BTreeSet::new();
+    fn translation_entries(contents: &str) -> BTreeMap<String, String> {
+        let mut entries = BTreeMap::new();
         let mut stack: Vec<&str> = Vec::new();
 
         for line in contents.lines() {
@@ -72,11 +72,42 @@ mod tests {
 
                 path.push(name);
 
-                keys.insert(path.join("."));
+                entries.insert(path.join("."), value.trim().trim_matches('"').to_string());
             }
         }
 
-        keys
+        entries
+    }
+
+    fn translation_keys(contents: &str) -> BTreeSet<String> {
+        translation_entries(contents).into_keys().collect()
+    }
+
+    fn locale_entries(locale: &str) -> BTreeMap<String, String> {
+        let path = format!("locales/{locale}.yml");
+        let contents = std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{path}"));
+
+        let entries = translation_entries(&contents);
+
+        assert!(
+            entries.len() > 50,
+            "{path} looks truncated: only {} keys",
+            entries.len()
+        );
+
+        entries
+    }
+
+    /// `%{name}` placeholders of a translated string.
+    fn placeholders(value: &str) -> BTreeSet<String> {
+        value
+            .split("%{")
+            .skip(1)
+            .filter_map(|rest| rest.split('}').next())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     fn locale_keys(locale: &str) -> BTreeSet<String> {
@@ -113,6 +144,32 @@ mod tests {
             missing_in_english.is_empty(),
             "missing from locales/en.yml: {missing_in_english:?}"
         );
+    }
+
+    /// Both languages must keep the same `%{…}` placeholders, and no entry
+    /// may be blank: a translation without `%{message}` prints a message-less
+    /// error instead of failing anywhere.
+    #[test]
+    fn both_languages_keep_the_same_placeholders_and_no_blanks() {
+        let english = locale_entries("en");
+        let spanish = locale_entries("es");
+
+        for (key, value) in &english {
+            let translated = spanish
+                .get(key)
+                .unwrap_or_else(|| panic!("{key} is missing from locales/es.yml"));
+
+            assert!(!value.trim().is_empty(), "{key} is blank in locales/en.yml");
+            assert!(
+                !translated.trim().is_empty(),
+                "{key} is blank in locales/es.yml"
+            );
+            assert_eq!(
+                placeholders(value),
+                placeholders(translated),
+                "placeholders differ for {key}"
+            );
+        }
     }
 
     /// Every `"section.key"` string literal in the code that names a

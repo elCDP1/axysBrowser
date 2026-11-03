@@ -141,7 +141,7 @@ about:
 privacy:
   title: "Privacy mode"
   subtitle: "A temporary browsing session"
-  continue: "Continue browsing"
+  activate: "Activate private mode"
   exit: "Exit"
 
 history:
