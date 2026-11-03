@@ -238,13 +238,14 @@ hit freezes on a Mesa/X11 setup, run with `AXYS_DMABUF=0` (or WebKit's own
 `WEBKIT_DISABLE_DMABUF_RENDERER=1`); `AXYS_DMABUF=1` forces it back on.
 
 Hardware acceleration can be toggled in Settings and applies to open tabs
-immediately. If the window chrome itself is slow or glitchy, try GTK's
-software renderer with `GSK_RENDERER=cairo`. On machines without a working
-GPU (VMs, Xvfb, some WSLg setups) GTK falls back to Mesa's software GL, which
-is memory hungry: measured under Xvfb, the main process used ~240 MiB PSS
-idle with the default renderer and ~105 MiB with `GSK_RENDERER=cairo`. On a
-real GPU this does not apply, so the browser does not change the renderer
-by itself.
+immediately. The window itself picks its GTK renderer automatically: a real
+GPU keeps the default GL renderer, while a software GL path (no `/dev/dri`,
+Mesa forced to software, or WSLg) uses `cairo`. Every widget renders the
+same; what changes is memory — with one internal page open, the main process
+measured 168 MiB PSS with GL on WSLg and 58 MiB with cairo (under Xvfb the
+same comparison is ~240 vs ~105 MiB). Set `AXYS_GSK=gl` to force GPU
+rendering anyway, `AXYS_GSK=cairo` to force software, or set `GSK_RENDERER`
+yourself, which always wins.
 
 ## Contributing
 

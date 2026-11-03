@@ -78,6 +78,114 @@ fn configure_rendering(under_wsl: bool) {
     }
 }
 
+/// Whether the *interface* (GTK's own rendering) should use the software
+/// renderer.
+///
+/// GTK's default GL renderer is right on a real GPU, but where GL is software
+/// (llvmpipe/swrast: VMs, containers, Xvfb, WSLg) it costs far more than it
+/// buys for a window this simple. Measured on WSLg with one internal page
+/// open: the main process sat at 168 MiB PSS with GL and 58 MiB with cairo.
+/// Nothing is dropped feature-wise — every widget still renders — and a real
+/// GPU keeps GL, so software is only chosen where GL is software already.
+/// `AXYS_GSK=gl|cairo` overrides the choice; an explicit `GSK_RENDERER` in the
+/// environment always wins.
+fn should_use_software_renderer(
+    under_wsl: bool,
+    has_gpu_device: bool,
+    forced_software_gl: bool,
+    override_value: Option<&str>,
+) -> bool {
+    let platform = under_wsl || !has_gpu_device || forced_software_gl;
+
+    match override_value {
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "cairo" | "software" | "0" | "off" | "false" | "never" => true,
+            "gl" | "gpu" | "1" | "on" | "true" | "always" => false,
+            _ => platform,
+        },
+        None => platform,
+    }
+}
+
+/// Chooses the GTK renderer before GTK initializes (the variable is read once).
+fn configure_interface_renderer(under_wsl: bool) {
+    if std::env::var_os("GSK_RENDERER").is_some() {
+        return;
+    }
+
+    let override_value = std::env::var("AXYS_GSK").ok();
+    let has_gpu_device = std::path::Path::new("/dev/dri").exists();
+    let forced_software_gl = std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_some();
+
+    if should_use_software_renderer(
+        under_wsl,
+        has_gpu_device,
+        forced_software_gl,
+        override_value.as_deref(),
+    ) {
+        unsafe {
+            std::env::set_var("GSK_RENDERER", "cairo");
+        }
+
+        eprintln!(
+            "Interface renderer: cairo (software GL path). Use AXYS_GSK=gl to force GPU rendering."
+        );
+    }
+}
+
+#[cfg(test)]
+mod renderer_tests {
+    use super::should_use_software_renderer;
+
+    #[test]
+    fn a_real_gpu_keeps_the_default_renderer() {
+        assert!(!should_use_software_renderer(false, true, false, None));
+    }
+
+    #[test]
+    fn software_gl_falls_back_to_cairo() {
+        // No GPU node at all (VMs, containers, Xvfb).
+        assert!(should_use_software_renderer(false, false, false, None));
+        // WSLg: a DRI node exists, but the GL path is software.
+        assert!(should_use_software_renderer(true, true, false, None));
+        // Mesa told to rasterize on the CPU.
+        assert!(should_use_software_renderer(false, true, true, None));
+    }
+
+    #[test]
+    fn the_gsk_override_wins_over_the_platform_choice() {
+        for value in ["cairo", "SOFTWARE", "0", "off", "never"] {
+            assert!(
+                should_use_software_renderer(false, true, false, Some(value)),
+                "{value} must force the software renderer"
+            );
+        }
+
+        for value in ["gl", "GPU", "1", "on", "always"] {
+            assert!(
+                !should_use_software_renderer(true, false, true, Some(value)),
+                "{value} must force GPU rendering"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_override_falls_back_to_the_platform_choice() {
+        assert!(should_use_software_renderer(
+            true,
+            true,
+            false,
+            Some("maybe")
+        ));
+        assert!(!should_use_software_renderer(
+            false,
+            true,
+            false,
+            Some("maybe")
+        ));
+    }
+}
+
 /// Makes `icon_name("axysbrowser")` resolve when running from the source
 /// tree. Installed builds get the icon from the system hicolor theme (see
 /// the install steps in README).
@@ -95,6 +203,7 @@ pub fn run() -> gtk::glib::ExitCode {
     let under_wsl = running_under_wsl();
 
     configure_rendering(under_wsl);
+    configure_interface_renderer(under_wsl);
 
     // WebKit's bubblewrap sandbox frequently fails inside WSL (restricted
     // user namespaces), which kills the web process exactly on pages that
