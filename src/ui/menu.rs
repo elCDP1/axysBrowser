@@ -21,8 +21,9 @@
 //! Item 4 for "anywhere else" is implemented by the window with a
 //! full-size invisible catcher behind the panels (see `ui::window`).
 
+use gtk::glib::SignalHandlerId;
 use gtk::prelude::*;
-use gtk::{Align, Box, Button, Image, Label, Orientation, ScrolledWindow, Separator};
+use gtk::{Adjustment, Align, Box, Button, Image, Label, Orientation, ScrolledWindow, Separator};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -47,6 +48,15 @@ const PAGE_SCOPED_ACTIONS: &[&str] = &["win.print", "win.save-page", "win.bookma
 /// Height the list may use inside a window that is `window_height` tall.
 fn menu_max_height(window_height: i32) -> i32 {
     (window_height - MENU_VERTICAL_MARGIN).clamp(MENU_MIN_HEIGHT, MENU_MAX_HEIGHT)
+}
+
+/// Height the scrolling list may use inside the actual content area.
+///
+/// The footer (Settings) is pinned below the list, so it has to be measured
+/// and subtracted: using the whole window height as the cap would clip the
+/// footer in short windows or when the bookmark bar is visible.
+fn menu_list_height(area_height: i32, footer_height: i32, limit: i32) -> i32 {
+    (area_height - footer_height - 8).clamp(40, limit.max(40))
 }
 
 /// Window actions the hamburger menu may point at. Every name must be
@@ -221,13 +231,29 @@ impl MenuPanel {
             self.refresh_zoom();
             self.refresh_page_actions();
 
-            // Fit the current window: the list scrolls only when it must.
-            if let Some(root) = self.container.root() {
-                let window_height = root.upcast_ref::<gtk::Widget>().height();
+            // Fit the current content area (below the toolbar and bookmark
+            // bar), not the whole window: that keeps the pinned Settings
+            // row visible in a short window and with the bar shown.
+            let limit = self
+                .container
+                .root()
+                .map(|root| menu_max_height(root.upcast_ref::<gtk::Widget>().height()))
+                .unwrap_or(MENU_MAX_HEIGHT);
 
-                self.scroller
-                    .set_max_content_height(menu_max_height(window_height));
-            }
+            let area_height = self
+                .container
+                .parent()
+                .map(|parent| parent.height())
+                .filter(|height| *height > 0)
+                .unwrap_or(limit + MENU_VERTICAL_MARGIN);
+
+            let footer_height = self.footer.measure(gtk::Orientation::Vertical, -1).1;
+
+            self.scroller.set_max_content_height(menu_list_height(
+                area_height,
+                footer_height,
+                limit,
+            ));
         }
 
         self.container.set_visible(show);
@@ -490,11 +516,37 @@ pub fn tab_menu_entries(state: &TabMenuState) -> Vec<TabEntry> {
     entries
 }
 
+/// Maximum list height for a panel that must stay inside `area_height`:
+/// leaves room for padding and the border, with a usable minimum.
+fn panel_list_height(area_height: i32) -> i32 {
+    (area_height - 20).max(40)
+}
+
+/// Vertical adjustment of the closest scrolling ancestor of `widget`.
+///
+/// `compute_point` ignores clipping, so a toggle scrolled out of its page's
+/// viewport still reports coordinates: a floating panel has to know when the
+/// page underneath it moves.
+fn enclosing_vadjustment(widget: &gtk::Widget) -> Option<Adjustment> {
+    let mut current = widget.parent();
+
+    while let Some(candidate) = current {
+        if let Some(scroller) = candidate.downcast_ref::<ScrolledWindow>() {
+            return Some(scroller.vadjustment());
+        }
+
+        current = candidate.parent();
+    }
+
+    None
+}
+
 /// Tab context menu, as an overlay panel like [`MenuPanel`] (no popup
 /// surface). Hidden by default; the window places it under the clicked tab.
 #[derive(Clone)]
 pub struct TabMenuPanel {
     pub container: Box,
+    scroller: ScrolledWindow,
     rows: Box,
     on_close: Rc<dyn Fn()>,
 }
@@ -510,10 +562,22 @@ impl TabMenuPanel {
 
         rows.set_width_request(260);
 
-        container.append(&rows);
+        // A very short window must scroll the menu instead of clipping the
+        // last entries (close/close others/close to the right).
+        let scroller = ScrolledWindow::new();
+
+        scroller.add_css_class("panel-scroller");
+        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroller.set_propagate_natural_width(true);
+        scroller.set_propagate_natural_height(true);
+        scroller.set_has_frame(false);
+        scroller.set_child(Some(&rows));
+
+        container.append(&scroller);
 
         Self {
             container,
+            scroller,
             rows,
             on_close,
         }
@@ -603,6 +667,16 @@ impl TabMenuPanel {
 
         self.container
             .set_margin_start(left.max(0).min((window_width - TAB_MENU_WIDTH).max(0)));
+
+        // The window can be shorter than the menu: scroll the entries inside
+        // the panel instead of letting the last ones fall outside the area.
+        if let Some(parent) = self.container.parent()
+            && parent.height() > 0
+        {
+            self.scroller
+                .set_max_content_height(panel_list_height(parent.height()));
+        }
+
         self.container.set_visible(true);
 
         (self.on_close)();
@@ -696,6 +770,9 @@ pub fn build_picker(
 /// be tested without a display. Prefers below the toggle, falls back to
 /// above, and finally pins the panel inside the area so it can never be
 /// placed off-screen.
+///
+/// `None` means there is nowhere to put the list: the area has no size yet
+/// (no layout pass) or the toggle is scrolled out of the visible area.
 #[allow(clippy::too_many_arguments)]
 fn picker_position(
     anchor_left: i32,
@@ -706,7 +783,18 @@ fn picker_position(
     panel_height: i32,
     area_width: i32,
     area_height: i32,
-) -> (i32, i32) {
+) -> Option<(i32, i32)> {
+    // Dimensions nobody assigned yet cannot decide whether the list fits.
+    if area_width <= 0 || area_height <= 0 {
+        return None;
+    }
+
+    // A toggle scrolled out of the area has nothing to attach to: pinning the
+    // list to an edge would drop it over rows it does not belong to.
+    if anchor_top + anchor_height <= 0 || anchor_top >= area_height {
+        return None;
+    }
+
     let below = anchor_top + anchor_height + 4;
     let above = anchor_top - panel_height - 4;
 
@@ -717,6 +805,10 @@ fn picker_position(
     } else {
         (area_height - panel_height - 8).max(0)
     };
+
+    // The list is capped before it is measured, but never trust arithmetic
+    // alone: a panel taller than the area is pinned to its top edge.
+    let top = top.max(0).min((area_height - panel_height).max(0));
 
     // Right-side controls (the cookies row puts its toggle at the end) align
     // their menu's right edge with the toggle, so it opens under the control
@@ -731,7 +823,7 @@ fn picker_position(
         anchor_left
     };
 
-    (left.max(0).min(max_left), top.max(0))
+    Some((left.max(0).min(max_left), top.max(0)))
 }
 
 /// Closes the panels when `area` changes size, per the module contract
@@ -755,6 +847,10 @@ pub struct PickerPanel {
     rows: Box,
     /// Toggle this picker is open for, so clicking it again closes the list.
     anchor: RefCell<Option<gtk::glib::WeakRef<Button>>>,
+    /// Handler tracking the scroll position of the page the list points into.
+    /// Shared rather than copied: the panel is cloned, and the handler is
+    /// disconnected on every hide.
+    scroll_hook: Rc<RefCell<Option<(Adjustment, SignalHandlerId)>>>,
     on_close: Rc<dyn Fn()>,
 }
 
@@ -773,7 +869,7 @@ impl PickerPanel {
         // past the content area. The maximum height is refreshed on show.
         let scroller = ScrolledWindow::new();
 
-        scroller.add_css_class("picker-scroller");
+        scroller.add_css_class("panel-scroller");
         scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
         scroller.set_propagate_natural_width(true);
         scroller.set_propagate_natural_height(true);
@@ -787,6 +883,7 @@ impl PickerPanel {
             scroller,
             rows,
             anchor: RefCell::new(None),
+            scroll_hook: Rc::new(RefCell::new(None)),
             on_close,
         }
     }
@@ -794,6 +891,45 @@ impl PickerPanel {
     pub fn hide(&self) {
         self.container.set_visible(false);
         *self.anchor.borrow_mut() = None;
+        self.clear_scroll_hook();
+    }
+
+    /// Drops the page-scroll handler installed by [`show`](Self::show).
+    fn clear_scroll_hook(&self) {
+        if let Some((adjustment, handler)) = self.scroll_hook.borrow_mut().take() {
+            adjustment.disconnect(handler);
+        }
+    }
+
+    /// Closes the list when the page holding the toggle scrolls.
+    ///
+    /// The list is parented by the window overlay while the toggle can live
+    /// inside a scrolled page (Settings), so scrolling moved the toggle out
+    /// from under the list and left the options floating over unrelated
+    /// rows — sometimes outside the visible area altogether.
+    fn watch_page_scroll(&self, anchor: &Button) {
+        self.clear_scroll_hook();
+
+        let Some(adjustment) = enclosing_vadjustment(anchor.upcast_ref()) else {
+            return;
+        };
+
+        let container = self.container.downgrade();
+        // Weak: the page (and its adjustment) must not keep the window's
+        // panel callback alive after the window closes.
+        let on_close = Rc::downgrade(&self.on_close);
+
+        let handler = adjustment.connect_value_changed(move |_| {
+            if let Some(container) = container.upgrade() {
+                container.set_visible(false);
+            }
+
+            if let Some(on_close) = on_close.upgrade() {
+                on_close();
+            }
+        });
+
+        *self.scroll_hook.borrow_mut() = Some((adjustment, handler));
     }
 
     pub fn is_visible(&self) -> bool {
@@ -831,6 +967,12 @@ impl PickerPanel {
         let Some(overlay) = self.container.parent() else {
             return;
         };
+
+        // Layout has not run yet (first show before the window is sized):
+        // there is no meaningful area to clamp against.
+        if overlay.width() <= 0 || overlay.height() <= 0 {
+            return;
+        }
 
         let Some(point) = anchor.compute_point(&overlay, &gtk::graphene::Point::new(0.0, 0.0))
         else {
@@ -870,13 +1012,11 @@ impl PickerPanel {
             self.rows.append(&row);
         }
 
-        *self.anchor.borrow_mut() = Some(anchor.downgrade());
-
         // Never let the list grow past the content area: long option lists
         // scroll inside the panel instead of being clipped by the window.
         // The 20 px reserve covers the panel's padding and border.
         self.scroller
-            .set_max_content_height((overlay.height() - 20).max(40));
+            .set_max_content_height(panel_list_height(overlay.height()));
 
         // Show at the origin first so the real (not estimated) size can be
         // measured; the final placement is applied before the next paint.
@@ -898,19 +1038,45 @@ impl PickerPanel {
             .measure(gtk::Orientation::Vertical, panel_width)
             .1;
 
-        let (left, top) = picker_position(
+        // Real allocation when there is one; a toggle that no layout pass
+        // has touched yet reports 0 and must be measured instead of being
+        // treated as a zero-sized anchor at the origin.
+        let anchor_span = |orientation: gtk::Orientation| {
+            let allocated = match orientation {
+                gtk::Orientation::Horizontal => anchor.width(),
+                _ => anchor.height(),
+            };
+
+            if allocated > 0 {
+                allocated
+            } else {
+                anchor.measure(orientation, -1).1
+            }
+        };
+
+        let Some((left, top)) = picker_position(
             anchor_left,
             anchor_top,
-            anchor.width(),
-            anchor.height(),
+            anchor_span(gtk::Orientation::Horizontal),
+            anchor_span(gtk::Orientation::Vertical),
             panel_width,
             panel_height,
             area_width,
             area_height,
-        );
+        ) else {
+            // Nowhere meaningful to place the list (no layout yet, or the
+            // toggle is scrolled away): stay closed instead of overflowing.
+            self.hide();
+            (self.on_close)();
+
+            return;
+        };
 
         self.container.set_margin_start(left);
         self.container.set_margin_top(top);
+
+        *self.anchor.borrow_mut() = Some(anchor.downgrade());
+        self.watch_page_scroll(anchor);
 
         (self.on_close)();
     }
@@ -920,8 +1086,8 @@ impl PickerPanel {
 mod tests {
     use super::{
         Entry, MENU_ACTIONS, MENU_MAX_HEIGHT, MENU_MIN_HEIGHT, TabAction, TabEntry, TabMenuState,
-        format_zoom, menu_entries, menu_max_height, picker_position, split_footer,
-        tab_menu_entries,
+        format_zoom, menu_entries, menu_list_height, menu_max_height, panel_list_height,
+        picker_position, split_footer, tab_menu_entries,
     };
 
     /// Convenience wrapper: a 100x30 toggle at (x, y) in an 800x600 area.
@@ -936,6 +1102,7 @@ mod tests {
             800,
             600,
         )
+        .expect("the toggle is on screen")
     }
 
     #[test]
@@ -951,14 +1118,16 @@ mod tests {
 
     #[test]
     fn picker_pins_inside_when_neither_side_fits() {
-        let (_, top) = picker_position(100, 80, 100, 30, 200, 120, 800, 200);
+        let (_, top) =
+            picker_position(100, 80, 100, 30, 200, 120, 800, 200).expect("the toggle is on screen");
 
         assert_eq!(top, 72);
     }
 
     #[test]
     fn right_side_controls_align_their_right_edges() {
-        let (left, _) = picker_position(700, 100, 80, 30, 200, 120, 800, 600);
+        let (left, _) =
+            picker_position(700, 100, 80, 30, 200, 120, 800, 600).expect("the toggle is on screen");
 
         // Panel spans 580..780: the right edge matches the toggle's.
         assert_eq!(left, 580);
@@ -973,14 +1142,16 @@ mod tests {
 
     #[test]
     fn picker_never_spills_past_the_right_edge() {
-        let (left, _) = picker_position(780, 100, 100, 30, 200, 120, 800, 600);
+        let (left, _) = picker_position(780, 100, 100, 30, 200, 120, 800, 600)
+            .expect("the toggle is on screen");
 
         assert_eq!(left, 600);
     }
 
     #[test]
     fn picker_never_goes_off_the_left_edge() {
-        let (left, _) = picker_position(0, 100, 100, 30, 900, 120, 800, 600);
+        let (left, _) =
+            picker_position(0, 100, 100, 30, 900, 120, 800, 600).expect("the toggle is on screen");
 
         assert_eq!(left, 0);
     }
@@ -1107,6 +1278,28 @@ mod tests {
     }
 
     #[test]
+    fn menu_list_leaves_room_for_the_pinned_footer() {
+        // Tall content area: the list keeps the design cap.
+        assert_eq!(menu_list_height(900, 60, 700), 700);
+        // Normal window: the footer is subtracted so Settings stays visible.
+        assert_eq!(menu_list_height(600, 60, 700), 532);
+        // Very short window (or bookmark bar visible): still a usable list.
+        assert_eq!(menu_list_height(200, 60, 700), 132);
+        // Degenerate allocations never produce a negative or zero height.
+        assert_eq!(menu_list_height(60, 60, 700), 40);
+        assert_eq!(menu_list_height(0, 60, 700), 40);
+    }
+
+    #[test]
+    fn panel_lists_scroll_instead_of_overflowing() {
+        assert_eq!(panel_list_height(600), 580);
+        assert_eq!(panel_list_height(200), 180);
+        // Degenerate allocations still leave a usable scroll viewport.
+        assert_eq!(panel_list_height(60), 40);
+        assert_eq!(panel_list_height(0), 40);
+    }
+
+    #[test]
     fn settings_is_pinned_in_the_footer_in_every_window() {
         for private_mode in [false, true] {
             let entries = menu_entries(private_mode);
@@ -1212,5 +1405,70 @@ mod tests {
         );
         assert_ne!(entries.first(), Some(&TabEntry::Separator));
         assert_ne!(entries.last(), Some(&TabEntry::Separator));
+    }
+
+    #[test]
+    fn picker_stays_closed_when_the_toggle_scrolled_out_of_view() {
+        // Settings is a scrolled page: the toggle can leave the visible area
+        // entirely. Pinning the list then would drop it over unrelated rows.
+        assert_eq!(picker_position(100, -60, 100, 30, 200, 120, 800, 600), None);
+        assert_eq!(picker_position(100, 600, 100, 30, 200, 120, 800, 600), None);
+        assert_eq!(picker_position(100, 700, 100, 30, 200, 120, 800, 600), None);
+    }
+
+    #[test]
+    fn picker_still_opens_for_a_partially_visible_toggle() {
+        let (_, top) = picker_position(100, -10, 100, 30, 200, 120, 800, 600)
+            .expect("a half-visible toggle still anchors the list");
+
+        assert_eq!(top, 24);
+    }
+
+    #[test]
+    fn picker_ignores_an_area_that_has_not_been_laid_out() {
+        // First show before the window is sized: the dimensions are still 0
+        // and no placement can be trusted.
+        assert_eq!(picker_position(10, 10, 100, 30, 200, 120, 0, 600), None);
+        assert_eq!(picker_position(10, 10, 100, 30, 200, 120, 800, 0), None);
+        assert_eq!(picker_position(10, 10, 100, 30, 200, 120, 0, 0), None);
+    }
+
+    #[test]
+    fn picker_never_spills_past_the_bottom_edge() {
+        // A panel taller than the area (tiny window, before the list cap is
+        // applied) is pinned to the top instead of running past the edge.
+        let (_, top) = picker_position(100, 100, 100, 30, 200, 400, 800, 200)
+            .expect("the toggle is on screen");
+
+        assert_eq!(top, 0);
+    }
+
+    #[test]
+    fn every_tab_action_has_a_menu_entry() {
+        // `ui::window` answers every variant in one exhaustive `match`; this
+        // checks the menu can actually reach each one, so no feature is
+        // offered by the enum but unreachable from the tab menu.
+        let states = [
+            tab_state(false, true, 1, 1),
+            tab_state(true, true, 1, 1),
+            tab_state(false, false, 1, 1),
+        ];
+
+        let mut offered = Vec::new();
+
+        for state in &states {
+            offered.extend(tab_items(state).into_iter().map(|(action, _, _)| action));
+        }
+
+        for action in [
+            TabAction::Reload,
+            TabAction::Duplicate,
+            TabAction::ToggleMute,
+            TabAction::Close,
+            TabAction::CloseOthers,
+            TabAction::CloseToTheRight,
+        ] {
+            assert!(offered.contains(&action), "{action:?} is unreachable");
+        }
     }
 }

@@ -460,6 +460,133 @@ mod tests {
     }
 
     #[test]
+    fn ephemeral_clones_share_one_window_scope() {
+        // The window hands clones of its manager to every page and to the
+        // Settings view; all of them must see the same decisions.
+        let manager = PermissionManager::ephemeral();
+        let page_copy = manager.clone();
+
+        manager.remember(
+            "https://meet.example:443",
+            PermissionKind::Notification,
+            true,
+        );
+
+        assert_eq!(
+            page_copy.remembered("https://meet.example:443", PermissionKind::Notification),
+            Some(true)
+        );
+
+        page_copy.remember(
+            "https://maps.example:443",
+            PermissionKind::Geolocation,
+            false,
+        );
+
+        assert_eq!(
+            manager.remembered("https://maps.example:443", PermissionKind::Geolocation),
+            Some(false)
+        );
+        assert_eq!(manager.decision_count(), 2);
+        assert_eq!(page_copy.decision_count(), 2);
+    }
+
+    #[test]
+    fn separate_windows_never_share_ephemeral_decisions() {
+        // A private window gets its own manager: the normal window's grants
+        // must not leak in, and private decisions must not leak back out.
+        let normal = PermissionManager::ephemeral();
+        let private = PermissionManager::ephemeral();
+        let origin = "https://meet.example:443";
+
+        normal.remember(origin, PermissionKind::Camera, true);
+
+        assert_eq!(private.remembered(origin, PermissionKind::Camera), None);
+
+        private.remember(origin, PermissionKind::Microphone, true);
+        private.remember(
+            "https://private.example:443",
+            PermissionKind::Notification,
+            true,
+        );
+
+        assert_eq!(normal.remembered(origin, PermissionKind::Microphone), None);
+        assert_eq!(
+            normal.remembered("https://private.example:443", PermissionKind::Notification),
+            None
+        );
+        assert_eq!(normal.decision_count(), 1);
+        assert_eq!(private.decision_count(), 2);
+    }
+
+    #[test]
+    fn clearing_a_private_window_leaves_normal_decisions_alone() {
+        let normal = PermissionManager::ephemeral();
+        let private = PermissionManager::ephemeral();
+        let origin = "https://meet.example:443";
+
+        normal.remember(origin, PermissionKind::Camera, true);
+        private.remember(origin, PermissionKind::Camera, true);
+
+        private.clear_all();
+
+        assert_eq!(private.decision_count(), 0);
+        assert_eq!(
+            normal.remembered(origin, PermissionKind::Camera),
+            Some(true)
+        );
+
+        // Closing the private window drops its manager and its grants.
+        drop(private);
+
+        assert_eq!(
+            normal.remembered(origin, PermissionKind::Camera),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn ephemeral_managers_have_no_storage_path() {
+        assert!(PermissionManager::ephemeral().path.is_none());
+        assert!(PermissionManager::ephemeral().clone().path.is_none());
+    }
+
+    #[test]
+    fn private_decisions_never_reach_the_profile_file() {
+        let path = std::env::temp_dir().join(format!(
+            "axys-permissions-isolation-{}.toml",
+            std::process::id()
+        ));
+
+        let _ = fs::remove_file(&path);
+
+        let profile = PermissionManager {
+            store: Rc::new(RefCell::new(PermissionStore::default())),
+            path: Some(path.clone()),
+        };
+        let private = PermissionManager::ephemeral();
+
+        profile.remember(
+            "https://normal.example:443",
+            PermissionKind::Notification,
+            true,
+        );
+        private.remember("https://private.example:443", PermissionKind::Camera, true);
+
+        let saved: PermissionStore =
+            toml::from_str(&fs::read_to_string(&path).expect("profile file was written"))
+                .expect("profile file is valid TOML");
+
+        assert!(saved.decisions.contains_key("https://normal.example:443"));
+        assert!(
+            !saved.decisions.contains_key("https://private.example:443"),
+            "private decisions must never be persisted"
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
     fn corrupt_store_loads_empty() {
         let path = std::env::temp_dir().join("axys-permissions-corrupt-test.toml");
 

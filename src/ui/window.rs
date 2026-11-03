@@ -42,6 +42,16 @@ fn is_web_uri(uri: &str) -> bool {
     uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("file://")
 }
 
+/// Whether a view may be the target of a page action (Print…, Save page as…).
+///
+/// A background tab keeps its `WebView` alive but unmapped, and a tab closed
+/// while a file dialog was open may still be referenced: acting on either
+/// would print or export a page the user is not looking at. Only a mapped
+/// view that holds a real document qualifies.
+fn page_action_target(is_mapped: bool, uri: Option<&str>) -> bool {
+    is_mapped && uri.is_some_and(is_web_uri)
+}
+
 pub fn build_window(app: &Application, state: Rc<AppState>) {
     build_window_with_url(app, state, None);
 }
@@ -495,7 +505,9 @@ fn build_browser_window(
             current_web_view
                 .borrow()
                 .as_ref()
-                .filter(|view| view.uri().map(|uri| is_web_uri(&uri)).unwrap_or(false))
+                // A hidden tab keeps its WebView alive but unmapped; print
+                // and save must only ever act on the page the user sees.
+                .filter(|view| page_action_target(view.is_mapped(), view.uri().as_deref()))
                 .cloned()
         })
     };
@@ -602,6 +614,19 @@ fn build_browser_window(
 
                 resolve_target(&input, &config)
             };
+
+            // A navigation started from the toolbar or a shortcut replaces
+            // the page under any open panel, so dismiss them for the active
+            // tab (background tabs must not close the visible tab's panels).
+            if active_id.get() == id {
+                if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
+                    toolbar.close_panels();
+                }
+
+                if let Some(bar) = bookmark_bar_slot.borrow().as_ref() {
+                    bar.close_panels();
+                }
+            }
 
             if let Some(page) = router::page_name(&target) {
                 let (content, web_view, can_go_back, can_go_forward) = {
@@ -2333,13 +2358,7 @@ fn build_browser_window(
             };
 
             // Only real documents: internal axys:// pages are not web content.
-            let saveable = view.uri().is_some_and(|uri| {
-                uri.starts_with("http://")
-                    || uri.starts_with("https://")
-                    || uri.starts_with("file://")
-            });
-
-            if !saveable {
+            if !view.uri().is_some_and(|uri| is_web_uri(&uri)) {
                 return;
             }
 
@@ -2348,6 +2367,10 @@ fn build_browser_window(
                 .map(|title| title.to_string())
                 .filter(|title| !title.trim().is_empty())
                 .unwrap_or_else(|| "page".to_string());
+
+            // Remember which page the dialog was opened for: an async save
+            // must not export a different document if the page navigates.
+            let expected_uri = view.uri();
 
             // Sanitizing can leave nothing (a title made only of control
             // characters or separators), which would suggest ".mhtml".
@@ -2367,18 +2390,27 @@ fn build_browser_window(
             )));
 
             dialog.save(Some(&parent), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result {
-                    view.save_to_file(
-                        &file,
-                        webkit6::SaveMode::Mhtml,
-                        gio::Cancellable::NONE,
-                        |result| {
-                            if let Err(error) = result {
-                                eprintln!("Could not save the page: {error}");
-                            }
-                        },
-                    );
+                let Ok(file) = result else {
+                    return;
+                };
+
+                // The dialog is asynchronous: the user may have switched,
+                // navigated or closed the tab while it was open. Saving then
+                // would export a page that is no longer the visible one.
+                if !view.is_mapped() || view.uri() != expected_uri {
+                    return;
                 }
+
+                view.save_to_file(
+                    &file,
+                    webkit6::SaveMode::Mhtml,
+                    gio::Cancellable::NONE,
+                    |result| {
+                        if let Err(error) = result {
+                            eprintln!("Could not save the page: {error}");
+                        }
+                    },
+                );
             });
         })
     };
@@ -2505,4 +2537,43 @@ fn build_browser_window(
     window.present();
 
     maximize_window(&window);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_action_target;
+
+    #[test]
+    fn a_visible_web_page_is_a_page_action_target() {
+        for uri in [
+            "https://example.com/",
+            "http://example.com/page",
+            "file:///tmp/page.html",
+        ] {
+            assert!(page_action_target(true, Some(uri)), "{uri}");
+        }
+    }
+
+    #[test]
+    fn hidden_views_are_never_printed_or_saved() {
+        // Switching tabs, closing the tab or a not-yet-mapped tab leaves the
+        // WebView alive but unmapped: a page action must not reach it.
+        assert!(!page_action_target(false, Some("https://example.com/")));
+        assert!(!page_action_target(false, Some("file:///tmp/page.html")));
+    }
+
+    #[test]
+    fn internal_and_hostless_pages_have_nothing_to_print_or_save() {
+        for uri in [
+            "axys://newtab",
+            "axys://settings",
+            "about:blank",
+            "data:text/html,hello",
+        ] {
+            assert!(!page_action_target(true, Some(uri)), "{uri}");
+        }
+
+        // A view that has not committed a load yet has no URI at all.
+        assert!(!page_action_target(true, None));
+    }
 }
