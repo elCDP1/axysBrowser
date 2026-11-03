@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.1.6`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.1.7`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -172,6 +172,7 @@ cargo fmt --all --check                  # formatting
 cargo clippy --locked --all-targets -- -D warnings
 xvfb-run -a bash .github/gui-smoke.sh    # startup + a real page render under Xvfb
 xvfb-run -a bash .github/mem-smoke.sh    # open/close tabs, assert WebViews free
+xvfb-run -a bash .github/rest-smoke.sh   # idle memory with one internal page
 ```
 
 `gui-smoke.sh` opens a local page and passes only when a WebKit web process
@@ -186,6 +187,14 @@ every page really loaded, every closed tab's `WebView` was finalized and
 its web process exited, that closing a whole window frees its tabs'
 `WebView`s too, and that leftover memory stays below half the growth the
 pages caused.
+
+`rest-smoke.sh` opens nothing but `axys://resources` and checks that the
+whole process tree stays under 200 MiB PSS while idle, that no web process
+is left running for a native page, and — on a host without a GPU
+(`/dev/dri`) — that the window really chose the software renderer. It is
+the regression guard for the renderer choice described under
+[Rendering and GPU](#rendering-and-gpu): falling back to software GL costs
+about 100 MiB and fails there.
 
 The strict variants need a host where `bwrap` can create and configure
 user and network namespaces. Ubuntu 24.04 gates that behind AppArmor;
