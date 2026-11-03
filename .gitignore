@@ -1,5 +1,9 @@
 /target
 
+# Plain release binary built locally (`cargo build --release`); release
+# assets are attached to GitHub tags, not committed.
+/axysbrowser
+
 # Local smoke-test harnesses (not part of the product).
 /smoke/
 

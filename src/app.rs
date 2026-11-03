@@ -162,25 +162,34 @@ fn should_use_software_renderer(gl_is_software: bool, override_value: Option<&st
     }
 }
 
-/// First render node under `/dev/dri`, falling back to a `card*` node.
+/// A DRM device is a 3D render node only when it is a `renderD*` node.
+///
+/// A `card*` node is the KMS side of a device and can exist with no 3D engine
+/// at all: Azure's `hyperv_drm` exposes `card1` and nothing else, and Mesa
+/// cannot even open an EGL device there, so counting it as a GPU made the app
+/// pick GL on a machine where GL does not work. It also keeps out `renderD`
+/// without a number, which no kernel creates.
+fn is_render_node(name: &str) -> bool {
+    name.strip_prefix("renderD")
+        .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// First render node under `/dev/dri`, never a `card*` node.
 fn dri_node() -> Option<String> {
     let entries = std::fs::read_dir("/dev/dri").ok()?;
-    let mut cards = Vec::new();
+    let mut nodes = Vec::new();
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
 
-        if name.starts_with("renderD") {
-            return Some(name);
-        }
-
-        if name.starts_with("card") {
-            cards.push(name);
+        if is_render_node(&name) {
+            nodes.push(name);
         }
     }
 
-    cards.sort();
-    cards.into_iter().next()
+    // Sorted, so a machine with two GPUs always makes the same choice.
+    nodes.sort();
+    nodes.into_iter().next()
 }
 
 /// The kernel driver behind a DRM node, from sysfs.
@@ -260,7 +269,9 @@ fn configure_interface_renderer() {
 
 #[cfg(test)]
 mod renderer_tests {
-    use super::{GlEvidence, env_flag_is_set, gl_is_software, should_use_software_renderer};
+    use super::{
+        GlEvidence, env_flag_is_set, gl_is_software, is_render_node, should_use_software_renderer,
+    };
 
     fn evidence<'a>(node: Option<&'a str>, driver: Option<&'a str>) -> GlEvidence<'a> {
         GlEvidence {
@@ -289,9 +300,20 @@ mod renderer_tests {
         // Virtual and test devices have no 3D engine either.
         for driver in ["vgem", "VKMS", "faux_driver"] {
             assert!(
-                gl_is_software(&evidence(Some("card0"), Some(driver))),
+                gl_is_software(&evidence(Some("renderD128"), Some(driver))),
                 "{driver} must count as software"
             );
+        }
+
+        // `card*` nodes never reach that decision: CI has `card1` with
+        // hyperv_drm and no render node, and picking GL there failed to open
+        // an EGL device at all.
+        for node in ["card0", "card1", "hyperv_drm", "renderD", "renderDx"] {
+            assert!(!is_render_node(node), "{node} is not a render node");
+        }
+
+        for node in ["renderD0", "renderD128", "renderD255"] {
+            assert!(is_render_node(node), "{node} is a render node");
         }
 
         // A node whose driver cannot be read is not evidence of hardware.
