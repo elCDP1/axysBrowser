@@ -131,4 +131,32 @@ mod tests {
         assert!(!is_tab_target(&target));
         assert!(BrowserEngine::is_external_scheme(&target));
     }
+
+    #[test]
+    fn script_and_data_targets_never_reach_a_tab() {
+        // Typed schemes that could execute code must never become a tab's
+        // navigation target, however the address bar spells them.
+        let config = crate::browser::address::load_config();
+
+        for input in [
+            "javascript:alert(1)",
+            " JavaScript:alert(1)",
+            "vbscript:msgbox(1)",
+            "data:text/html,<script>alert(1)</script>",
+        ] {
+            let target = resolve_target(input, &config);
+
+            // The address bar is not a script console: a typed script or data
+            // URL turns into an ordinary web search, never into a target the
+            // WebView would execute.
+            assert!(
+                target.starts_with("https://") || target.starts_with("http://"),
+                "{input} resolved to {target}"
+            );
+            assert!(
+                !target.starts_with("javascript:") && !target.starts_with("data:"),
+                "{input} became an executable URL: {target}"
+            );
+        }
+    }
 }

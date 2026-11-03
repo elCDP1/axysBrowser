@@ -183,6 +183,12 @@ fn build_browser_window(
     let page_builders: Rc<RefCell<HashMap<usize, PageBuilder>>> =
         Rc::new(RefCell::new(HashMap::new()));
 
+    // The window's own session honours the profile's cookie policy. Private
+    // windows used to hardcode "no third-party" and silently ignored a profile
+    // set to "block all cookies": a privacy setting must not stop applying
+    // just because the window is private.
+    crate::browser::engine::apply_cookie_policy(&session, &state.settings.borrow().cookie_policy);
+
     // One permission manager per window: private windows share a single
     // ephemeral one across all their tabs (never persisted), normal
     // windows share the profile-wide persisted one.
@@ -2226,6 +2232,7 @@ fn build_browser_window(
     let settings_refresh: Rc<dyn Fn()> = {
         let tabs = tabs.clone();
         let state = state.clone();
+        let session = session.clone();
 
         Rc::new(move || {
             let (developer_tools, hardware_acceleration) = {
@@ -2236,6 +2243,14 @@ fn build_browser_window(
                     settings.hardware_acceleration,
                 )
             };
+
+            // Cookie policy changes must reach this window's session too: a
+            // private window owns an ephemeral one that `set_cookie_policy`
+            // (which only knows the profile session) cannot reach.
+            crate::browser::engine::apply_cookie_policy(
+                &session,
+                &state.settings.borrow().cookie_policy,
+            );
 
             for tab in tabs.borrow().iter() {
                 if let Some(settings) = webkit6::prelude::WebViewExt::settings(&tab.web_view) {

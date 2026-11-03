@@ -56,7 +56,13 @@ fn menu_max_height(window_height: i32) -> i32 {
 /// and subtracted: using the whole window height as the cap would clip the
 /// footer in short windows or when the bookmark bar is visible.
 fn menu_list_height(area_height: i32, footer_height: i32, limit: i32) -> i32 {
-    (area_height - footer_height - 8).clamp(40, limit.max(40))
+    let available = (area_height - footer_height - 8).max(0);
+    let cap = limit.max(0);
+
+    // The 40 px floor keeps a couple of rows usable, but it is bounded by the
+    // space that really exists: a window shorter than the pinned footer used
+    // to receive a 40 px list and overflow the area it had to fit in.
+    available.min(cap).max(available.min(40).min(cap))
 }
 
 /// Window actions the hamburger menu may point at. Every name must be
@@ -519,7 +525,9 @@ pub fn tab_menu_entries(state: &TabMenuState) -> Vec<TabEntry> {
 /// Maximum list height for a panel that must stay inside `area_height`:
 /// leaves room for padding and the border, with a usable minimum.
 fn panel_list_height(area_height: i32) -> i32 {
-    (area_height - 20).max(40)
+    // Never ask for more than the area has: a 0-height area used to reserve
+    // 40 px of list it did not have, pushing the panel past the window.
+    (area_height - 20).max(0)
 }
 
 /// Vertical adjustment of the closest scrolling ancestor of `widget`.
@@ -1285,9 +1293,9 @@ mod tests {
         assert_eq!(menu_list_height(600, 60, 700), 532);
         // Very short window (or bookmark bar visible): still a usable list.
         assert_eq!(menu_list_height(200, 60, 700), 132);
-        // Degenerate allocations never produce a negative or zero height.
-        assert_eq!(menu_list_height(60, 60, 700), 40);
-        assert_eq!(menu_list_height(0, 60, 700), 40);
+        // Degenerate allocations never ask for more room than the area has.
+        assert_eq!(menu_list_height(60, 60, 700), 0);
+        assert_eq!(menu_list_height(0, 60, 700), 0);
     }
 
     #[test]
@@ -1296,7 +1304,31 @@ mod tests {
         assert_eq!(panel_list_height(200), 180);
         // Degenerate allocations still leave a usable scroll viewport.
         assert_eq!(panel_list_height(60), 40);
-        assert_eq!(panel_list_height(0), 40);
+        assert_eq!(panel_list_height(0), 0);
+    }
+
+    #[test]
+    fn list_heights_never_exceed_the_area_they_are_given() {
+        // The 40 px floor only applies when there is room for it: a window
+        // shorter than its own pinned footer must not get a list taller than
+        // the space that is actually left.
+        for area in [0, 10, 20, 39, 40, 41, 60, 120, 600] {
+            for footer in [0, 40, 60, 120] {
+                let list = menu_list_height(area, footer, 700);
+
+                assert!(
+                    list <= (area - footer - 8).max(0),
+                    "menu list {list} exceeds area {area} with footer {footer}"
+                );
+                assert!(list >= 0, "menu list must never be negative");
+            }
+
+            assert!(
+                panel_list_height(area) <= (area - 20).max(0),
+                "panel list exceeds area {area}"
+            );
+            assert!(panel_list_height(area) >= 0);
+        }
     }
 
     #[test]

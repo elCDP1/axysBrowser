@@ -721,44 +721,7 @@ impl BrowserEngine {
     /// by an iframe is attributed to the top page — treat unexpected
     /// prompts on unfamiliar pages as a reason to deny.
     fn permission_origin(view: &WebView) -> String {
-        use super::permissions::GENERIC_ORIGIN;
-
-        let parsed = view
-            .uri()
-            .and_then(|uri| gtk::glib::Uri::parse(&uri, gtk::glib::UriFlags::NONE).ok());
-
-        let scheme = parsed
-            .as_ref()
-            .map(|uri| uri.scheme().to_string())
-            .filter(|scheme| !scheme.is_empty())
-            .unwrap_or_else(|| "https".to_string());
-
-        let Some(host) = parsed
-            .as_ref()
-            .and_then(|uri| uri.host().map(|h| h.to_ascii_lowercase()))
-            .map(|host| host.trim_end_matches('.').to_string())
-            .filter(|host| !host.is_empty())
-        else {
-            return GENERIC_ORIGIN.to_string();
-        };
-
-        let port = parsed.as_ref().map(|uri| uri.port()).unwrap_or(-1);
-
-        let effective = if port > 0 {
-            port
-        } else if scheme == "http" {
-            80
-        } else {
-            443
-        };
-
-        let host = if host.contains(':') {
-            format!("[{host}]")
-        } else {
-            host
-        };
-
-        format!("{scheme}://{host}:{effective}")
+        super::permissions::origin_for_uri(view.uri().as_deref())
     }
 
     /// Whether a verdict still applies: the view must be on the same origin

@@ -149,6 +149,66 @@ pub fn clipboard_read_without_prompt(origin: &str, setting_enabled: bool) -> boo
     setting_enabled && origin != GENERIC_ORIGIN
 }
 
+/// Canonical origin used as the key for permission decisions: scheme, host
+/// and effective port, so `https://example.com:443` can never share a grant
+/// with `http://example.com`, another port or a look-alike host.
+///
+/// The host is lowercased and a trailing root dot dropped (DNS is
+/// case-insensitive, so `Example.COM.` and `example.com` are one site), the
+/// scheme is lowercased (the same site however it was spelled), and IPv6
+/// literals keep exactly one pair of brackets. Only `http`/`https` pages with
+/// a real host get an identity that can be remembered: hostless pages and
+/// every non-web scheme (`about:`, `data:`, `blob:`, `file:` — even
+/// `file://machine/share`, whose "host" is a machine name, not a web origin)
+/// map to [`GENERIC_ORIGIN`], which is never stored and never consulted. A
+/// local file therefore cannot inherit, or persist, a camera or notification
+/// grant.
+pub fn origin_for_uri(uri: Option<&str>) -> String {
+    let Some(raw) = uri.map(str::trim).filter(|uri| !uri.is_empty()) else {
+        return GENERIC_ORIGIN.to_string();
+    };
+
+    let Ok(parsed) = gtk::glib::Uri::parse(raw, gtk::glib::UriFlags::NONE) else {
+        return GENERIC_ORIGIN.to_string();
+    };
+
+    let scheme = parsed.scheme().to_string().to_ascii_lowercase();
+
+    if scheme != "http" && scheme != "https" {
+        return GENERIC_ORIGIN.to_string();
+    }
+
+    let Some(host) = parsed
+        .host()
+        .map(|host| host.to_ascii_lowercase())
+        .map(|host| host.trim_end_matches('.').to_string())
+        .filter(|host| !host.is_empty())
+    else {
+        return GENERIC_ORIGIN.to_string();
+    };
+
+    // Idempotent bracketing: GLib may or may not include them for IPv6.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+
+    let port = parsed.port();
+
+    let effective = if port > 0 {
+        port
+    } else if scheme == "http" {
+        80
+    } else {
+        443
+    };
+
+    let host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+
+    format!("{scheme}://{host}:{effective}")
+}
+
 /// Remembers per-origin permission decisions, optionally on disk.
 #[derive(Clone)]
 pub struct PermissionManager {
@@ -724,5 +784,95 @@ mod tests {
         ));
         assert!(!clipboard_read_without_prompt(GENERIC_ORIGIN, true));
         assert!(!clipboard_read_without_prompt(GENERIC_ORIGIN, false));
+    }
+
+    #[test]
+    fn origins_canonicalize_the_host_and_the_default_port() {
+        // DNS is case-insensitive and a trailing root dot is the same name.
+        assert_eq!(
+            origin_for_uri(Some("https://Example.COM./Path?q=1#x")),
+            "https://example.com:443"
+        );
+        assert_eq!(
+            origin_for_uri(Some("http://EXAMPLE.com")),
+            "http://example.com:80"
+        );
+        // Explicit ports are part of the identity.
+        assert_eq!(
+            origin_for_uri(Some("https://example.com:8443/x")),
+            "https://example.com:8443"
+        );
+        // The scheme's case must not create a second identity.
+        assert_eq!(
+            origin_for_uri(Some("HTTPS://example.com")),
+            origin_for_uri(Some("https://example.com"))
+        );
+    }
+
+    #[test]
+    fn origins_keep_scheme_port_and_host_apart() {
+        let https = origin_for_uri(Some("https://example.com"));
+        let http = origin_for_uri(Some("http://example.com"));
+        let other_port = origin_for_uri(Some("https://example.com:8443"));
+
+        assert_ne!(https, http, "a TLS grant must not cover plain HTTP");
+        assert_ne!(https, other_port, "another port is another origin");
+        assert_ne!(http, other_port);
+        assert_ne!(
+            origin_for_uri(Some("https://example.com.evil.test")),
+            https,
+            "a look-alike host is a different site"
+        );
+    }
+
+    #[test]
+    fn ipv6_origins_keep_exactly_one_pair_of_brackets() {
+        assert_eq!(
+            origin_for_uri(Some("https://[::1]:8080/x")),
+            "https://[::1]:8080"
+        );
+        assert_eq!(origin_for_uri(Some("https://[::1]/")), "https://[::1]:443");
+    }
+
+    #[test]
+    fn hostless_and_non_web_pages_get_no_remembered_identity() {
+        for uri in [
+            None,
+            Some(""),
+            Some("   "),
+            Some("about:blank"),
+            Some("data:text/html,<p>hi</p>"),
+            Some("blob:https://example.com/id"),
+            Some("file:///home/user/page.html"),
+            // A file URL's "host" is a machine name, not a web origin.
+            Some("file://fileserver/share/page.html"),
+        ] {
+            assert_eq!(
+                origin_for_uri(uri),
+                GENERIC_ORIGIN,
+                "{uri:?} must not get a stored identity"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_page_never_reuses_or_stores_a_web_grant() {
+        let manager = PermissionManager::ephemeral();
+        let web = origin_for_uri(Some("https://example.com/"));
+
+        manager.remember(&web, PermissionKind::Camera, true);
+
+        let file = origin_for_uri(Some("file://fileserver/share/page.html"));
+
+        assert_eq!(file, GENERIC_ORIGIN);
+        assert_eq!(manager.remembered(&file, PermissionKind::Camera), None);
+
+        manager.remember(&file, PermissionKind::Camera, true);
+
+        assert_eq!(
+            manager.decision_count(),
+            1,
+            "the file origin must not be stored"
+        );
     }
 }
