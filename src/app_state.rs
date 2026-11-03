@@ -121,6 +121,25 @@ type LanguageListeners = Rc<RefCell<Vec<LanguageListener>>>;
 type SettingsListener = Weak<dyn Fn()>;
 type SettingsListeners = Rc<RefCell<Vec<SettingsListener>>>;
 
+/// `GtkInterfaceColorScheme` values (GTK 4.20+): `DARK` and `LIGHT`.
+///
+/// `DEFAULT` (1) is deliberately never used for the light side: it defers to
+/// the system preference, so on a host whose desktop is dark the value stayed
+/// dark and WebKit kept reporting `prefers-color-scheme: dark` to pages — a
+/// site that had switched itself to dark never switched back when the browser
+/// went to light. Stating `LIGHT` explicitly makes the choice unambiguous.
+const INTERFACE_COLOR_SCHEME_DARK: i32 = 2;
+const INTERFACE_COLOR_SCHEME_LIGHT: i32 = 3;
+
+/// The enum value for the app's light/dark choice; light is never `DEFAULT`.
+fn interface_color_scheme(dark: bool) -> i32 {
+    if dark {
+        INTERFACE_COLOR_SCHEME_DARK
+    } else {
+        INTERFACE_COLOR_SCHEME_LIGHT
+    }
+}
+
 /// Applies the app's light/dark choice to GTK.
 ///
 /// GTK 4.20 replaced the `gtk-application-prefer-dark-theme` boolean with the
@@ -134,8 +153,7 @@ fn set_gtk_color_scheme(gtk_settings: &GtkSettings, dark: bool) {
         .find_property("gtk-interface-color-scheme")
         .is_some()
     {
-        // GtkInterfaceColorScheme: DEFAULT = 1, DARK = 2, LIGHT = 3.
-        let scheme: i32 = if dark { 2 } else { 1 };
+        let scheme = interface_color_scheme(dark);
 
         unsafe {
             gtk::glib::gobject_ffi::g_object_set(
@@ -720,5 +738,14 @@ mod tests {
         assert_eq!(settings.search_engine, defaults.search_engine);
         assert_eq!(settings.cookie_policy, defaults.cookie_policy);
         assert_eq!(settings.language, defaults.language);
+    }
+
+    #[test]
+    fn the_light_colour_scheme_is_explicit_and_never_default() {
+        // DEFAULT (1) follows the system: on a dark host WebKit kept telling
+        // pages that the preferred scheme was dark, so a site never switched
+        // back when the browser did.
+        assert_eq!(super::interface_color_scheme(true), 2, "DARK");
+        assert_eq!(super::interface_color_scheme(false), 3, "LIGHT");
     }
 }

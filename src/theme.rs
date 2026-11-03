@@ -498,7 +498,65 @@ const DARK_PALETTE: &str = r#"
 "#;
 
 const LIGHT_PALETTE: &str = r#"
-    @define-color axys_bg #e6e9ee;
+    @define-color axys_bg #f5f7fa;
     @define-color axys_fg #161a20;
     @define-color axys_accent #2f6fe4;
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{DARK_PALETTE, LIGHT_PALETTE};
+
+    /// Reads `@define-color name #rrggbb;` out of a palette.
+    fn color(palette: &str, name: &str) -> (u8, u8, u8) {
+        let key = format!("@define-color {name} #");
+
+        let line = palette
+            .lines()
+            .find(|line| line.trim_start().starts_with(&key))
+            .unwrap_or_else(|| panic!("{name} is missing from the palette"));
+
+        let hex: String = line.trim_start()[key.len()..].chars().take(6).collect();
+
+        let byte = |range: std::ops::Range<usize>| {
+            u8::from_str_radix(&hex[range], 16).expect("palette colours are hex")
+        };
+
+        (byte(0..2), byte(2..4), byte(4..6))
+    }
+
+    #[test]
+    fn both_palettes_define_every_theme_colour() {
+        for palette in [DARK_PALETTE, LIGHT_PALETTE] {
+            for name in ["axys_bg", "axys_fg", "axys_accent"] {
+                let _ = color(palette, name);
+            }
+        }
+    }
+
+    #[test]
+    fn internal_pages_are_near_white_in_light_mode() {
+        let (r, g, b) = color(LIGHT_PALETTE, "axys_bg");
+
+        // #e6e9ee read as grey next to the white toolbar; the pages must be
+        // close to white while keeping a hint of colour.
+        assert!(
+            r >= 0xf0 && g >= 0xf0 && b >= 0xf0,
+            "light background is too dark: #{r:02x}{g:02x}{b:02x}"
+        );
+        assert!(
+            !(r == 0xff && g == 0xff && b == 0xff),
+            "keep a hint of colour instead of pure white"
+        );
+    }
+
+    #[test]
+    fn the_dark_palette_stays_dark() {
+        let (r, g, b) = color(DARK_PALETTE, "axys_bg");
+
+        assert!(
+            r < 0x60 && g < 0x60 && b < 0x60,
+            "dark background is too light: #{r:02x}{g:02x}{b:02x}"
+        );
+    }
+}
