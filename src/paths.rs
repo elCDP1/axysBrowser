@@ -6,14 +6,27 @@ use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str) -> PathBuf {
-    if let Ok(xdg) = env::var(xdg_var)
-        && !xdg.is_empty()
-    {
-        return PathBuf::from(xdg).join("axysbrowser");
+/// Resolves an XDG directory from raw values, so the fallback chain can be
+/// tested without mutating the process environment.
+///
+/// XDG Base Directory: a relative or empty `XDG_*_HOME` is invalid and must
+/// be ignored. Accepting one scattered the profile next to whatever
+/// directory the browser happened to be launched from.
+fn xdg_dir_from(
+    xdg: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    home_fallback: &[&str],
+    last_resort: &str,
+) -> PathBuf {
+    if let Some(xdg) = xdg {
+        let path = Path::new(xdg);
+
+        if !xdg.is_empty() && path.is_absolute() {
+            return path.join("axysbrowser");
+        }
     }
 
-    if let Ok(home) = env::var("HOME") {
+    if let Some(home) = home {
         let mut path = PathBuf::from(home);
 
         for part in home_fallback {
@@ -24,6 +37,15 @@ fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str) -> PathBuf 
     }
 
     PathBuf::from(last_resort)
+}
+
+fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str) -> PathBuf {
+    xdg_dir_from(
+        env::var_os(xdg_var).as_deref(),
+        env::var_os("HOME").as_deref(),
+        home_fallback,
+        last_resort,
+    )
 }
 
 /// Settings, bookmarks, history, cookies.
@@ -80,7 +102,7 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
         None => path.with_extension("tmp"),
     };
 
-    {
+    let result: io::Result<()> = (|| {
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -94,9 +116,19 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
         // the rename could leave the real file pointing at zero/partial
         // contents, silently losing history/bookmarks/permissions.
         file.sync_all()?;
+
+        fs::rename(&temporary, path)?;
+
+        Ok(())
+    })();
+
+    // A failed write or rename used to leave `.name.pid.tmp` behind forever,
+    // one per failed save (a full disk could fill up with them).
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
     }
 
-    fs::rename(&temporary, path)?;
+    result?;
 
     // Best effort: also persist the directory entry (a failed directory
     // fsync must not fail the save on filesystems that don't support it).
@@ -172,5 +204,76 @@ mod tests {
     #[test]
     fn atomic_write_rejects_paths_without_a_parent() {
         assert!(atomic_write(Path::new(""), "x").is_err());
+    }
+
+    #[test]
+    fn a_failed_rename_does_not_leave_a_temp_file() {
+        let dir = unique_dir("failed-rename");
+        let _ = fs::remove_dir_all(&dir);
+
+        fs::create_dir_all(&dir).unwrap();
+
+        // A directory where the file belongs: the temp file is written, but
+        // the rename fails. Nothing may be left behind.
+        let path = dir.join("settings.toml");
+
+        fs::create_dir(&path).unwrap();
+
+        assert!(atomic_write(&path, "data").is_err());
+
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+
+        assert!(
+            leftovers.is_empty(),
+            "temp files left behind: {leftovers:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_absolute_xdg_directory_wins_over_home() {
+        use std::ffi::OsStr;
+
+        let dir = xdg_dir_from(
+            Some(OsStr::new("/tmp/custom-config")),
+            Some(OsStr::new("/home/user")),
+            &[".config"],
+            "fallback",
+        );
+
+        assert_eq!(dir, PathBuf::from("/tmp/custom-config/axysbrowser"));
+    }
+
+    #[test]
+    fn relative_or_empty_xdg_directories_are_ignored() {
+        use std::ffi::OsStr;
+
+        for xdg in ["relative/config", "", "."] {
+            let dir = xdg_dir_from(
+                Some(OsStr::new(xdg)),
+                Some(OsStr::new("/home/user")),
+                &[".config"],
+                "fallback",
+            );
+
+            assert_eq!(
+                dir,
+                PathBuf::from("/home/user/.config/axysbrowser"),
+                "XDG dir {xdg:?} must fall back to HOME"
+            );
+        }
+    }
+
+    #[test]
+    fn without_home_the_last_resort_is_used() {
+        let dir = xdg_dir_from(None, None, &[".config"], "axysbrowser-fallback");
+
+        assert_eq!(dir, PathBuf::from("axysbrowser-fallback"));
     }
 }

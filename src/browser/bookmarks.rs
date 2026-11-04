@@ -82,8 +82,6 @@ impl BookmarkManager {
     /// `https://example.com/`). The path stays case-sensitive as required by
     /// RFC 3986.
     fn normalize_url(url: &str) -> String {
-        let url = url.strip_suffix('/').unwrap_or(url);
-
         let Some(sep) = url.find("://") else {
             return url.to_ascii_lowercase();
         };
@@ -96,7 +94,22 @@ impl BookmarkManager {
 
         let (authority, tail) = rest.split_at(authority_end);
 
-        format!("{scheme}://{}{tail}", authority.to_ascii_lowercase())
+        // Drop one trailing slash from the *path* only. Stripping it from the
+        // whole URL also ate a slash belonging to the query or fragment
+        // (`?next=/` became `?next=`), so two different pages compared equal:
+        // adding one bookmark silently rejected the other, and removing one
+        // removed both.
+        let (path, suffix) = match tail.find(['?', '#']) {
+            Some(index) => tail.split_at(index),
+            None => (tail, ""),
+        };
+
+        let path = path.strip_suffix('/').unwrap_or(path);
+
+        format!(
+            "{scheme}://{}{path}{suffix}",
+            authority.to_ascii_lowercase()
+        )
     }
 
     /// Compares URLs after [`normalize_url`](Self::normalize_url).
@@ -536,6 +549,38 @@ mod tests {
         assert!(manager.remove("HTTPS://A.example"));
         assert!(!manager.contains("https://a.example/"));
         assert!(manager.entries().is_empty());
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn same_url_does_not_ignore_a_slash_inside_the_query() {
+        // `?next=/` and `?next=` are different pages; normalizing the whole
+        // URL used to equate them.
+        assert!(!BookmarkManager::same_url(
+            "https://example.com/?next=/",
+            "https://example.com/?next="
+        ));
+    }
+
+    #[test]
+    fn same_url_still_ignores_a_trailing_path_slash_before_a_query() {
+        assert!(BookmarkManager::same_url(
+            "https://example.com/docs/?v=2",
+            "https://example.com/docs?v=2"
+        ));
+    }
+
+    #[test]
+    fn remove_does_not_match_a_different_query() {
+        let manager = test_manager("query-slash");
+
+        manager.add_with_favicon("A", "https://example.com/?next=/", None);
+
+        assert!(!manager.remove("https://example.com/?next="));
+        assert_eq!(manager.entries().len(), 1, "the bookmark must survive");
+
+        assert!(manager.remove("https://example.com/?next=/"));
 
         let _ = fs::remove_file(&manager.path);
     }

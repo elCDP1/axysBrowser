@@ -3,8 +3,10 @@
 # assert the browser is cheap while idle, from facts observable outside the
 # app:
 #
-#   * where GL is software (a CI runner has no /dev/dri), the window chrome
-#     really picked cairo: the startup line says so;
+#   * where every render node is software (or there is none), the window
+#     chrome really picked cairo: the startup line says so; and it picked gl
+#     as soon as any render node has a real driver, so a virtual device
+#     cannot hide a working GPU;
 #   * no web process runs for a native internal page (there is no web content
 #     to render, so none may be left over);
 #   * the whole tree (main process + WebKit helpers) stays under a PSS bound.
@@ -75,6 +77,7 @@ fi
 # verdict inside the app cannot make this smoke pass.
 DECISION=$(grep -m1 -o "Interface renderer: [a-z]*" "$LOG" | awk '{print $3}')
 
+usable_gl=0
 software_gl=0
 DRIVER=""
 
@@ -87,20 +90,24 @@ case "${GALLIUM_DRIVER:-${MESA_LOADER_DRIVER_OVERRIDE:-}}" in
   llvmpipe | softpipe | swrast | swiftshader) software_gl=1 ;;
 esac
 
-# A DRI node is not proof of a 3D engine: WSLg exposes renderD128 backed by
-# faux_driver, and vgem/vkms are virtual devices. Only a real driver counts.
+# A render node is not proof of a 3D engine: WSLg exposes renderD128 backed by
+# faux_driver, and vgem/vkms are virtual devices. Only a readable, non-virtual
+# driver counts, and ANY usable node means GL is available: the app prefers a
+# real node over a virtual one, so the smoke applies the same rule instead of
+# marking software for the whole machine because one node is virtual.
 if [ -z "$(ls /dev/dri/renderD* 2>/dev/null)" ]; then
-  software_gl=1
+  DRIVER="no render node"
 else
   for node in /dev/dri/renderD*; do
-    driver=$(basename "$(readlink -f "/sys/class/drm/$(basename "$node")/device/driver" 2>/dev/null)")
-    if [ -z "$driver" ]; then
-      software_gl=1
-    fi
+    name=$(basename "$node")
+    driver=$(basename "$(readlink -f "/sys/class/drm/$name/device/driver" 2>/dev/null)")
+
+    DRIVER="${DRIVER:+$DRIVER, }$name=${driver:-unknown}"
+
     case "$driver" in
-      faux_driver | vgem | vkms) software_gl=1 ;;
+      "" | faux_driver | vgem | vkms) ;;
+      *) usable_gl=1 ;;
     esac
-    DRIVER="${DRIVER:+$DRIVER,}$driver"
   done
 fi
 
@@ -108,18 +115,25 @@ if [ -n "${GSK_RENDERER:-}" ] || [ -n "${AXYS_GSK:-}" ]; then
   echo "renderer forced by the environment ($DECISION): the choice is not asserted"
 elif [ "$software_gl" = 1 ]; then
   if [ "$DECISION" != cairo ]; then
-    echo "GL IS SOFTWARE (${DRIVER:-no render node}) BUT THE INTERFACE RENDERER IS '${DECISION:-none}'"
+    echo "THE ENVIRONMENT FORCES SOFTWARE GL (${DRIVER}) BUT THE INTERFACE RENDERER IS '${DECISION:-none}'"
     cat "$LOG"
     exit 1
   fi
-  echo "interface renderer: cairo (software GL: ${DRIVER:-no render node})"
-else
+  echo "interface renderer: cairo (software GL forced by the environment; ${DRIVER})"
+elif [ "$usable_gl" = 1 ]; then
   if [ "$DECISION" != gl ]; then
-    echo "HARDWARE GL IS AVAILABLE (${DRIVER}) BUT THE INTERFACE RENDERER IS '${DECISION:-none}'"
+    echo "A USABLE RENDER NODE IS AVAILABLE (${DRIVER}) BUT THE INTERFACE RENDERER IS '${DECISION:-none}'"
     cat "$LOG"
     exit 1
   fi
-  echo "interface renderer: gl (hardware GL: ${DRIVER})"
+  echo "interface renderer: gl (usable render node: ${DRIVER})"
+else
+  if [ "$DECISION" != cairo ]; then
+    echo "NO USABLE RENDER NODE (${DRIVER}) BUT THE INTERFACE RENDERER IS '${DECISION:-none}'"
+    cat "$LOG"
+    exit 1
+  fi
+  echo "interface renderer: cairo (no usable render node: ${DRIVER})"
 fi
 
 python3 - "$PID" "$BOUND_KB" <<'PY'

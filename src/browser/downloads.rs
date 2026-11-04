@@ -50,17 +50,22 @@ impl DownloadEntry {
 /// Human-readable byte count with universal (untranslated) unit suffixes.
 pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
+    const MB: f64 = KB * KB;
+    const GB: f64 = MB * KB;
 
     let bytes = bytes as f64;
 
+    // Promote just before rounding would print "1024.0 KB" / "1024.0 MB":
+    // 1048575 bytes is 1023.999 KB, and the unit must not contradict the
+    // number next to it.
     if bytes < KB {
         format!("{} B", bytes as u64)
-    } else if bytes < KB * KB {
+    } else if bytes < MB - 0.05 * KB {
         format!("{:.1} KB", bytes / KB)
-    } else if bytes < KB * KB * KB {
-        format!("{:.1} MB", bytes / (KB * KB))
+    } else if bytes < GB - 0.005 * MB {
+        format!("{:.1} MB", bytes / MB)
     } else {
-        format!("{:.2} GB", bytes / (KB * KB * KB))
+        format!("{:.2} GB", bytes / GB)
     }
 }
 
@@ -508,6 +513,7 @@ mod tests {
     fn formats_speed_or_empty() {
         assert_eq!(format_speed(0.0), "");
         assert_eq!(format_speed(-5.0), "");
+        assert_eq!(format_speed(f64::NAN), "");
         assert_eq!(format_speed(f64::INFINITY), "");
         assert_eq!(format_speed(1536.0), "1.5 KB/s");
     }
@@ -573,9 +579,14 @@ mod tests {
     fn formats_byte_counts_at_unit_boundaries() {
         assert_eq!(format_bytes(1023), "1023 B");
         assert_eq!(format_bytes(1024), "1.0 KB");
-        assert_eq!(format_bytes(1024 * 1024 - 1), "1024.0 KB");
         assert_eq!(format_bytes(1024 * 1024), "1.0 MB");
-        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1024.0 MB");
         assert_eq!(format_bytes(1024 * 1024 * 1024), "1.00 GB");
+    }
+
+    #[test]
+    fn byte_counts_never_print_a_unit_below_its_base() {
+        // These used to read "1024.0 KB" and "1024.0 MB".
+        assert_eq!(format_bytes(1024 * 1024 - 1), "1.0 MB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1.00 GB");
     }
 }

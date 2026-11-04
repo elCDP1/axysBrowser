@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.2.0`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.2.1`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -173,6 +173,8 @@ cargo clippy --locked --all-targets -- -D warnings
 xvfb-run -a bash .github/gui-smoke.sh    # startup + a real page render under Xvfb
 xvfb-run -a bash .github/mem-smoke.sh    # open/close tabs, assert WebViews free
 xvfb-run -a bash .github/rest-smoke.sh   # idle memory with one internal page
+xvfb-run -a bash .github/mhtml-smoke.sh  # export a page to MHTML and inspect it
+xvfb-run -a bash .github/history-smoke.sh # a visit reaches history.toml on exit
 ```
 
 `gui-smoke.sh` opens a local page and passes only when a WebKit web process
@@ -197,6 +199,23 @@ Mesa driver) and fails unless the renderer the app picked matches it, so a
 regression guard for the choice described under
 [Rendering and GPU](#rendering-and-gpu): software GL costs about 100 MiB and
 fails there.
+
+`mhtml-smoke.sh` loads a local page with a stylesheet and an image and saves
+it with the same ``save_to_file(…, SaveMode::Mhtml, …)` call the "Save page
+as…" menu uses. It then checks the file rather than the app's word for it: a
+`multipart/related` document whose `text/html` part carries the page's marker
+and the stylesheet rule, with the image embedded as a non-empty `image/png`
+part and `Content-Location:` entries, and no 404 while the page loaded. It
+covers WebKit's MHTML generation and the export call; the GTK file dialog
+itself is still a manual check.
+
+`history-smoke.sh` closes the loop between a real page load and the file on
+disk. History saves are deferred by two seconds and coalesced, so the smoke
+loads a local page through the normal tab pipeline, quits the app normally
+and then requires `history.toml` to hold exactly that visit, with the page's
+own title and owner-only permissions (0600 file, 0700 directory). The unit
+tests call the manager directly; only this proves the shutdown flush that
+writes the last visits still runs.
 
 The strict variants need a host where `bwrap` can create and configure
 user and network namespaces. Ubuntu 24.04 gates that behind AppArmor;
@@ -251,9 +270,10 @@ hit freezes on a Mesa/X11 setup, run with `AXYS_DMABUF=0` (or WebKit's own
 Hardware acceleration in Settings is WebKit's GPU use for pages — a
 different switch from the one below, which is GTK's renderer for the window.
 The window picks its renderer from what GL actually is, not from whether
-`/dev/dri` exists: the DRM node's kernel driver (`faux_driver`, `vgem` and
-`vkms` mean no 3D engine — WSLg exposes `faux_driver` beside a real
-`renderD128`, which is why the node alone proves nothing), a
+`/dev/dri` exists: the kernel driver of every `renderD*` node (`faux_driver`,
+`vgem` and `vkms` mean no 3D engine — WSLg exposes `faux_driver` beside a real
+`renderD128`, which is why the node alone proves nothing, and a virtual node
+no longer hides a real GPU behind it), a
 `LIBGL_ALWAYS_SOFTWARE` that is switched on (`=0` is off), and Mesa's driver
 override naming the CPU rasterizer (`llvmpipe`, `softpipe`, `swrast`,
 `swiftshader`). A real GPU keeps the default GL renderer; anything software
@@ -267,10 +287,14 @@ startup.
 
 Web processes get a memory ceiling sized to the machine: 35 % of RAM,
 clamped to 2–4 GiB (4 GiB when RAM cannot be read), instead of a fixed
-4 GiB that let a single tab reach half of an 8 GB machine. It is printed at
-startup, and `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it. A tab is still only
-killed when it really exceeds the ceiling, which no realistic page does:
-Discord, Slack and Figma sit well under 2 GB.
+4 GiB that let a single tab reach half of an 8 GB machine. "RAM" is the
+smaller of `/proc/meminfo` and a cgroup v2/v1 memory quota, so a container
+plans for its own quota instead of the host's. The figure is **per web
+process**. It is printed at startup, and `AXYS_WEB_MEMORY_LIMIT` (MiB)
+overrides it. A tab is still only killed when it really exceeds the ceiling,
+which no realistic page does: Discord, Slack and Figma sit well under 2 GB.
+WebKit's own 30 s memory poll is kept explicitly; 1.1.8 had lowered it to
+5 s, six times more often than the default.
 
 ## Contributing
 

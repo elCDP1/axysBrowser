@@ -1545,6 +1545,27 @@ fn build_browser_window(
             }
 
             {
+                // WebKit can send `finished` before the document title is
+                // published, leaving the visit saved under its URL. Fill the
+                // real title in as soon as it arrives.
+                let window_history = window_history.clone();
+
+                web_view.connect_title_notify(move |view| {
+                    let Some(uri) = view.uri().map(|uri| uri.to_string()) else {
+                        return;
+                    };
+
+                    let Some(title) = view.title().map(|title| title.to_string()) else {
+                        return;
+                    };
+
+                    if uri.starts_with("http://") || uri.starts_with("https://") {
+                        window_history.retitle(&uri, &title);
+                    }
+                });
+            }
+
+            {
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
                 let window_history = window_history.clone();
@@ -2622,6 +2643,18 @@ fn build_browser_window(
                 window.close();
             })
         },
+        app: app.clone(),
+    });
+
+    // Test-only MHTML export self-test (AXYS_MHTML_SMOKE=1, used by CI).
+    super::mhtmlsmoke::start_if_requested(super::mhtmlsmoke::SmokeContext {
+        tabs: tabs.clone(),
+        app: app.clone(),
+    });
+
+    // Test-only history persistence self-test (AXYS_HISTORY_SMOKE=1, CI).
+    super::historysmoke::start_if_requested(super::historysmoke::SmokeContext {
+        tabs: tabs.clone(),
         app: app.clone(),
     });
 

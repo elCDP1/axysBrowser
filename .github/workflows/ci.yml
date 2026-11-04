@@ -78,6 +78,12 @@ jobs:
       - name: Rest memory under Xvfb
         run: xvfb-run -a bash .github/rest-smoke.sh
 
+      - name: MHTML export under Xvfb
+        run: xvfb-run -a bash .github/mhtml-smoke.sh
+
+      - name: History persistence under Xvfb
+        run: xvfb-run -a bash .github/history-smoke.sh
+
       - name: Memory smoke under Xvfb
         run: xvfb-run -a bash .github/mem-smoke.sh
 

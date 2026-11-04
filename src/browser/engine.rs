@@ -270,6 +270,63 @@ fn web_process_memory_limit(total_ram_mb: u64) -> u32 {
     (total_ram_mb * 35 / 100).clamp(2048, 4096) as u32
 }
 
+/// A cgroup memory limit in bytes, when the process is capped below the host.
+///
+/// Containers are the common case: `/proc/meminfo` reports the host's RAM, so
+/// a 2 GiB container on a 32 GiB machine would otherwise size the browser for
+/// the host and let one tab use more than the whole quota.
+fn cgroup_memory_limit_bytes() -> Option<u64> {
+    for path in [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ] {
+        if let Ok(text) = std::fs::read_to_string(path)
+            && let Some(limit) = parse_cgroup_limit(&text)
+        {
+            return Some(limit);
+        }
+    }
+
+    None
+}
+
+/// Parses a cgroup limit file. `max` means unlimited; cgroup v1 reports "no
+/// limit" as a huge sentinel (`PAGE_COUNTER_MAX`), and a zero quota is not a
+/// figure the policy can use, so all three are ignored.
+fn parse_cgroup_limit(text: &str) -> Option<u64> {
+    let text = text.trim();
+
+    if text.is_empty() || text.eq_ignore_ascii_case("max") {
+        return None;
+    }
+
+    let bytes = text.parse::<u64>().ok()?;
+
+    // 2^62 bytes is 4 EiB: above any real machine and above cgroup v1's
+    // PAGE_COUNTER_MAX sentinel, which sits just under i64::MAX.
+    if bytes == 0 || bytes >= 1 << 62 {
+        return None;
+    }
+
+    Some(bytes)
+}
+
+/// RAM the browser may plan for: the smaller of the host's RAM and any cgroup
+/// quota. `0` still means unknown, so the old fallback applies.
+fn usable_ram_mb(physical_mb: u64, cgroup_bytes: Option<u64>) -> u64 {
+    if physical_mb == 0 {
+        return 0;
+    }
+
+    // A quota below 1 MiB is not a real machine; rounding it to 0 would look
+    // like "RAM unknown" and hand out the largest ceiling instead.
+    let cgroup_mb = cgroup_bytes
+        .map(|bytes| (bytes / (1024 * 1024)).max(1))
+        .unwrap_or(u64::MAX);
+
+    physical_mb.min(cgroup_mb)
+}
+
 /// Total RAM in MiB from `/proc/meminfo`; 0 when it cannot be read.
 fn total_ram_mb() -> u64 {
     let Ok(text) = std::fs::read_to_string("/proc/meminfo") else {
@@ -306,34 +363,37 @@ fn tune_memory_pressure() {
     // memory limit and get killed with ExceededMemoryLimit. Raise the ceiling
     // globally (once per process is enough; the call is process-wide), sized
     // to the machine instead of a fixed 4 GiB.
-    let total = total_ram_mb();
-    let limit = memory_limit_override().unwrap_or_else(|| web_process_memory_limit(total));
+    let physical = total_ram_mb();
+    let effective = usable_ram_mb(physical, cgroup_memory_limit_bytes());
+    let limit = memory_limit_override().unwrap_or_else(|| web_process_memory_limit(effective));
 
     let mut settings = MemoryPressureSettings::new();
 
     settings.set_memory_limit(limit);
 
-    // How often each web process re-checks memory pressure. WebKit's default
-    // is one second, which keeps every tab waking up even when nothing is
-    // happening; half a minute is soon enough for a tab that has to release
-    // memory, and it cuts the idle wakeups by 30x.
+    // WebKit's own default for this is 30 seconds. 1.1.8 set 5 s here, i.e.
+    // six times more often than the default, so this restores the default
+    // explicitly rather than cutting wakeups 30x. Keeping the call spelled
+    // out documents the value instead of depending on a library default that
+    // could change under us.
     settings.set_poll_interval(30.0);
 
     NetworkSession::set_memory_pressure_settings(&mut settings);
 
-    eprintln!(
-        "Web process memory ceiling: {limit} MiB ({} MiB RAM)",
-        if total == 0 {
-            "unknown".to_string()
-        } else {
-            total.to_string()
-        }
-    );
+    let memory = if effective == 0 {
+        "unknown".to_string()
+    } else if effective < physical {
+        format!("{effective} MiB usable RAM (cgroup limit of {physical} MiB physical)")
+    } else {
+        format!("{effective} MiB RAM")
+    };
+
+    eprintln!("Web process memory ceiling: {limit} MiB ({memory})");
 }
 
 #[cfg(test)]
 mod memory_policy_tests {
-    use super::web_process_memory_limit;
+    use super::{parse_cgroup_limit, usable_ram_mb, web_process_memory_limit};
 
     #[test]
     fn the_ceiling_follows_the_machine_not_a_fixed_four_gigabytes() {
@@ -352,6 +412,40 @@ mod memory_policy_tests {
 
         // Unreadable `/proc/meminfo`: the old behaviour, not a tiny ceiling.
         assert_eq!(web_process_memory_limit(0), 4096);
+    }
+
+    #[test]
+    fn cgroup_limits_are_read_by_value_not_by_presence() {
+        assert_eq!(parse_cgroup_limit("max\n"), None, "v2 unlimited");
+        assert_eq!(parse_cgroup_limit("  max  "), None);
+        assert_eq!(parse_cgroup_limit(""), None);
+        assert_eq!(parse_cgroup_limit("0"), None, "a zero quota is unusable");
+        assert_eq!(
+            parse_cgroup_limit("9223372036854771712"),
+            None,
+            "v1's no-limit sentinel"
+        );
+        assert_eq!(
+            parse_cgroup_limit("3221225472\n"),
+            Some(3 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn the_ceiling_uses_the_container_quota_when_it_is_smaller() {
+        let three_gib = Some(3 * 1024 * 1024 * 1024);
+
+        assert_eq!(usable_ram_mb(7793, three_gib), 3072);
+        assert_eq!(usable_ram_mb(7793, None), 7793);
+
+        // A quota above the host's RAM cannot make the browser plan for more.
+        assert_eq!(usable_ram_mb(7793, Some(64 * 1024 * 1024 * 1024)), 7793);
+
+        // Unknown physical RAM stays unknown, quota or not.
+        assert_eq!(usable_ram_mb(0, three_gib), 0);
+
+        // A sub-MiB quota must not collapse to "RAM unknown".
+        assert_eq!(usable_ram_mb(7793, Some(512 * 1024)), 1);
     }
 
     #[test]

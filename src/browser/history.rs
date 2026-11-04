@@ -148,6 +148,46 @@ impl HistoryManager {
         }
     }
 
+    /// Replaces the placeholder title (the URL) of the newest visit when the
+    /// page's real title arrives after the load already finished.
+    ///
+    /// WebKit can emit `load-changed::finished` before `notify::title`; the
+    /// load handler then stores the URL as the title, and the page kept
+    /// showing that URL in `axys://history` forever. Only the newest entry
+    /// for exactly this URL, and only while its title is still the URL, is
+    /// touched: a later title change from a single-page app must not rewrite
+    /// an existing history row.
+    pub fn retitle(&self, url: &str, title: &str) -> bool {
+        let title = sanitize_title(title.to_string(), url);
+
+        if title == url {
+            return false;
+        }
+
+        let changed = {
+            let mut entries = self.entries.borrow_mut();
+
+            // The newest visit of this URL, not the newest visit overall:
+            // several tabs can finish loading together and their titles
+            // arrive in any order.
+            match entries.iter_mut().rfind(|entry| entry.url == url) {
+                Some(entry) if entry.title == url => {
+                    entry.title = title;
+
+                    true
+                }
+                _ => false,
+            }
+        };
+
+        if changed {
+            self.schedule_save();
+            self.notify();
+        }
+
+        changed
+    }
+
     /// Newest-first matches, capped at `limit` rows so pages never clone
     /// and render thousands of widgets per keystroke.
     pub fn search_limited(&self, query: &str, limit: usize) -> Vec<HistoryEntry> {
@@ -818,5 +858,137 @@ mod tests {
         assert_eq!(armed.get(), 1, "a fresh visit retries without waiting");
 
         let _ = fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn the_same_url_within_two_seconds_is_recorded_once() {
+        let manager = test_manager("dedupe-visits");
+        let path = test_path(&manager).to_path_buf();
+
+        manager.add_visit("A", "https://example.com/a");
+        manager.add_visit("A again", "https://example.com/a");
+
+        assert_eq!(
+            manager.search_limited("", usize::MAX).len(),
+            1,
+            "a reload burst is one visit"
+        );
+
+        // A page in between is its own visit, so the next load of A counts
+        // again (it is no longer a duplicate of the last entry).
+        manager.add_visit("B", "https://example.com/b");
+        manager.add_visit("A", "https://example.com/a");
+
+        assert_eq!(manager.search_limited("", usize::MAX).len(), 3);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn visit_titles_collapse_whitespace_and_fall_back_to_the_url() {
+        let manager = test_manager("titles");
+        let path = test_path(&manager).to_path_buf();
+
+        manager.add_visit("  Example \n\t page  ", "https://example.com/a");
+        manager.add_visit("   ", "https://example.com/b");
+
+        let entries = manager.search_limited("", usize::MAX);
+
+        assert_eq!(entries[0].title, "https://example.com/b");
+        assert_eq!(entries[1].title, "Example page");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn search_limited_caps_rows_and_a_zero_limit_returns_nothing() {
+        let manager = test_manager("limit");
+
+        manager
+            .entries
+            .borrow_mut()
+            .extend((0..10).map(|i| entry_at(&format!("https://example.com/{i}"), i as u64 + 1)));
+
+        assert_eq!(manager.search_limited("", 3).len(), 3);
+        assert_eq!(manager.search_limited("example", 4).len(), 4);
+        assert!(manager.search_limited("", 0).is_empty());
+    }
+
+    #[test]
+    fn a_title_arriving_after_the_load_replaces_the_url_placeholder() {
+        let manager = test_manager("retitle");
+        let path = test_path(&manager).to_path_buf();
+
+        // What the load handler stored: the URL, because `title()` was still
+        // empty at `finished`.
+        manager.add_visit("https://example.com/a", "https://example.com/a");
+
+        assert!(manager.retitle("https://example.com/a", "Example page"));
+        assert_eq!(manager.entries.borrow()[0].title, "Example page");
+
+        // Only the URL placeholder is replaced: a late title from a SPA must
+        // not rewrite a row that already has a real title.
+        assert!(!manager.retitle("https://example.com/a", "Changed later"));
+        assert_eq!(manager.entries.borrow()[0].title, "Example page");
+
+        // A title for another URL never matches.
+        assert!(!manager.retitle("https://example.com/b", "Elsewhere"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_background_visit_gets_its_title_after_another_page() {
+        let manager = test_manager("retitle-background");
+        let path = test_path(&manager).to_path_buf();
+
+        // Two tabs finished; the second's title arrived first.
+        manager.add_visit("https://example.com/a", "https://example.com/a");
+        manager.add_visit("Other", "https://example.com/b");
+
+        assert!(manager.retitle("https://example.com/a", "A page"));
+
+        let entries = manager.entries.borrow();
+
+        assert_eq!(entries[0].title, "A page");
+        assert_eq!(entries[1].title, "Other");
+
+        drop(entries);
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn loading_a_huge_history_keeps_only_the_newest_entries() {
+        const EXTRA: usize = 5;
+
+        let path =
+            std::env::temp_dir().join(format!("axys-history-cap-{}.toml", std::process::id()));
+
+        let entries: Vec<HistoryEntry> = (0..MAX_HISTORY_ENTRIES + EXTRA)
+            .map(|i| entry_at(&format!("https://example.com/{i}"), i as u64 + 1))
+            .collect();
+
+        fs::write(
+            &path,
+            toml::to_string_pretty(&HistoryStore { entries }).unwrap(),
+        )
+        .unwrap();
+
+        let manager = HistoryManager::load_from(path.clone());
+        let loaded = manager.entries.borrow();
+
+        assert_eq!(loaded.len(), MAX_HISTORY_ENTRIES);
+
+        // The oldest EXTRA entries are dropped; the newest one survives.
+        assert_eq!(loaded[0].url, format!("https://example.com/{EXTRA}"));
+        assert_eq!(
+            loaded[MAX_HISTORY_ENTRIES - 1].url,
+            format!("https://example.com/{}", MAX_HISTORY_ENTRIES + EXTRA - 1)
+        );
+
+        drop(loaded);
+
+        let _ = fs::remove_file(&path);
     }
 }

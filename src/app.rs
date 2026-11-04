@@ -174,22 +174,71 @@ fn is_render_node(name: &str) -> bool {
         .is_some_and(|digits| !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// First render node under `/dev/dri`, never a `card*` node.
-fn dri_node() -> Option<String> {
-    let entries = std::fs::read_dir("/dev/dri").ok()?;
-    let mut nodes = Vec::new();
+/// Every render node under `/dev/dri` with its kernel driver, sorted by node
+/// name.
+///
+/// All of them, not just the first one: a virtual device often gets the lower
+/// number (`vgem` on `renderD128`, the real GPU on `renderD129`), and reading
+/// only the first would throw away a usable GPU.
+fn render_nodes() -> Vec<(String, Option<String>)> {
+    let Ok(entries) = std::fs::read_dir("/dev/dri") else {
+        return Vec::new();
+    };
 
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
+    let mut nodes: Vec<String> = entries
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| is_render_node(name))
+        .collect();
 
-        if is_render_node(&name) {
-            nodes.push(name);
-        }
+    // Sorted and deduplicated, so a machine with two GPUs always makes the
+    // same choice.
+    nodes.sort();
+    nodes.dedup();
+
+    nodes
+        .into_iter()
+        .map(|node| {
+            let driver = drm_driver(&node);
+
+            (node, driver)
+        })
+        .collect()
+}
+
+/// The node the interface should use: the first one that is readable and is
+/// not a known virtual device.
+///
+/// When nothing is usable, the first node is returned anyway: the decision is
+/// still software (`gl_is_software` rejects virtual and unknown drivers), but
+/// the log has to name the node it rejected. Otherwise a WSLg `faux_driver`
+/// node, or a broken sysfs link, looks like a machine without a GPU.
+fn pick_render_node(nodes: &[(String, Option<String>)]) -> Option<&str> {
+    let usable = nodes.iter().find(|(_, driver)| {
+        driver.as_deref().is_some_and(|driver| {
+            !SOFTWARE_DRM_DRIVERS.contains(&driver.trim().to_ascii_lowercase().as_str())
+        })
+    });
+
+    usable
+        .or_else(|| nodes.first())
+        .map(|(node, _)| node.as_str())
+}
+
+/// `vgem on renderD128, amdgpu on renderD129`, or `no /dev/dri render node`.
+fn describe_render_nodes(nodes: &[(String, Option<String>)]) -> String {
+    if nodes.is_empty() {
+        return "no /dev/dri render node".to_string();
     }
 
-    // Sorted, so a machine with two GPUs always makes the same choice.
-    nodes.sort();
-    nodes.into_iter().next()
+    nodes
+        .iter()
+        .map(|(node, driver)| match driver {
+            Some(driver) => format!("{driver} on {node}"),
+            None => format!("unknown driver on {node}"),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The kernel driver behind a DRM node, from sysfs.
@@ -234,18 +283,36 @@ fn configure_interface_renderer() {
         return;
     }
 
-    let node = dri_node();
-    let driver = node.as_deref().and_then(drm_driver);
+    let nodes = render_nodes();
+    let node = pick_render_node(&nodes);
+    let driver = node.and_then(|chosen| {
+        nodes
+            .iter()
+            .find(|(name, _)| name == chosen)
+            .and_then(|(_, driver)| driver.clone())
+    });
     let libgl = std::env::var("LIBGL_ALWAYS_SOFTWARE").ok();
     let mesa = std::env::var("GALLIUM_DRIVER")
         .ok()
         .or_else(|| std::env::var("MESA_LOADER_DRIVER_OVERRIDE").ok());
 
     let evidence = GlEvidence {
-        render_node: node.as_deref(),
+        render_node: node,
         drm_driver: driver.as_deref(),
         libgl_always_software: libgl.as_deref(),
         mesa_driver: mesa.as_deref(),
+    };
+
+    // With several devices, the log has to say which one was chosen and which
+    // ones were ignored; with one it is already fully described.
+    let description = if nodes.len() > 1 {
+        format!(
+            "{}; nodes: {}",
+            gl_description(&evidence),
+            describe_render_nodes(&nodes)
+        )
+    } else {
+        gl_description(&evidence)
     };
 
     let software = gl_is_software(&evidence);
@@ -256,22 +323,26 @@ fn configure_interface_renderer() {
         }
 
         eprintln!(
-            "Interface renderer: cairo (software GL: {}). Use AXYS_GSK=gl to force GPU rendering.",
-            gl_description(&evidence)
+            "Interface renderer: cairo (software GL: {description}). Use AXYS_GSK=gl to force GPU rendering."
         );
     } else {
-        eprintln!(
-            "Interface renderer: gl (hardware GL: {}).",
-            gl_description(&evidence)
-        );
+        eprintln!("Interface renderer: gl (hardware GL: {description}).");
     }
 }
 
 #[cfg(test)]
 mod renderer_tests {
     use super::{
-        GlEvidence, env_flag_is_set, gl_is_software, is_render_node, should_use_software_renderer,
+        GlEvidence, describe_render_nodes, env_flag_is_set, gl_is_software, is_render_node,
+        pick_render_node, should_use_software_renderer,
     };
+
+    fn nodes(entries: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+        entries
+            .iter()
+            .map(|(node, driver)| ((*node).to_string(), driver.map(str::to_string)))
+            .collect()
+    }
 
     fn evidence<'a>(node: Option<&'a str>, driver: Option<&'a str>) -> GlEvidence<'a> {
         GlEvidence {
@@ -404,6 +475,78 @@ mod renderer_tests {
                 "{value} must force GPU rendering"
             );
         }
+    }
+
+    #[test]
+    fn a_virtual_node_does_not_hide_a_real_gpu() {
+        // vgem usually takes the lower render number; reading only the first
+        // node used to throw the real GPU away and fall back to cairo.
+        let mixed = nodes(&[("renderD128", Some("vgem")), ("renderD129", Some("amdgpu"))]);
+
+        assert_eq!(pick_render_node(&mixed), Some("renderD129"));
+    }
+
+    #[test]
+    fn an_unreadable_node_does_not_hide_a_real_gpu() {
+        let mixed = nodes(&[("renderD128", None), ("renderD129", Some("i915"))]);
+
+        assert_eq!(pick_render_node(&mixed), Some("renderD129"));
+    }
+
+    #[test]
+    fn the_render_node_summary_names_every_node_and_driver() {
+        let mixed = nodes(&[("renderD128", Some("vgem")), ("renderD129", None)]);
+
+        assert_eq!(
+            describe_render_nodes(&mixed),
+            "vgem on renderD128, unknown driver on renderD129"
+        );
+        assert_eq!(describe_render_nodes(&[]), "no /dev/dri render node");
+    }
+
+    #[test]
+    fn an_unreadable_driver_is_reported_instead_of_looking_like_no_gpu() {
+        let unknown = nodes(&[("renderD128", None)]);
+
+        // Software either way, but the log must name the node.
+        assert_eq!(pick_render_node(&unknown), Some("renderD128"));
+
+        let evidence = super::GlEvidence {
+            render_node: Some("renderD128"),
+            drm_driver: None,
+            ..super::GlEvidence::default()
+        };
+
+        assert!(gl_is_software(&evidence));
+        assert_eq!(
+            super::gl_description(&evidence),
+            "unknown driver on renderD128"
+        );
+    }
+
+    #[test]
+    fn virtual_nodes_are_software_but_still_named() {
+        let virtual_only = nodes(&[
+            ("renderD128", Some("faux_driver")),
+            ("renderD129", Some("vkms")),
+        ]);
+
+        // Software either way, but the log has to name what it rejected
+        // instead of pretending the machine has no render node at all.
+        assert_eq!(pick_render_node(&virtual_only), Some("renderD128"));
+        assert!(gl_is_software(&evidence(
+            Some("renderD128"),
+            Some("faux_driver")
+        )));
+
+        assert_eq!(pick_render_node(&[]), None);
+    }
+
+    #[test]
+    fn the_first_real_gpu_wins_so_the_choice_is_stable() {
+        let two = nodes(&[("renderD128", Some("amdgpu")), ("renderD129", Some("i915"))]);
+
+        assert_eq!(pick_render_node(&two), Some("renderD128"));
     }
 
     #[test]

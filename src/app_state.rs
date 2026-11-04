@@ -262,6 +262,21 @@ pub struct AppState {
     settings_listeners: SettingsListeners,
 }
 
+/// The cookie policy as it will be stored, or `None` when the request changes
+/// nothing. Only a real change may notify listeners: every window's
+/// `settings_refresh` re-applies the policy to its own session, which is the
+/// only way an already-open private window (with its own ephemeral session)
+/// ever sees the change, and an unchanged policy must not rewrite the file or
+/// make every window re-apply it.
+fn cookie_policy_change(current: &str, requested: &str) -> Option<String> {
+    let normalized = match requested {
+        "always" | "never" => requested.to_string(),
+        _ => "no-third-party".to_string(),
+    };
+
+    (normalized != current).then_some(normalized)
+}
+
 impl AppState {
     pub fn load(application: &Application) -> Rc<Self> {
         let mut settings = Self::load_user_settings();
@@ -464,14 +479,10 @@ impl AppState {
     }
 
     pub fn set_cookie_policy(&self, policy: &str) {
-        let normalized = match policy {
-            "always" | "never" => policy.to_string(),
-            _ => "no-third-party".to_string(),
-        };
-
-        if self.settings.borrow().cookie_policy == normalized {
+        let Some(normalized) = cookie_policy_change(&self.settings.borrow().cookie_policy, policy)
+        else {
             return;
-        }
+        };
 
         self.settings.borrow_mut().cookie_policy = normalized.clone();
 
@@ -840,6 +851,29 @@ mod tests {
             1,
             "the callback ran without a borrow panic"
         );
+    }
+
+    #[test]
+    fn a_cookie_policy_change_is_normalized_and_reported_once() {
+        assert_eq!(
+            cookie_policy_change("no-third-party", "always").as_deref(),
+            Some("always")
+        );
+        assert_eq!(
+            cookie_policy_change("no-third-party", "never").as_deref(),
+            Some("never")
+        );
+
+        // Unknown values fall back to the default instead of being stored raw.
+        assert_eq!(
+            cookie_policy_change("always", "sometimes").as_deref(),
+            Some("no-third-party")
+        );
+
+        // Nothing changed: no save, and no notification for the windows to
+        // act on (this is what stops a private window re-applying for nothing).
+        assert_eq!(cookie_policy_change("always", "always"), None);
+        assert_eq!(cookie_policy_change("no-third-party", "sometimes"), None);
     }
 
     #[test]

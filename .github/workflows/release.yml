@@ -1,0 +1,57 @@
+name: Release
+
+# A tag is the only thing that publishes, and the binary attached to the
+# release is built here from the tagged commit: no local credentials and no
+# asset that only exists on a contributor's machine.
+on:
+  push:
+    tags: [ 'v*' ]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GTK4 / WebKitGTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Package the binary
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          asset="axysbrowser-${version}-x86_64-linux"
+
+          install -m 0755 target/release/axysbrowser "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+
+          echo "ASSET=$asset" >> "$GITHUB_ENV"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$ASSET" "$ASSET.sha256" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "axysBrowser ${GITHUB_REF_NAME#v}" \
+              --generate-notes \
+              "$ASSET" "$ASSET.sha256"
+          fi

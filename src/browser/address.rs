@@ -69,6 +69,13 @@ fn looks_like_host(input: &str) -> bool {
         _ => host,
     };
 
+    // A colon left after removing a numeric port is not part of a hostname:
+    // `example.com:abc` became `https://example.com:abc`, an unloadable URL.
+    // Bracketed IPv6 literals never get here (handled before this check).
+    if host.contains(':') {
+        return false;
+    }
+
     let host = host.strip_suffix('.').unwrap_or(host);
 
     let Some(last_label) = host.rsplit('.').next() else {
@@ -485,6 +492,44 @@ mod tests {
         assert_eq!(
             resolve_input("Example.com./Path", &config),
             "https://Example.com./Path"
+        );
+    }
+
+    #[test]
+    fn a_non_numeric_port_is_searched_not_loaded_as_a_broken_url() {
+        let config = load_config();
+
+        for input in ["example.com:abc", "example.com:http"] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search.brave.com/search?q="),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+
+        // A real numeric port still resolves as a URL.
+        assert_eq!(
+            resolve_input("example.com:8443/x", &config),
+            "https://example.com:8443/x"
+        );
+    }
+
+    #[test]
+    fn every_search_engine_keeps_its_query_placeholder() {
+        let config = load_config();
+
+        for (id, template) in &config.engines {
+            assert_eq!(
+                template.matches("%s").count(),
+                1,
+                "engine {id} must contain exactly one %s: {template}"
+            );
+        }
+
+        assert!(
+            config.engines.contains_key(&config.default_engine),
+            "the default engine must exist"
         );
     }
 }
