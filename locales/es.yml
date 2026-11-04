@@ -13,6 +13,10 @@ app:
   enter_url: "Buscar en %{engine} o escribir una URL"
   search_or_enter_url: "Buscar o introducir URL"
   close_tab: "Cerrar pestaña"
+  minimize_window: "Minimizar"
+  maximize_window: "Maximizar"
+  restore_window: "Restaurar"
+  close_window: "Cerrar ventana"
 
 auth:
   title: "Iniciar sesión"

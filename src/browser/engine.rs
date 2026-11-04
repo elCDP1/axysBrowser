@@ -3,7 +3,7 @@ use gtk::glib::object::Cast;
 use gtk::glib::translate::{FromGlibPtrFull as _, IntoGlib, ToGlibPtr as _};
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use webkit6::{
@@ -255,44 +255,178 @@ fn ensure_dirs() -> (String, String) {
 ///
 /// WebKit kills a web process that exceeds this limit. The old fixed 4096 MiB
 /// was right on a 16 GB machine and reckless on an 8 GB one, where a single
-/// runaway tab could reach half of RAM before WebKit reacted. 35 % of RAM,
-/// clamped to [2048, 4096], keeps the Discord/Slack/Figma class of page —
-/// which sits far below 2 GB — working exactly as before while leaving the
-/// rest of the machine to the browser's own tabs and the user's programs.
-/// `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it, so the policy can be measured
-/// on any machine.
-fn web_process_memory_limit(total_ram_mb: u64) -> u32 {
-    if total_ram_mb == 0 {
+/// runaway tab could reach half of RAM before WebKit reacted. 35 % of usable
+/// RAM is a sensible target for the Discord/Slack/Figma class of page, but the
+/// old 2048 MiB floor defeated it on small machines and containers: a 1 GiB
+/// container handed one tab twice its whole quota. The floor is now 512 MiB,
+/// and the ceiling also never exceeds half of usable RAM, so a small quota is
+/// never completely consumed by one web process. `/proc/meminfo` remains the
+/// fallback when RAM is unreadable. `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides
+/// the result, so the policy can be measured on any machine.
+fn web_process_memory_limit(usable_ram_mb: u64) -> u32 {
+    if usable_ram_mb == 0 {
         // No `/proc/meminfo` (not Linux, or hidden): keep the old ceiling.
         return 4096;
     }
 
-    (total_ram_mb * 35 / 100).clamp(2048, 4096) as u32
+    // The 35 % target, with a small absolute floor. The half-RAM cap keeps a
+    // single tab from taking the whole machine/container even when the floor
+    // would otherwise be bigger than the target.
+    let target = usable_ram_mb.saturating_mul(35) / 100;
+    let cap = (usable_ram_mb / 2).max(1);
+    let floor = 512.min(cap);
+
+    target.clamp(floor, cap).min(4096) as u32
+}
+
+/// The cgroup membership paths parsed from `/proc/self/cgroup`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct CgroupMembership {
+    /// Unified hierarchy (cgroup v2), usually `0::/path`.
+    v2_path: Option<String>,
+    /// Memory controller path in a cgroup v1 hierarchy.
+    v1_memory_path: Option<String>,
+}
+
+/// Normalizes a path from `/proc/self/cgroup`.
+///
+/// The kernel supplies an absolute path; reject anything else (and parent
+/// components) instead of joining an attacker-controlled string onto a
+/// system directory.
+fn normalize_cgroup_path(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+
+    if raw.is_empty() || !raw.starts_with('/') || raw.split('/').any(|part| part == "..") {
+        return None;
+    }
+
+    let trimmed = raw.trim_end_matches('/');
+
+    Some(if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    })
+}
+
+fn parse_cgroup_membership(text: &str) -> CgroupMembership {
+    let mut membership = CgroupMembership::default();
+
+    for line in text.lines() {
+        let mut fields = line.splitn(3, ':');
+
+        let (Some(_hierarchy), Some(controllers), Some(raw_path)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+
+        let Some(path) = normalize_cgroup_path(raw_path) else {
+            continue;
+        };
+
+        if controllers.is_empty() {
+            membership.v2_path.get_or_insert(path);
+        } else if controllers.split(',').any(|part| part == "memory") {
+            membership.v1_memory_path.get_or_insert(path);
+        }
+    }
+
+    membership
+}
+
+/// Every candidate limit file from the process's cgroup up to the hierarchy
+/// root. Reading only the root missed nested quotas (systemd user slices,
+/// delegated containers), which is exactly where the real limit lives.
+fn cgroup_file_candidates(base: &Path, cgroup_path: &str, file: &str) -> Vec<PathBuf> {
+    let Some(relative) = cgroup_path.strip_prefix('/') else {
+        return Vec::new();
+    };
+
+    if relative.split('/').any(|part| part == "..") {
+        return Vec::new();
+    }
+
+    let mut directory = base.join(relative);
+    let mut candidates = Vec::new();
+
+    loop {
+        candidates.push(directory.join(file));
+
+        if directory == base {
+            break;
+        }
+
+        let Some(parent) = directory.parent() else {
+            break;
+        };
+
+        if !parent.starts_with(base) {
+            break;
+        }
+
+        directory = parent.to_path_buf();
+    }
+
+    candidates
+}
+
+/// Limit files for the unified and v1 hierarchies, from the process cgroup to
+/// each root. The old code only read the mount root, so a 2 GiB nested user
+/// slice on a 32 GiB host was invisible.
+fn cgroup_limit_candidates(membership: &CgroupMembership) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    match membership.v2_path.as_deref() {
+        Some(path) => candidates.extend(cgroup_file_candidates(
+            Path::new("/sys/fs/cgroup"),
+            path,
+            "memory.max",
+        )),
+        None => candidates.push(PathBuf::from("/sys/fs/cgroup/memory.max")),
+    }
+
+    match membership.v1_memory_path.as_deref() {
+        Some(path) => candidates.extend(cgroup_file_candidates(
+            Path::new("/sys/fs/cgroup/memory"),
+            path,
+            "memory.limit_in_bytes",
+        )),
+        None => candidates.push(PathBuf::from("/sys/fs/cgroup/memory/memory.limit_in_bytes")),
+    }
+
+    candidates
+}
+
+fn smallest_cgroup_limit(candidates: &[PathBuf]) -> Option<u64> {
+    candidates
+        .iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|text| parse_cgroup_limit(&text))
+        .min()
 }
 
 /// A cgroup memory limit in bytes, when the process is capped below the host.
 ///
 /// Containers are the common case: `/proc/meminfo` reports the host's RAM, so
 /// a 2 GiB container on a 32 GiB machine would otherwise size the browser for
-/// the host and let one tab use more than the whole quota.
+/// the host and let one tab use more than the whole quota. Nested cgroups are
+/// supported by walking from `/proc/self/cgroup`'s path up to the root and
+/// taking the smallest finite limit; the root's `memory.max` is only a
+/// fallback when the process membership cannot be read.
 fn cgroup_memory_limit_bytes() -> Option<u64> {
-    for path in [
-        "/sys/fs/cgroup/memory.max",
-        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
-    ] {
-        if let Ok(text) = std::fs::read_to_string(path)
-            && let Some(limit) = parse_cgroup_limit(&text)
-        {
-            return Some(limit);
-        }
-    }
+    let membership = std::fs::read_to_string("/proc/self/cgroup")
+        .map(|text| parse_cgroup_membership(&text))
+        .unwrap_or_default();
 
-    None
+    smallest_cgroup_limit(&cgroup_limit_candidates(&membership))
 }
 
-/// Parses a cgroup limit file. `max` means unlimited; cgroup v1 reports "no
-/// limit" as a huge sentinel (`PAGE_COUNTER_MAX`), and a zero quota is not a
-/// figure the policy can use, so all three are ignored.
+/// Parses a cgroup limit file. `max` means unlimited and cgroup v1 reports
+/// "no limit" as a huge sentinel (`PAGE_COUNTER_MAX`), so both are ignored.
+/// A zero is different: it is a real, empty quota and must not be mistaken
+/// for "unlimited" (that would hand a process sized for the host to a cgroup
+/// that cannot hold it).
 fn parse_cgroup_limit(text: &str) -> Option<u64> {
     let text = text.trim();
 
@@ -304,7 +438,7 @@ fn parse_cgroup_limit(text: &str) -> Option<u64> {
 
     // 2^62 bytes is 4 EiB: above any real machine and above cgroup v1's
     // PAGE_COUNTER_MAX sentinel, which sits just under i64::MAX.
-    if bytes == 0 || bytes >= 1 << 62 {
+    if bytes >= 1 << 62 {
         return None;
     }
 
@@ -312,19 +446,19 @@ fn parse_cgroup_limit(text: &str) -> Option<u64> {
 }
 
 /// RAM the browser may plan for: the smaller of the host's RAM and any cgroup
-/// quota. `0` still means unknown, so the old fallback applies.
+/// quota. A readable quota is still useful when `/proc/meminfo` is hidden in
+/// a container; `0` means neither source is known.
 fn usable_ram_mb(physical_mb: u64, cgroup_bytes: Option<u64>) -> u64 {
-    if physical_mb == 0 {
-        return 0;
-    }
-
     // A quota below 1 MiB is not a real machine; rounding it to 0 would look
     // like "RAM unknown" and hand out the largest ceiling instead.
-    let cgroup_mb = cgroup_bytes
-        .map(|bytes| (bytes / (1024 * 1024)).max(1))
-        .unwrap_or(u64::MAX);
+    let cgroup_mb = cgroup_bytes.map(|bytes| (bytes / (1024 * 1024)).max(1));
 
-    physical_mb.min(cgroup_mb)
+    match (physical_mb, cgroup_mb) {
+        (0, Some(quota)) => quota,
+        (0, None) => 0,
+        (physical, Some(quota)) => physical.min(quota),
+        (physical, None) => physical,
+    }
 }
 
 /// Total RAM in MiB from `/proc/meminfo`; 0 when it cannot be read.
@@ -380,20 +514,34 @@ fn tune_memory_pressure() {
 
     NetworkSession::set_memory_pressure_settings(&mut settings);
 
-    let memory = if effective == 0 {
-        "unknown".to_string()
-    } else if effective < physical {
-        format!("{effective} MiB usable RAM (cgroup limit of {physical} MiB physical)")
-    } else {
-        format!("{effective} MiB RAM")
-    };
+    let memory = memory_description(effective, physical);
 
     eprintln!("Web process memory ceiling: {limit} MiB ({memory})");
 }
 
+/// Startup-log explanation of the memory policy: the cgroup quota is the
+/// effective RAM, while the physical figure is only the host's total.
+fn memory_description(effective_mb: u64, physical_mb: u64) -> String {
+    if effective_mb == 0 {
+        "unknown".to_string()
+    } else if physical_mb == 0 {
+        format!("{effective_mb} MiB usable RAM (cgroup quota; physical RAM unknown)")
+    } else if effective_mb < physical_mb {
+        format!("{effective_mb} MiB usable RAM (cgroup quota; {physical_mb} MiB physical)")
+    } else {
+        format!("{effective_mb} MiB RAM")
+    }
+}
+
 #[cfg(test)]
 mod memory_policy_tests {
-    use super::{parse_cgroup_limit, usable_ram_mb, web_process_memory_limit};
+    use super::{
+        CgroupMembership, cgroup_file_candidates, cgroup_limit_candidates, memory_description,
+        parse_cgroup_limit, parse_cgroup_membership, smallest_cgroup_limit, usable_ram_mb,
+        web_process_memory_limit,
+    };
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn the_ceiling_follows_the_machine_not_a_fixed_four_gigabytes() {
@@ -405,13 +553,140 @@ mod memory_policy_tests {
         assert_eq!(web_process_memory_limit(16384), 4096);
         assert_eq!(web_process_memory_limit(32768), 4096);
 
-        // Small machines never drop below 2 GiB: Discord/Slack/Figma class
-        // pages must keep working exactly as before.
-        assert_eq!(web_process_memory_limit(4096), 2048);
-        assert_eq!(web_process_memory_limit(2048), 2048);
+        // Small machines get the 35 % target with a 512 MiB floor, never more
+        // than half their RAM. The old 2 GiB floor handed a 1 GiB container
+        // twice its whole quota to a single web process.
+        assert_eq!(web_process_memory_limit(4096), 1433);
+        assert_eq!(web_process_memory_limit(2048), 716);
+        assert_eq!(web_process_memory_limit(1024), 512);
+        assert_eq!(web_process_memory_limit(512), 256);
 
         // Unreadable `/proc/meminfo`: the old behaviour, not a tiny ceiling.
         assert_eq!(web_process_memory_limit(0), 4096);
+    }
+
+    #[test]
+    fn a_small_quota_is_never_consumed_by_one_web_process() {
+        for ram in [1, 2, 128, 256, 512, 1024, 2048, 4096] {
+            let limit = web_process_memory_limit(ram) as u64;
+
+            assert!(limit >= 1, "{ram} MiB produced a zero ceiling");
+            assert!(
+                limit <= (ram / 2).max(1),
+                "{ram} MiB gave one tab {limit} MiB"
+            );
+        }
+    }
+
+    #[test]
+    fn cgroup_membership_parses_v2_and_v1_paths() {
+        let membership = parse_cgroup_membership(
+            "0::/user.slice/user-1000.slice/session-1.scope\n5:memory:/docker/abc\n1:name=systemd:/init.scope\n",
+        );
+
+        assert_eq!(
+            membership.v2_path.as_deref(),
+            Some("/user.slice/user-1000.slice/session-1.scope")
+        );
+        assert_eq!(membership.v1_memory_path.as_deref(), Some("/docker/abc"));
+
+        // The root path stays usable, and malformed lines are ignored.
+        let root = parse_cgroup_membership("0::/\nnot-a-line\n0::relative\n");
+
+        assert_eq!(root.v2_path.as_deref(), Some("/"));
+        assert_eq!(root.v1_memory_path, None);
+    }
+
+    #[test]
+    fn nested_cgroup_candidates_walk_every_parent() {
+        let candidates = cgroup_file_candidates(
+            Path::new("/sys/fs/cgroup"),
+            "/user.slice/app.scope",
+            "memory.max",
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/sys/fs/cgroup/user.slice/app.scope/memory.max"),
+                PathBuf::from("/sys/fs/cgroup/user.slice/memory.max"),
+                PathBuf::from("/sys/fs/cgroup/memory.max"),
+            ]
+        );
+
+        // A path outside the hierarchy must not escape the mount.
+        assert!(
+            cgroup_file_candidates(Path::new("/sys/fs/cgroup"), "relative", "memory.max")
+                .is_empty()
+        );
+        assert!(
+            cgroup_file_candidates(Path::new("/sys/fs/cgroup"), "/../../etc", "memory.max")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_smallest_nested_limit_wins() {
+        let root = std::env::temp_dir().join(format!("axys-cgroup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+
+        fs::create_dir_all(root.join("user.slice/app.scope")).unwrap();
+        fs::write(root.join("memory.max"), "max").unwrap();
+        fs::write(
+            root.join("user.slice/memory.max"),
+            (3_u64 * 1024 * 1024 * 1024).to_string(),
+        )
+        .unwrap();
+        fs::write(
+            root.join("user.slice/app.scope/memory.max"),
+            (2_u64 * 1024 * 1024 * 1024).to_string(),
+        )
+        .unwrap();
+
+        let candidates = cgroup_file_candidates(&root, "/user.slice/app.scope", "memory.max");
+
+        assert_eq!(
+            smallest_cgroup_limit(&candidates),
+            Some(2 * 1024 * 1024 * 1024)
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_membership_builds_files_for_both_hierarchies() {
+        let membership = CgroupMembership {
+            v2_path: Some("/user.slice/app.scope".to_string()),
+            v1_memory_path: Some("/docker/abc".to_string()),
+        };
+        let candidates = cgroup_limit_candidates(&membership);
+
+        assert!(candidates.contains(&PathBuf::from(
+            "/sys/fs/cgroup/user.slice/app.scope/memory.max"
+        )));
+        assert!(candidates.contains(&PathBuf::from(
+            "/sys/fs/cgroup/memory/docker/abc/memory.limit_in_bytes"
+        )));
+    }
+
+    #[test]
+    fn the_memory_log_names_the_cgroup_quota_and_physical_ram() {
+        let text = memory_description(3072, 7793);
+
+        assert!(text.contains("3072 MiB usable RAM"));
+        assert!(text.contains("cgroup quota"));
+        assert!(text.contains("7793 MiB physical"));
+        assert!(
+            !text.contains("cgroup limit of 7793"),
+            "physical RAM must never be labelled as the cgroup limit: {text}"
+        );
+
+        assert_eq!(memory_description(7793, 7793), "7793 MiB RAM");
+        assert_eq!(memory_description(0, 7793), "unknown");
+        assert_eq!(
+            memory_description(3072, 0),
+            "3072 MiB usable RAM (cgroup quota; physical RAM unknown)"
+        );
     }
 
     #[test]
@@ -419,7 +694,11 @@ mod memory_policy_tests {
         assert_eq!(parse_cgroup_limit("max\n"), None, "v2 unlimited");
         assert_eq!(parse_cgroup_limit("  max  "), None);
         assert_eq!(parse_cgroup_limit(""), None);
-        assert_eq!(parse_cgroup_limit("0"), None, "a zero quota is unusable");
+        assert_eq!(
+            parse_cgroup_limit("0"),
+            Some(0),
+            "zero is a real empty quota, not unlimited"
+        );
         assert_eq!(
             parse_cgroup_limit("9223372036854771712"),
             None,
@@ -441,22 +720,26 @@ mod memory_policy_tests {
         // A quota above the host's RAM cannot make the browser plan for more.
         assert_eq!(usable_ram_mb(7793, Some(64 * 1024 * 1024 * 1024)), 7793);
 
-        // Unknown physical RAM stays unknown, quota or not.
-        assert_eq!(usable_ram_mb(0, three_gib), 0);
+        // Unknown physical RAM still benefits from a readable quota.
+        assert_eq!(usable_ram_mb(0, three_gib), 3072);
+        assert_eq!(usable_ram_mb(0, None), 0);
 
         // A sub-MiB quota must not collapse to "RAM unknown".
         assert_eq!(usable_ram_mb(7793, Some(512 * 1024)), 1);
+        assert_eq!(usable_ram_mb(7793, Some(0)), 1);
     }
 
     #[test]
     fn the_ceiling_never_shrinks_between_neighbouring_machines() {
         let mut previous = 0;
 
-        for ram in [1024, 2048, 4096, 6000, 7793, 12000, 16384, 65536] {
+        for ram in [
+            1, 128, 512, 1024, 2048, 4096, 6000, 7793, 12000, 16384, 65536,
+        ] {
             let limit = web_process_memory_limit(ram);
 
             assert!(limit >= previous, "{ram} MiB of RAM lowered the ceiling");
-            assert!((2048..=4096).contains(&limit), "{ram} MiB: {limit}");
+            assert!((1..=4096).contains(&limit), "{ram} MiB: {limit}");
 
             previous = limit;
         }
@@ -469,7 +752,7 @@ mod memory_policy_tests {
         let ram = super::total_ram_mb();
 
         assert!(ram > 0, "MemTotal must be readable on Linux");
-        assert!((2048..=4096).contains(&super::web_process_memory_limit(ram)));
+        assert!((1..=4096).contains(&super::web_process_memory_limit(ram)));
     }
 }
 

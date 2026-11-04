@@ -52,6 +52,17 @@ fn page_action_target(is_mapped: bool, uri: Option<&str>) -> bool {
     is_mapped && uri.is_some_and(is_web_uri)
 }
 
+/// Whether Back should delegate to WebKit's history.
+///
+/// A web page opened from a native internal page (New Tab, About, …) has an
+/// internal entry in the tab history that WebKit cannot see. Prefer that
+/// entry for the first Back, even when WebKit reports a redirect as its
+/// back target; otherwise the user would have to press Back twice to leave
+/// the site.
+fn use_webkit_back(on_web_page: bool, return_to_internal: bool, can_go_back: bool) -> bool {
+    on_web_page && !return_to_internal && can_go_back
+}
+
 /// Whether an asynchronous "Save page as…" may still export.
 ///
 /// The file dialog is modal but the browser is not frozen: the user can close
@@ -204,6 +215,11 @@ fn build_browser_window(
         .default_height(720)
         .build();
 
+    // The host's titlebar (WSLg draws one outside the GTK surface) would
+    // otherwise show unstyled system buttons above the browser chrome. The
+    // tab strip carries our own themed controls instead.
+    window.set_decorated(false);
+
     // Private windows have no banner; this class drives a visible (purple)
     // accent so they can never be mistaken for a normal window.
     if private_mode {
@@ -247,6 +263,10 @@ fn build_browser_window(
 
     root.set_hexpand(true);
     root.set_vexpand(true);
+
+    let chrome = Box::new(Orientation::Vertical, 0);
+
+    chrome.add_css_class("browser-chrome");
 
     // Note: private mode is a window mode toggled from the menu — there is
     // deliberately no top banner (it wasted space and clipped its text).
@@ -740,6 +760,8 @@ fn build_browser_window(
 
                     tab.title = router::page_title(&target);
 
+                    tab.return_to_internal = false;
+
                     tab.push_history(target.clone());
 
                     // Invalidate the watchdog of any load left behind: the
@@ -827,11 +849,17 @@ fn build_browser_window(
                     return;
                 };
 
+                let from_internal = router::page_name(&tab.uri).is_some();
+
                 if tab.uri != target {
                     tab.push_history(target.clone());
                 }
 
                 tab.uri = target.clone();
+
+                tab.committed = false;
+
+                tab.return_to_internal = from_internal && is_web_uri(&target);
 
                 tab.content.set_visible_child_name("web");
 
@@ -885,9 +913,9 @@ fn build_browser_window(
             // For real web pages (e.g. Discord, an SPA using pushState),
             // WebKit's own back-stack is authoritative. A full load_uri here
             // would discard all JS state and force a heavy reload that can
-            // OOM the web process — so prefer native navigation and only use
-            // the custom history for internal axys:// pages or when WebKit
-            // has nothing to go back to.
+            // OOM the web process — so prefer native navigation. The one
+            // exception is the first page opened from a native internal
+            // page: WebKit cannot see that page, so use the tab history.
             let on_web_page = tabs
                 .borrow()
                 .iter()
@@ -895,9 +923,22 @@ fn build_browser_window(
                 .map(|tab| router::page_name(&tab.uri).is_none())
                 .unwrap_or(false);
 
+            let return_to_internal = tabs
+                .borrow()
+                .iter()
+                .find(|tab| tab.id == id)
+                .is_some_and(|tab| tab.return_to_internal);
+
             if on_web_page
+                && use_webkit_back(
+                    on_web_page,
+                    return_to_internal,
+                    current_web_view
+                        .borrow()
+                        .as_ref()
+                        .is_some_and(|view| view.can_go_back()),
+                )
                 && let Some(view) = current_web_view.borrow().as_ref()
-                && view.can_go_back()
             {
                 // The custom history only tracks the entries *before* the web
                 // view (internal pages); touching it here desynchronised it
@@ -923,6 +964,8 @@ fn build_browser_window(
 
             if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
                 tab.uri = target.clone();
+
+                tab.return_to_internal = false;
 
                 // Any watchdog still armed for the load we are leaving must
                 // not replace the hidden page after navigating through the
@@ -1031,6 +1074,10 @@ fn build_browser_window(
 
             if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
                 tab.uri = target.clone();
+
+                tab.committed = false;
+
+                tab.return_to_internal = !on_web_page && is_web_uri(&target);
 
                 // Any watchdog still armed for the load we are leaving must
                 // not replace the hidden page after navigating through the
@@ -1530,6 +1577,17 @@ fn build_browser_window(
                 let last_web_view = last_web_view.clone();
 
                 web_view.connect_load_changed(move |view, event| {
+                    if event == LoadEvent::Started
+                        && let Ok(mut tabs) = tabs.try_borrow_mut()
+                        && let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id)
+                        && tab.return_to_internal
+                        && tab.committed
+                    {
+                        // The first page has finished; any later load is an
+                        // in-site navigation and must use WebKit's history.
+                        tab.return_to_internal = false;
+                    }
+
                     if event == LoadEvent::Committed {
                         if let Ok(mut tabs) = tabs.try_borrow_mut()
                             && let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id)
@@ -1976,12 +2034,23 @@ fn build_browser_window(
     *bookmark_bar_slot.borrow_mut() = Some(bookmark_bar);
 
     if let Some(tabbar) = tabbar_slot.borrow().as_ref() {
-        root.append(&tabbar.root);
+        tabbar.root.append(&super::window_controls::build(&window));
+
+        // With the host decoration gone, the tab strip is the titlebar:
+        // WindowHandle keeps drag-to-move and double-click-to-maximize.
+        let handle = gtk::WindowHandle::new();
+
+        handle.set_hexpand(true);
+        handle.set_child(Some(&tabbar.root));
+
+        chrome.append(&handle);
     }
 
     if let Some(toolbar) = toolbar_slot.borrow().as_ref() {
-        root.append(&toolbar.root);
+        chrome.append(&toolbar.root);
     }
+
+    root.append(&chrome);
 
     if let Some(bookmark_bar) = bookmark_bar_slot.borrow().as_ref() {
         root.append(&bookmark_bar.root);
@@ -2684,7 +2753,22 @@ fn build_browser_window(
 
 #[cfg(test)]
 mod tests {
-    use super::page_action_target;
+    use super::{page_action_target, use_webkit_back};
+
+    #[test]
+    fn the_first_back_from_a_web_page_reaches_new_tab() {
+        // New Tab → web page: WebKit may only know about a redirect, while
+        // the tab history has the native New Tab entry. Back must use it.
+        assert!(!use_webkit_back(true, true, true));
+
+        // Once the web page has become an ordinary in-site navigation,
+        // WebKit keeps the SPA/page state and is authoritative again.
+        assert!(use_webkit_back(true, false, true));
+        assert!(!use_webkit_back(true, false, false));
+
+        // An internal page has no WebKit document to go back through.
+        assert!(!use_webkit_back(false, true, true));
+    }
 
     #[test]
     fn a_visible_web_page_is_a_page_action_target() {

@@ -16,6 +16,13 @@ pub enum DownloadStatus {
     Failed(String),
 }
 
+impl DownloadStatus {
+    /// Only a transfer that is still running can be cancelled.
+    fn is_cancellable(&self) -> bool {
+        matches!(self, Self::InProgress)
+    }
+}
+
 #[derive(Clone)]
 pub struct DownloadEntry {
     pub id: u64,
@@ -54,18 +61,21 @@ pub fn format_bytes(bytes: u64) -> String {
     const GB: f64 = MB * KB;
 
     let bytes = bytes as f64;
+    let kb = bytes / KB;
+    let mb = bytes / MB;
+    let gb = bytes / GB;
 
-    // Promote just before rounding would print "1024.0 KB" / "1024.0 MB":
-    // 1048575 bytes is 1023.999 KB, and the unit must not contradict the
-    // number next to it.
+    // Promote when the value *as printed* would reach the next unit's base:
+    // with one decimal, 1023.95 KB/MB already rounds to "1024.0". The old
+    // MB threshold used 0.005 MB, so 1073701824 bytes printed "1024.0 MB".
     if bytes < KB {
         format!("{} B", bytes as u64)
-    } else if bytes < MB - 0.05 * KB {
-        format!("{:.1} KB", bytes / KB)
-    } else if bytes < GB - 0.005 * MB {
-        format!("{:.1} MB", bytes / MB)
+    } else if kb < 1024.0 - 0.05 {
+        format!("{kb:.1} KB")
+    } else if mb < 1024.0 - 0.05 {
+        format!("{mb:.1} MB")
     } else {
-        format!("{:.2} GB", bytes / GB)
+        format!("{gb:.2} GB")
     }
 }
 
@@ -409,15 +419,22 @@ impl DownloadManager {
         let download = {
             let mut entries = self.entries.borrow_mut();
 
-            entries.iter_mut().find(|e| e.id == id).map(|entry| {
+            entries.iter_mut().find(|e| e.id == id).and_then(|entry| {
+                if !entry.status.is_cancellable() {
+                    return None;
+                }
+
                 entry.status = DownloadStatus::Cancelled;
-                entry.download.clone()
+
+                Some(entry.download.clone())
             })
         };
 
-        if let Some(download) = download {
-            download.cancel();
-        }
+        let Some(download) = download else {
+            return;
+        };
+
+        download.cancel();
 
         self.notify();
     }
@@ -588,5 +605,21 @@ mod tests {
         // These used to read "1024.0 KB" and "1024.0 MB".
         assert_eq!(format_bytes(1024 * 1024 - 1), "1.0 MB");
         assert_eq!(format_bytes(1024 * 1024 * 1024 - 1), "1.00 GB");
+    }
+
+    #[test]
+    fn byte_counts_promote_before_rounding_to_a_full_unit() {
+        // 1 GiB - 40_000 bytes is 1023.9618 MB, which one decimal renders
+        // as "1024.0 MB"; it must be shown as 1.00 GB instead.
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 40_000), "1.00 GB");
+        assert_eq!(format_bytes(1024 * 1024 * 1024 - 60_000), "1023.9 MB");
+    }
+
+    #[test]
+    fn only_an_in_progress_download_is_cancellable() {
+        assert!(DownloadStatus::InProgress.is_cancellable());
+        assert!(!DownloadStatus::Completed.is_cancellable());
+        assert!(!DownloadStatus::Cancelled.is_cancellable());
+        assert!(!DownloadStatus::Failed("network".to_string()).is_cancellable());
     }
 }

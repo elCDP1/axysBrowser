@@ -110,6 +110,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_address_bar_is_empty_on_new_tab_and_privacy_landings() {
+        assert_eq!(address_text_for("axys://newtab"), "");
+        assert_eq!(address_text_for("axys://privacy"), "");
+        assert_eq!(
+            address_text_for("https://example.com/"),
+            "https://example.com/"
+        );
+    }
+
+    #[test]
     fn only_loadable_targets_reach_a_tab() {
         assert!(is_tab_target("https://example.com/page"));
         assert!(is_tab_target("http://localhost:8080"));

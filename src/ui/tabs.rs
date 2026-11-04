@@ -41,14 +41,16 @@ impl TabBar {
     ) -> Self {
         let root = Box::new(Orientation::Horizontal, 5);
 
-        root.set_margin_top(5);
-        root.set_margin_bottom(3);
-        root.set_margin_start(8);
+        root.add_css_class("tab-strip");
+
+        root.set_margin_top(7);
+        root.set_margin_bottom(4);
+        root.set_margin_start(10);
         root.set_margin_end(8);
 
         let logo_space = Box::new(Orientation::Horizontal, 0);
 
-        logo_space.set_width_request(80);
+        logo_space.set_width_request(96);
 
         logo_space.set_height_request(40);
 
@@ -70,6 +72,7 @@ impl TabBar {
             .build();
 
         new_button.add_css_class("flat");
+        new_button.add_css_class("new-tab");
 
         new_button.connect_clicked(move |_| {
             on_new();

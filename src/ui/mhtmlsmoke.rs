@@ -24,8 +24,8 @@ use crate::browser::tabs::Tab;
 /// a real load instead of a timer.
 pub const READY_TITLE: &str = "axys-mhtml-ready";
 
-const LOAD_TIMEOUT: Duration = Duration::from_secs(40);
-const SAVE_TIMEOUT: Duration = Duration::from_secs(90);
+const LOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const SAVE_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct SmokeContext {
     pub tabs: Rc<RefCell<Vec<Tab>>>,
@@ -114,4 +114,31 @@ pub fn start_if_requested(ctx: SmokeContext) {
     };
 
     glib::MainContext::default().spawn_local(run(ctx, path));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    const SCRIPT: &str = include_str!("../../.github/mhtml-smoke.sh");
+
+    #[test]
+    fn the_shell_wait_exceeds_the_internal_budget_with_room_to_spare() {
+        // The wait loop is 220 steps of 0.5 s (110 s) and the external
+        // backstop is 140 s; the self-test's worst case is 30 + 0.5 + 60 s.
+        let internal = super::LOAD_TIMEOUT + super::SAVE_TIMEOUT + Duration::from_millis(500);
+
+        assert!(
+            internal < Duration::from_secs(110),
+            "internal budget {internal:?} must finish before the shell gives up"
+        );
+        assert!(
+            SCRIPT.contains("timeout -s TERM 140"),
+            "the external backstop must stay above the shell wait"
+        );
+        assert!(
+            SCRIPT.contains("seq 1 220"),
+            "the shell wait must cover the internal budget"
+        );
+    }
 }

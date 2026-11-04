@@ -17,6 +17,7 @@ pub fn build_mark(px: i32) -> DrawingArea {
     mark.set_draw_func(move |_, cr, width, height| {
         let width = width.max(1) as f64;
         let height = height.max(1) as f64;
+        let stroke_width = (f64::from(px) / 15.0).max(2.0);
 
         for wave in 0..3 {
             let wave = wave as f64;
@@ -39,7 +40,7 @@ pub fn build_mark(px: i32) -> DrawingArea {
             }
 
             cr.set_source_rgba(0.30, 0.55, 0.96, 0.55 + wave * 0.15);
-            cr.set_line_width(2.0);
+            cr.set_line_width(stroke_width);
             cr.set_line_cap(gtk::cairo::LineCap::Round);
 
             let _ = cr.stroke();
@@ -51,7 +52,7 @@ pub fn build_mark(px: i32) -> DrawingArea {
 
 /// Compact logo widget (mark + wordmark) for the tab bar.
 pub fn build_logo_widget() -> gtk::Box {
-    let row = gtk::Box::new(Orientation::Horizontal, 7);
+    let row = gtk::Box::new(Orientation::Horizontal, 8);
 
     row.append(&build_mark(30));
 
@@ -71,6 +72,7 @@ pub fn build_logo_button(on_about: Rc<dyn Fn()>) -> Button {
     button.set_child(Some(&build_logo_widget()));
 
     button.add_css_class("flat");
+    button.add_css_class("logo-button");
 
     button.set_tooltip_text(Some(&rust_i18n::t!("about.tooltip")));
 

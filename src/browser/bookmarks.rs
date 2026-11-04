@@ -184,6 +184,8 @@ impl BookmarkManager {
 
         let title = sanitize_title(title.into(), &new_url);
 
+        let url_changed = !Self::same_url(old_url, &new_url);
+
         // Locate the bookmark first: a failed edit must not write a favicon.
         let index = {
             let bookmarks = self.bookmarks.borrow();
@@ -226,6 +228,11 @@ impl BookmarkManager {
 
             if new_favicon.is_some() {
                 bookmark.favicon_path = new_favicon;
+            } else if url_changed {
+                // The old icon belongs to the old URL; keeping it would show
+                // the wrong site's icon forever when no new one arrived (or
+                // its save failed). Title-only edits keep it.
+                bookmark.favicon_path = None;
             }
 
             old_favicon
@@ -505,6 +512,68 @@ mod tests {
         assert!(manager.remove("https://example.com"));
         assert!(manager.revision() > added, "removing must bump it");
 
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn updating_the_url_without_a_favicon_drops_the_old_one() {
+        let manager = test_manager("favicon-drop");
+        let old_icon =
+            std::env::temp_dir().join(format!("axys-favicon-drop-{}.png", std::process::id()));
+
+        fs::write(&old_icon, b"png").unwrap();
+
+        manager.bookmarks.borrow_mut().push(super::Bookmark {
+            title: "Old".to_string(),
+            url: "https://old.example/page".to_string(),
+            favicon_path: Some(old_icon.to_string_lossy().into_owned()),
+        });
+
+        assert!(manager.update_with_favicon(
+            "https://old.example/page",
+            "New",
+            "https://new.example/page",
+            None
+        ));
+
+        let updated = manager.get("https://new.example/page").unwrap();
+
+        assert_eq!(updated.favicon_path, None);
+        assert!(!old_icon.exists(), "the orphaned favicon was not removed");
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn updating_only_the_title_keeps_the_favicon() {
+        let manager = test_manager("favicon-keep");
+        let icon =
+            std::env::temp_dir().join(format!("axys-favicon-keep-{}.png", std::process::id()));
+
+        fs::write(&icon, b"png").unwrap();
+
+        manager.bookmarks.borrow_mut().push(super::Bookmark {
+            title: "Old title".to_string(),
+            url: "https://same.example/page".to_string(),
+            favicon_path: Some(icon.to_string_lossy().into_owned()),
+        });
+
+        assert!(manager.update_with_favicon(
+            "https://same.example/page",
+            "New title",
+            "https://same.example/page/",
+            None
+        ));
+
+        let updated = manager.get("https://same.example/page").unwrap();
+
+        assert_eq!(
+            updated.favicon_path,
+            Some(icon.to_string_lossy().into_owned())
+        );
+        assert!(icon.exists());
+
+        let _ = fs::remove_file(&icon);
         let _ = fs::remove_file(&manager.path);
     }
 

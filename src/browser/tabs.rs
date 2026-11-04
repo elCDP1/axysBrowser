@@ -19,6 +19,10 @@ pub struct Tab {
     pub nav_serial: u64,
     /// True once the current load has committed (the page is being shown).
     pub committed: bool,
+    /// True when the current web page was opened from an internal page.
+    /// WebKit's own history can contain redirects but not the native New Tab
+    /// page, so the first Back must use this tab's history instead.
+    pub return_to_internal: bool,
 }
 
 impl Tab {
@@ -33,6 +37,7 @@ impl Tab {
             history_index: 0,
             nav_serial: 0,
             committed: false,
+            return_to_internal: false,
         }
     }
 

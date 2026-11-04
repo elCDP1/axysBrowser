@@ -1,7 +1,7 @@
 pub fn stylesheet(dark: bool) -> String {
     let palette = if dark { DARK_PALETTE } else { LIGHT_PALETTE };
 
-    let dim_alpha = if dark { "0.62" } else { "0.92" };
+    let dim_alpha = if dark { "0.62" } else { "0.72" };
 
     let border_alpha = if dark { "0.10" } else { "0.20" };
 
@@ -14,6 +14,77 @@ pub fn stylesheet(dark: bool) -> String {
         window {{
             background-color: @axys_bg;
             color: @axys_fg;
+        }}
+
+        /* The tab strip and toolbar read as one modern browser chrome,
+         * slightly lifted from the page content. */
+        .browser-chrome {{
+            background-color: @axys_chrome;
+            border-bottom: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+        }}
+
+        headerbar,
+        .titlebar {{
+            background-color: @axys_chrome;
+            background-image: none;
+            color: @axys_fg;
+            border-bottom: none;
+            box-shadow: none;
+        }}
+
+        headerbar .title {{
+            font-weight: 600;
+        }}
+
+        /* Native CSD buttons: keep the WM behavior and the same X / _ / □
+         * glyphs, but give them the flatter modern chrome treatment. */
+        .window-controls {{
+            margin-left: 6px;
+            padding-left: 6px;
+            border-left: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+        }}
+
+        windowcontrols > button,
+        headerbar button.titlebutton,
+        .window-controls > button {{
+            min-width: 28px;
+            min-height: 28px;
+            margin: 2px 1px;
+            padding: 0;
+            border-radius: 9px;
+            border: 1px solid transparent;
+            background: transparent;
+            background-image: none;
+            box-shadow: none;
+            color: alpha(@axys_fg, 0.82);
+        }}
+
+        windowcontrols > button:hover,
+        headerbar button.titlebutton:hover,
+        .window-controls > button:hover {{
+            background-color: alpha(@axys_fg, 0.10);
+            color: @axys_fg;
+        }}
+
+        windowcontrols > button:active,
+        headerbar button.titlebutton:active,
+        .window-controls > button:active {{
+            background-color: alpha(@axys_fg, 0.16);
+            color: @axys_fg;
+        }}
+
+        windowcontrols > button.close:hover,
+        headerbar button.titlebutton.close:hover,
+        .window-controls > button.window-close:hover {{
+            background-color: #d94a4a;
+            color: #ffffff;
+        }}
+
+        windowcontrols > button.close:active,
+        headerbar button.titlebutton.close:active,
+        .window-controls > button.window-close:active {{
+            background-color: #bf3b3b;
+            color: #ffffff;
         }}
 
         label {{
@@ -227,19 +298,20 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         .address-top {{
-            min-height: 28px;
-            padding: 5px 12px;
-            border-radius: 16px;
+            min-height: 34px;
+            padding: 7px 15px;
+            border-radius: 18px;
             border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
             background: alpha(@axys_fg, 0.045);
             box-shadow: none;
-            font-size: 0.90em;
+            font-size: 0.92em;
             color: @axys_fg;
         }}
 
         .address-top:focus {{
-            border-color: alpha(@axys_accent, 0.45);
-            background: alpha(@axys_fg, 0.07);
+            border-color: alpha(@axys_accent, 0.65);
+            background: @axys_surface;
+            box-shadow: 0 0 0 3px alpha(@axys_accent, 0.14);
         }}
 
         .private-window .address-top,
@@ -252,86 +324,102 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         .search-main {{
-            min-height: 44px;
-            padding: 10px 16px;
-            border-radius: 18px;
+            min-height: 50px;
+            padding: 12px 20px;
+            border-radius: 25px;
             border: 1px solid alpha(@axys_fg, {border_alpha});
-            background: alpha(@axys_fg, 0.055);
-            box-shadow: none;
-            font-size: 0.92em;
+            background: @axys_surface;
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+            font-size: 0.95em;
             color: @axys_fg;
         }}
 
         .search-main:focus {{
-            border-color: alpha(@axys_accent, 0.55);
-            background: alpha(@axys_fg, 0.08);
+            border-color: alpha(@axys_accent, 0.65);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14), 0 0 0 3px alpha(@axys_accent, 0.14);
+        }}
+
+        .tab-strip {{
+            padding: 1px 0;
         }}
 
         .tab {{
-            min-height: 30px;
-            padding: 2px 4px 2px 9px;
-            border-radius: 9px;
+            min-height: 34px;
+            padding: 2px 5px 2px 10px;
+            border-radius: 10px;
             background: transparent;
+            border: 1px solid transparent;
         }}
 
         .tab:hover {{
-            background: alpha(@axys_fg, 0.06);
+            background: alpha(@axys_fg, 0.055);
         }}
 
         .tab.active {{
-            background: alpha(@axys_fg, 0.10);
+            background: @axys_surface;
+            border-color: alpha(@axys_fg, 0.10);
+            box-shadow: 0 2px 7px rgba(0, 0, 0, 0.10);
         }}
 
         .tab-select {{
-            padding: 2px 5px;
+            padding: 2px 6px;
             border-radius: 7px;
             background: transparent;
+            border: 1px solid transparent;
             box-shadow: none;
             color: @axys_fg;
         }}
 
+        .tab.active .tab-select {{
+            font-weight: 600;
+        }}
+
         .tab-close {{
-            opacity: 0;
+            opacity: 0.45;
             min-width: 24px;
             min-height: 24px;
             padding: 0;
             margin: 0;
             border: none;
-            border-radius: 6px;
+            border-radius: 50%;
         }}
 
         .tab:hover .tab-close,
         .tab.active .tab-close {{
-            opacity: 1;
+            opacity: 0.9;
         }}
 
         .newtab-logo {{
-            font-size: 3.8em;
-            font-weight: 600;
-            padding: 4px 18px;
-            border-radius: 12px;
+            padding: 10px 18px;
+            border-radius: 18px;
             background: transparent;
             box-shadow: none;
             color: @axys_fg;
         }}
 
         .newtab-logo:hover {{
-            background: alpha(@axys_fg, 0.06);
+            background: alpha(@axys_fg, 0.055);
         }}
 
         .newtab-logo:active {{
-            background: alpha(@axys_fg, 0.10);
+            background: alpha(@axys_fg, 0.09);
+        }}
+
+        .newtab-word {{
+            font-size: 3.75em;
+            font-weight: 700;
+            color: @axys_fg;
         }}
 
         .logo-word {{
-            font-weight: 700;
-            font-size: 1.1em;
+            font-weight: 800;
+            font-size: 1.16em;
         }}
 
         button.flat {{
-            min-width: 30px;
-            min-height: 30px;
-            padding: 4px;
+            min-width: 32px;
+            min-height: 32px;
+            padding: 5px;
             border-radius: 9px;
             box-shadow: none;
         }}
@@ -342,6 +430,67 @@ pub fn stylesheet(dark: bool) -> String {
 
         button.flat:active {{
             background: alpha(@axys_fg, 0.12);
+        }}
+
+        button.logo-button {{
+            min-width: 0;
+            min-height: 0;
+            padding: 4px 8px;
+            border-radius: 10px;
+        }}
+
+        button.logo-button:hover {{
+            background: alpha(@axys_accent, 0.10);
+        }}
+
+        .nav-cluster {{
+            padding: 2px;
+            border-radius: 12px;
+            background: alpha(@axys_fg, 0.035);
+            border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+        }}
+
+        .nav-cluster button {{
+            min-width: 32px;
+            min-height: 32px;
+            padding: 4px;
+            border-radius: 9px;
+        }}
+
+        .toolbar {{
+            padding: 0 2px;
+        }}
+
+        .toolbar-actions {{
+            padding-left: 4px;
+        }}
+
+        button.new-tab {{
+            min-width: 34px;
+            min-height: 34px;
+            padding: 5px;
+            border-radius: 50%;
+            background: alpha(@axys_accent, 0.10);
+            border-color: transparent;
+        }}
+
+        button.new-tab:hover {{
+            background: alpha(@axys_accent, 0.18);
+        }}
+
+        button.tab-close {{
+            min-width: 24px;
+            min-height: 24px;
+            padding: 0;
+            border-radius: 50%;
+        }}
+
+        button.tab-close:hover {{
+            background: alpha(@axys_fg, 0.12);
+        }}
+
+        button.tab-select:hover {{
+            background: transparent;
         }}
 
         .findbar {{
@@ -434,26 +583,28 @@ pub fn stylesheet(dark: bool) -> String {
         }}
 
         .bookmark-bar {{
-            padding: 4px 8px;
+            padding: 5px 12px;
             margin: 0;
-            min-height: 30px;
+            min-height: 32px;
             border-spacing: 4px;
+            border-top: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+            background-color: @axys_bg;
         }}
 
         .bookmark-button {{
             min-height: 26px;
             min-width: 0;
-            padding: 4px 10px;
-            margin: 2px 3px;
-            border-radius: 9px;
-            background-color: alpha(@axys_fg, 0.045);
+            padding: 4px 9px;
+            margin: 2px 2px;
+            border-radius: 8px;
+            background-color: transparent;
             color: @axys_fg;
-            border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+            border: 1px solid transparent;
         }}
 
         .bookmark-button:hover {{
-            background-color: alpha(@axys_fg, 0.08);
-            border-radius: 9px;
+            background-color: alpha(@axys_fg, 0.075);
+            border-radius: 8px;
         }}
 
         .bookmark-button:active {{
@@ -492,14 +643,18 @@ pub fn stylesheet(dark: bool) -> String {
 }
 
 const DARK_PALETTE: &str = r#"
-    @define-color axys_bg #242424;
-    @define-color axys_fg #e9ebec;
-    @define-color axys_accent #4c8bf5;
+    @define-color axys_bg #1a1c20;
+    @define-color axys_chrome #1e232c;
+    @define-color axys_surface #282b31;
+    @define-color axys_fg #eef2f7;
+    @define-color axys_accent #5b9dff;
 "#;
 
 const LIGHT_PALETTE: &str = r#"
-    @define-color axys_bg #f5f7fa;
-    @define-color axys_fg #161a20;
+    @define-color axys_bg #f4f7fb;
+    @define-color axys_chrome #ffffff;
+    @define-color axys_surface #ffffff;
+    @define-color axys_fg #16202c;
     @define-color axys_accent #2f6fe4;
 "#;
 
@@ -528,7 +683,13 @@ mod tests {
     #[test]
     fn both_palettes_define_every_theme_colour() {
         for palette in [DARK_PALETTE, LIGHT_PALETTE] {
-            for name in ["axys_bg", "axys_fg", "axys_accent"] {
+            for name in [
+                "axys_bg",
+                "axys_chrome",
+                "axys_surface",
+                "axys_fg",
+                "axys_accent",
+            ] {
                 let _ = color(palette, name);
             }
         }
@@ -551,6 +712,17 @@ mod tests {
     }
 
     #[test]
+    fn the_chrome_and_surfaces_flip_with_the_theme() {
+        let sum = |palette, name| {
+            let (r, g, b) = color(palette, name);
+            u32::from(r) + u32::from(g) + u32::from(b)
+        };
+
+        assert!(sum(LIGHT_PALETTE, "axys_chrome") > sum(DARK_PALETTE, "axys_chrome"));
+        assert!(sum(LIGHT_PALETTE, "axys_surface") > sum(DARK_PALETTE, "axys_surface"));
+    }
+
+    #[test]
     fn the_dark_palette_stays_dark() {
         let (r, g, b) = color(DARK_PALETTE, "axys_bg");
 
@@ -558,5 +730,18 @@ mod tests {
             r < 0x60 && g < 0x60 && b < 0x60,
             "dark background is too light: #{r:02x}{g:02x}{b:02x}"
         );
+    }
+
+    #[test]
+    fn the_dark_backgrounds_keep_only_a_slight_cool_tint() {
+        // The window background and raised surfaces used to be clearly blue
+        // (#171a21 / #262e39). Keep a cool hint, but not enough to make the
+        // whole dark theme read as blue. The chrome stays as it is.
+        for name in ["axys_bg", "axys_surface"] {
+            let (r, g, b) = color(DARK_PALETTE, name);
+            let spread = u8::max(u8::max(r, g), b) - u8::min(u8::min(r, g), b);
+
+            assert!(spread <= 10, "{name} is too blue: #{r:02x}{g:02x}{b:02x}");
+        }
     }
 }

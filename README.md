@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.2.1`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.2.2`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -93,9 +93,14 @@ browser (URLs arrive through `HANDLES_OPEN`, including `xdg-open` and
 desktop-file-install --dir="$HOME/.local/share/applications" assets/axysbrowser.desktop
 update-desktop-database "$HOME/.local/share/applications"
 
-# install the icon so launchers and docks show it
+# install the icon so launchers and docks show it (PNG for docks that
+# cannot use the scalable SVG, e.g. WSLg's X11 taskbar integration)
 install -Dm644 assets/icons/hicolor/scalable/apps/axysbrowser.svg \
   "$HOME/.local/share/icons/hicolor/scalable/apps/axysbrowser.svg"
+for size in 48 128 256; do
+  install -Dm644 "assets/icons/hicolor/${size}x${size}/apps/axysbrowser.png" \
+    "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/axysbrowser.png"
+done
 gtk-update-icon-cache -f -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || true
 
 xdg-settings set default-web-browser axysbrowser.desktop
@@ -285,16 +290,18 @@ with GL on WSLg and 58 MiB with cairo (under Xvfb the same comparison is
 always wins. The chosen renderer and the evidence behind it are printed at
 startup.
 
-Web processes get a memory ceiling sized to the machine: 35 % of RAM,
-clamped to 2–4 GiB (4 GiB when RAM cannot be read), instead of a fixed
-4 GiB that let a single tab reach half of an 8 GB machine. "RAM" is the
-smaller of `/proc/meminfo` and a cgroup v2/v1 memory quota, so a container
-plans for its own quota instead of the host's. The figure is **per web
-process**. It is printed at startup, and `AXYS_WEB_MEMORY_LIMIT` (MiB)
-overrides it. A tab is still only killed when it really exceeds the ceiling,
-which no realistic page does: Discord, Slack and Figma sit well under 2 GB.
-WebKit's own 30 s memory poll is kept explicitly; 1.1.8 had lowered it to
-5 s, six times more often than the default.
+Web processes get a memory ceiling sized to the machine: 35 % of usable RAM,
+clamped to 512 MiB–4 GiB (4 GiB when RAM cannot be read), and never above
+half of usable RAM. The old 2 GiB floor let a single tab take a 1 GiB
+container's whole quota. "RAM" is the smaller of `/proc/meminfo` and the
+nearest cgroup v2/v1 memory quota, walking from the process's own nested
+cgroup up to the hierarchy root, so systemd slices and containers are not
+missed. The figure is **per web process**. It is printed at startup, and
+`AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it. A tab is still only killed when
+it really exceeds the ceiling, which no realistic page does: Discord, Slack
+and Figma sit well under 2 GB on machines that can hold them. WebKit's own
+30 s memory poll is kept explicitly; 1.1.8 had lowered it to 5 s, six times
+more often than the default.
 
 ## Contributing
 

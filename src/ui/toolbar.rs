@@ -237,12 +237,16 @@ impl Toolbar {
         } = options;
         let toolbar = CenterBox::new();
 
-        toolbar.set_margin_top(3);
-        toolbar.set_margin_bottom(7);
-        toolbar.set_margin_start(8);
-        toolbar.set_margin_end(8);
+        toolbar.add_css_class("toolbar");
+
+        toolbar.set_margin_top(2);
+        toolbar.set_margin_bottom(9);
+        toolbar.set_margin_start(10);
+        toolbar.set_margin_end(10);
 
         let navigation = Box::new(Orientation::Horizontal, 2);
+
+        navigation.add_css_class("nav-cluster");
 
         // In-window private indicator (there is no banner anymore): a small
         // purple dot with the mode as tooltip, always visible in private.
@@ -347,6 +351,8 @@ impl Toolbar {
         address.add_controller(focus_controller);
 
         let right = Box::new(Orientation::Horizontal, 2);
+
+        right.add_css_class("toolbar-actions");
 
         let bookmark = Button::builder()
             .icon_name("non-starred-symbolic")

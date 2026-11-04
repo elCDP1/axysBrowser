@@ -105,11 +105,14 @@ fi
 export AXYS_MHTML_SMOKE=1
 export AXYS_MHTML_SMOKE_OUT="$WORK/page.mhtml"
 
-setsid timeout -s TERM 180 ./target/debug/axysbrowser "http://127.0.0.1:$PORT/page.html" > "$LOG" 2>&1 &
+# Internal worst case: 30 s load + 0.5 s settle + 60 s save = 90.5 s.
+# Wait 110 s for the self-test's marker and keep a 140 s external backstop,
+# so the app always reports DONE before either limit fires.
+setsid timeout -s TERM 140 ./target/debug/axysbrowser "http://127.0.0.1:$PORT/page.html" > "$LOG" 2>&1 &
 PID=$!
 
 # The self-test quits the app after saving; wait for its marker, not a timer.
-for _ in $(seq 1 120); do
+for _ in $(seq 1 220); do
   grep -aq "MHTML_SMOKE_DONE" "$LOG" && break
   kill -0 "$PID" 2>/dev/null || break
   sleep 0.5

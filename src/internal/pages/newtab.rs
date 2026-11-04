@@ -35,9 +35,18 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
     /*
      * Keep Axys clearly above the search field.
      */
-    content.set_margin_top(62);
+    content.set_margin_top(96);
 
-    let logo = Button::with_label("axys");
+    let logo = Button::new();
+
+    let word = Label::new(Some("axys"));
+
+    word.add_css_class("newtab-word");
+
+    word.set_halign(gtk::Align::Center);
+    word.set_valign(gtk::Align::Center);
+
+    logo.set_child(Some(&word));
 
     logo.add_css_class("newtab-logo");
 
@@ -47,10 +56,8 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
 
     logo.set_tooltip_text(Some(&rust_i18n::t!("about.tooltip")));
 
-    /*
-     * Bigger gap between logo and search bar.
-     */
-    logo.set_margin_bottom(120);
+    // Leave a clear gap so the search bar sits lower on the page.
+    logo.set_margin_bottom(150);
 
     {
         let on_about = on_about.clone();
@@ -73,11 +80,13 @@ pub fn build_newtab(on_search: Rc<dyn Fn(String)>, on_about: Rc<dyn Fn()>) -> Bo
 
     search.add_css_class("search-main");
 
-    /*
-     * Push it down a little more.
-     */
-    search.set_margin_top(12);
-    search.set_margin_bottom(10);
+    search.set_icon_from_icon_name(
+        gtk::EntryIconPosition::Primary,
+        Some("system-search-symbolic"),
+    );
+
+    search.set_margin_top(0);
+    search.set_margin_bottom(0);
 
     gtk::prelude::EntryExt::set_alignment(&search, 0.5);
 

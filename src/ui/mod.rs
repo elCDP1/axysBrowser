@@ -14,3 +14,4 @@ pub mod spinner;
 pub mod tabs;
 pub mod toolbar;
 pub mod window;
+pub mod window_controls;

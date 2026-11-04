@@ -30,6 +30,9 @@ fn running_under_wsl() -> bool {
 fn sandbox_available() -> bool {
     use std::process::{Command, Stdio};
 
+    // Match the mounts WebKit's own bwrap setup needs, not just the
+    // namespaces: /dev, /proc and a private /tmp. A host where the namespaces
+    // open but these mounts fail cannot run the sandbox either.
     Command::new("bwrap")
         .args([
             "--unshare-user",
@@ -38,6 +41,12 @@ fn sandbox_available() -> bool {
             "--ro-bind",
             "/",
             "/",
+            "--dev",
+            "/dev",
+            "--proc",
+            "/proc",
+            "--tmpfs",
+            "/tmp",
             "true",
         ])
         .stdin(Stdio::null())
@@ -91,6 +100,19 @@ fn env_flag_is_set(value: Option<&str>) -> bool {
             value.trim().to_ascii_lowercase().as_str(),
             "" | "0" | "false" | "no" | "off"
         ),
+    }
+}
+
+/// The same rule for `OsStr` environment values. A value that is not valid
+/// UTF-8 cannot be proven falsey, so it counts as set (the safe direction for
+/// a sandbox switch).
+fn env_flag_is_set_os(value: Option<&std::ffi::OsStr>) -> bool {
+    match value {
+        None => false,
+        Some(value) => value
+            .to_str()
+            .map(|value| env_flag_is_set(Some(value)))
+            .unwrap_or(true),
     }
 }
 
@@ -249,6 +271,16 @@ fn drm_driver(node: &str) -> Option<String> {
         .map(|name| name.to_string_lossy().into_owned())
 }
 
+/// First non-empty Mesa driver override. An empty `GALLIUM_DRIVER` must not
+/// hide `MESA_LOADER_DRIVER_OVERRIDE`, which Mesa itself would still honour.
+fn mesa_driver_override<'a>(gallium: Option<&'a str>, loader: Option<&'a str>) -> Option<&'a str> {
+    [gallium, loader]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|value| !value.is_empty())
+}
+
 /// Human-readable evidence, so startup logs (and the rest-memory smoke) can
 /// tell "no GPU" from "GPU" without repeating the detection rules.
 fn gl_description(evidence: &GlEvidence<'_>) -> String {
@@ -292,15 +324,15 @@ fn configure_interface_renderer() {
             .and_then(|(_, driver)| driver.clone())
     });
     let libgl = std::env::var("LIBGL_ALWAYS_SOFTWARE").ok();
-    let mesa = std::env::var("GALLIUM_DRIVER")
-        .ok()
-        .or_else(|| std::env::var("MESA_LOADER_DRIVER_OVERRIDE").ok());
+    let gallium = std::env::var("GALLIUM_DRIVER").ok();
+    let loader = std::env::var("MESA_LOADER_DRIVER_OVERRIDE").ok();
+    let mesa = mesa_driver_override(gallium.as_deref(), loader.as_deref());
 
     let evidence = GlEvidence {
         render_node: node,
         drm_driver: driver.as_deref(),
         libgl_always_software: libgl.as_deref(),
-        mesa_driver: mesa.as_deref(),
+        mesa_driver: mesa,
     };
 
     // With several devices, the log has to say which one was chosen and which
@@ -334,7 +366,7 @@ fn configure_interface_renderer() {
 mod renderer_tests {
     use super::{
         GlEvidence, describe_render_nodes, env_flag_is_set, gl_is_software, is_render_node,
-        pick_render_node, should_use_software_renderer,
+        mesa_driver_override, pick_render_node, should_use_software_renderer,
     };
 
     fn nodes(entries: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
@@ -389,6 +421,36 @@ mod renderer_tests {
 
         // A node whose driver cannot be read is not evidence of hardware.
         assert!(gl_is_software(&evidence(Some("renderD128"), None)));
+    }
+
+    #[test]
+    fn an_empty_gallium_driver_does_not_hide_the_loader_override() {
+        assert_eq!(
+            mesa_driver_override(Some(""), Some("llvmpipe")),
+            Some("llvmpipe")
+        );
+        assert_eq!(
+            mesa_driver_override(Some("   "), Some(" llvmpipe ")),
+            Some("llvmpipe")
+        );
+        // A real first value still wins, as before.
+        assert_eq!(
+            mesa_driver_override(Some("radeonsi"), Some("llvmpipe")),
+            Some("radeonsi")
+        );
+        assert_eq!(mesa_driver_override(None, None), None);
+
+        let evidence = GlEvidence {
+            render_node: Some("renderD128"),
+            drm_driver: Some("amdgpu"),
+            libgl_always_software: None,
+            mesa_driver: mesa_driver_override(Some(""), Some("llvmpipe")),
+        };
+
+        assert!(
+            gl_is_software(&evidence),
+            "the loader override must still be used when GALLIUM_DRIVER is empty"
+        );
     }
 
     #[test]
@@ -581,25 +643,55 @@ pub fn run() -> gtk::glib::ExitCode {
     // is on by default on Ubuntu 24.04 (AppArmor) and in many containers,
     // where WebKit aborts the UI process on the first web load. Fall back to
     // no sandbox with a warning instead of crashing; the README explains how
-    // to enable it on Ubuntu. `AXYS_FORCE_SANDBOX=1` keeps it on for testing.
-    let force_sandbox = std::env::var_os("AXYS_FORCE_SANDBOX").is_some();
+    // to enable it on Ubuntu. `AXYS_FORCE_SANDBOX=1` keeps it on for testing;
+    // a falsey value no longer forces it, and a falsey
+    // `WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS` is removed because WebKit
+    // treats mere presence as "disable".
+    let disable_var = std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
+    let force_sandbox = env_flag_is_set_os(std::env::var_os("AXYS_FORCE_SANDBOX").as_deref());
+    let disable_requested = env_flag_is_set_os(disable_var.as_deref());
 
-    if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_none() && !force_sandbox {
-        if under_wsl {
+    if disable_var.is_some() && !disable_requested {
+        unsafe {
+            std::env::remove_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
+        }
+
+        eprintln!(
+            "Ignoring falsey WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS; WebKit would treat \
+             mere presence as disabled"
+        );
+    }
+
+    let disable_var = std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
+
+    if disable_var.is_some() && !force_sandbox {
+        eprintln!("WebKit sandbox disabled by WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
+    } else {
+        if disable_var.is_some() && force_sandbox {
             unsafe {
-                std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+                std::env::remove_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
             }
 
-            eprintln!("WSL detected: WebKit sandbox disabled for compatibility");
-        } else if !sandbox_available() {
-            unsafe {
-                std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
-            }
+            eprintln!("AXYS_FORCE_SANDBOX overrides WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
+        }
 
-            eprintln!(
-                "WebKit sandbox unavailable (bubblewrap cannot create user/network \
-                 namespaces); running without it. See the Ubuntu 24.04 notes in README."
-            );
+        if !force_sandbox {
+            if under_wsl {
+                unsafe {
+                    std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+                }
+
+                eprintln!("WSL detected: WebKit sandbox disabled for compatibility");
+            } else if !sandbox_available() {
+                unsafe {
+                    std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
+                }
+
+                eprintln!(
+                    "WebKit sandbox unavailable (bubblewrap cannot create user/network \
+                     namespaces); running without it. See the Ubuntu 24.04 notes in README."
+                );
+            }
         }
     }
 
@@ -708,7 +800,8 @@ pub fn run() -> gtk::glib::ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::should_disable_dmabuf;
+    use super::{env_flag_is_set_os, should_disable_dmabuf};
+    use std::ffi::OsStr;
 
     #[test]
     fn dmabuf_follows_the_platform_by_default() {
@@ -731,5 +824,24 @@ mod tests {
     fn dmabuf_unknown_override_falls_back_to_the_platform() {
         assert!(should_disable_dmabuf(true, Some("maybe")));
         assert!(!should_disable_dmabuf(false, Some("maybe")));
+    }
+
+    #[test]
+    fn sandbox_switches_ignore_falsey_values() {
+        assert!(!env_flag_is_set_os(None));
+
+        for value in ["", "0", "false", "FALSE", "no", "off", " off "] {
+            assert!(
+                !env_flag_is_set_os(Some(OsStr::new(value))),
+                "{value:?} must be falsey"
+            );
+        }
+
+        for value in ["1", "true", "yes", "on", "junk"] {
+            assert!(
+                env_flag_is_set_os(Some(OsStr::new(value))),
+                "{value:?} must count as set"
+            );
+        }
     }
 }
