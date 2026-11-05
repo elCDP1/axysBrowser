@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Resolves an XDG directory from raw values, so the fallback chain can be
 /// tested without mutating the process environment.
@@ -137,6 +138,37 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+/// Moves a profile file that exists but cannot be parsed aside to a unique
+/// `<name>.corrupt-<timestamp>-<pid>` sidecar before the loader falls back to
+/// defaults. The next save would overwrite the broken file, so keeping a
+/// copy is the only way to recover a hand edit or a file written by a newer
+/// version. Rename is atomic, and the backup is tightened to owner-only mode
+/// because it can contain history, bookmarks or credentials.
+pub fn quarantine_corrupt(path: &Path) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let backup = path.with_file_name(format!("{name}.corrupt-{stamp}-{}", std::process::id()));
+
+    // Tighten the original before the rename: the backup may outlive the
+    // process, and profile files are private.
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+
+    match fs::rename(path, &backup) {
+        Ok(()) => eprintln!(
+            "{} could not be read; kept a copy as {}",
+            path.display(),
+            backup.display()
+        ),
+        Err(error) => eprintln!("Could not back up unreadable {}: {error}", path.display()),
+    }
 }
 
 #[cfg(test)]
@@ -275,5 +307,42 @@ mod tests {
         let dir = xdg_dir_from(None, None, &[".config"], "axysbrowser-fallback");
 
         assert_eq!(dir, PathBuf::from("axysbrowser-fallback"));
+    }
+
+    #[test]
+    fn a_corrupt_file_is_kept_as_a_private_backup() {
+        let dir = unique_dir("quarantine");
+        let _ = fs::remove_dir_all(&dir);
+
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("bookmarks.toml");
+
+        fs::write(&path, "bookmarks = [oops").unwrap();
+
+        quarantine_corrupt(&path);
+
+        assert!(!path.exists());
+        let backup = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("bookmarks.toml.corrupt-")
+            })
+            .expect("the corrupt file must be preserved");
+
+        assert_eq!(
+            fs::read_to_string(backup.path()).unwrap(),
+            "bookmarks = [oops"
+        );
+        assert_eq!(
+            fs::metadata(backup.path()).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -11,7 +11,40 @@ permissions:
   contents: write
 
 jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate tag, Cargo.toml and README
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
+          readme_version="$(grep -m1 '^> Status:' README.md | tr -d '`' | awk '{print $3}')"
+
+          test -n "$cargo_version"
+          test "$version" = "$cargo_version" || {
+            echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          }
+          test "$readme_version" = "$cargo_version" || {
+            echo "README status '$readme_version' does not match Cargo.toml version $cargo_version" >&2
+            exit 1
+          }
+
+          echo "Version $cargo_version is consistent"
+
+  verify:
+    # This is the same gate a pull request runs, including the MSRV, lint,
+    # GUI/sandbox smokes, release-profile build and dependency audit.
+    uses: ./.github/workflows/ci.yml
+
   publish:
+    needs: [validate, verify]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -30,7 +63,7 @@ jobs:
       - name: Build (release)
         run: cargo build --release --locked
 
-      - name: Package the binary
+      - name: Package and verify the binary
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -38,6 +71,7 @@ jobs:
 
           install -m 0755 target/release/axysbrowser "$asset"
           sha256sum "$asset" > "$asset.sha256"
+          sha256sum -c "$asset.sha256"
 
           echo "ASSET=$asset" >> "$GITHUB_ENV"
 

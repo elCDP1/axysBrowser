@@ -42,6 +42,19 @@ fn is_web_uri(uri: &str) -> bool {
     uri.starts_with("http://") || uri.starts_with("https://") || uri.starts_with("file://")
 }
 
+const MIN_ZOOM_LEVEL: f64 = 0.25;
+const MAX_ZOOM_LEVEL: f64 = 5.0;
+
+/// The one zoom step used by the menu, keyboard shortcuts and Ctrl+wheel.
+/// A zero delta means "reset" (Ctrl+0), matching Chromium.
+fn adjusted_zoom_level(current: f64, delta: f64) -> f64 {
+    if delta == 0.0 {
+        1.0
+    } else {
+        (current + delta).clamp(MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL)
+    }
+}
+
 /// Whether a view may be the target of a page action (Print…, Save page as…).
 ///
 /// A background tab keeps its `WebView` alive but unmapped, and a tab closed
@@ -1243,6 +1256,59 @@ fn build_browser_window(
                 state.settings.borrow().hardware_acceleration,
             );
 
+            // Ctrl+wheel is the zoom gesture users expect from Chromium.
+            // Capture it before WebKit scrolls the page, but leave an
+            // ordinary wheel untouched. High-resolution wheels emit many
+            // fractional deltas, so accumulate one full notch before
+            // changing the level; otherwise a single gesture would race
+            // straight to the clamp.
+            {
+                let weak = web_view.downgrade();
+                let accumulated = Cell::new(0.0_f64);
+                let zoom_wheel =
+                    gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+
+                zoom_wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+
+                zoom_wheel.connect_scroll(move |controller, _dx, dy| {
+                    if !controller
+                        .current_event_state()
+                        .contains(gdk::ModifierType::CONTROL_MASK)
+                    {
+                        return Propagation::Proceed;
+                    }
+
+                    if dy == 0.0 {
+                        return Propagation::Stop;
+                    }
+
+                    let pending = accumulated.get();
+                    let total = if pending != 0.0 && pending.signum() != dy.signum() {
+                        dy
+                    } else {
+                        pending + dy
+                    };
+
+                    if total.abs() < 1.0 {
+                        accumulated.set(total);
+
+                        return Propagation::Stop;
+                    }
+
+                    accumulated.set(0.0);
+
+                    if let Some(view) = weak.upgrade() {
+                        let delta = if total < 0.0 { 0.1 } else { -0.1 };
+
+                        view.set_zoom_level(adjusted_zoom_level(view.zoom_level(), delta));
+                    }
+
+                    Propagation::Stop
+                });
+
+                web_view.add_controller(zoom_wheel);
+            }
+
             let permissions = window_permissions.clone();
 
             let on_authenticate: crate::browser::engine::AuthenticateHandler =
@@ -1638,6 +1704,7 @@ fn build_browser_window(
                         && let Some(uri) = view.uri().map(|uri| uri.to_string())
                         && (uri.starts_with("http://") || uri.starts_with("https://"))
                         && !BrowserEngine::take_error_page(view, &uri)
+                        && !BrowserEngine::take_source_view(view)
                     {
                         let title = view
                             .title()
@@ -1756,6 +1823,10 @@ fn build_browser_window(
                             *current_web_view.borrow_mut() = Some(web_view.clone());
                         }
 
+                        if base_for_load.as_deref().is_some_and(is_web_uri) {
+                            BrowserEngine::mark_source_view(&web_view);
+                        }
+
                         web_view.load_html(&document, base_for_load.as_deref());
                     }
 
@@ -1786,13 +1857,7 @@ fn build_browser_window(
 
         Rc::new(move |delta| {
             if let Some(view) = target_view() {
-                let level = if delta == 0.0 {
-                    1.0
-                } else {
-                    (view.zoom_level() + delta).clamp(0.25, 5.0)
-                };
-
-                view.set_zoom_level(level);
+                view.set_zoom_level(adjusted_zoom_level(view.zoom_level(), delta));
             }
         })
     };
@@ -2040,6 +2105,7 @@ fn build_browser_window(
         // WindowHandle keeps drag-to-move and double-click-to-maximize.
         let handle = gtk::WindowHandle::new();
 
+        handle.add_css_class("tab-row");
         handle.set_hexpand(true);
         handle.set_child(Some(&tabbar.root));
 
@@ -2205,6 +2271,8 @@ fn build_browser_window(
     if let Some(findbar) = findbar_slot.borrow().as_ref() {
         overlay.add_overlay(&findbar.container);
     }
+
+    super::window_controls::add_resize_grips(&overlay, &window);
 
     window.set_child(Some(&overlay));
 
@@ -2576,6 +2644,10 @@ fn build_browser_window(
                 name = "page".to_string();
             }
 
+            // The sanitized title may already use the whole 255-byte limit
+            // of a file name; the `.mhtml` suffix is added on top of it.
+            let name = crate::browser::downloads::cap_filename_bytes(&name, 240);
+
             let dialog = gtk::FileDialog::builder()
                 .title(rust_i18n::t!("menu.save_page").to_string())
                 .initial_name(format!("{name}.mhtml"))
@@ -2753,7 +2825,7 @@ fn build_browser_window(
 
 #[cfg(test)]
 mod tests {
-    use super::{page_action_target, use_webkit_back};
+    use super::{adjusted_zoom_level, page_action_target, use_webkit_back};
 
     #[test]
     fn the_first_back_from_a_web_page_reaches_new_tab() {
@@ -2802,5 +2874,15 @@ mod tests {
 
         // A view that has not committed a load yet has no URI at all.
         assert!(!page_action_target(true, None));
+    }
+
+    #[test]
+    fn zoom_steps_and_clamps_consistently() {
+        assert!((adjusted_zoom_level(1.0, 0.1) - 1.1).abs() < 1e-9);
+        assert!((adjusted_zoom_level(1.0, -0.1) - 0.9).abs() < 1e-9);
+        assert_eq!(adjusted_zoom_level(3.5, 0.1), 3.6);
+        assert_eq!(adjusted_zoom_level(3.5, 0.0), 1.0);
+        assert_eq!(adjusted_zoom_level(5.0, 0.1), 5.0);
+        assert_eq!(adjusted_zoom_level(0.25, -0.1), 0.25);
     }
 }

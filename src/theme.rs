@@ -7,6 +7,39 @@ pub fn stylesheet(dark: bool) -> String {
 
     let subtle_border_alpha = if dark { "0.08" } else { "0.17" };
 
+    // The toolbar row sits on the palette background in dark mode. The tab
+    // strip keeps the lifted chrome surface above it.
+    let chrome_background = if dark { "@axys_bg" } else { "@axys_chrome" };
+
+    // The dark toolbar is already a lifted surface, so a translucent white
+    // address field read as flat grey. Use the palette background instead;
+    // focus still raises it to `@axys_surface`. Light mode is unchanged.
+    let address_background = if dark {
+        "@axys_bg"
+    } else {
+        "alpha(@axys_fg, 0.045)"
+    };
+
+    // Toolbar action buttons keep their flat hit areas, but in dark mode they
+    // sit on the same palette background as the address field instead of the
+    // old translucent grey. Light mode keeps its existing backgrounds.
+    let toolbar_button_background = if dark { "@axys_bg" } else { "transparent" };
+
+    let nav_cluster_background = if dark {
+        "@axys_bg"
+    } else {
+        "alpha(@axys_fg, 0.035)"
+    };
+
+    // The toolbar's GTK class can still carry the theme's own background,
+    // which paints over the browser-chrome parent. Clear it only in dark mode
+    // so the whole row matches the palette; light mode keeps its theme look.
+    let toolbar_row_style = if dark {
+        "background: @axys_bg; border: none; box-shadow: none;"
+    } else {
+        ""
+    };
+
     format!(
         r#"
         {palette}
@@ -19,8 +52,14 @@ pub fn stylesheet(dark: bool) -> String {
         /* The tab strip and toolbar read as one modern browser chrome,
          * slightly lifted from the page content. */
         .browser-chrome {{
-            background-color: @axys_chrome;
+            background-color: {chrome_background};
             border-bottom: 1px solid alpha(@axys_fg, {subtle_border_alpha});
+        }}
+
+        /* The tab strip stays on the lifted chrome surface in both modes;
+         * only the toolbar row below follows the palette background. */
+        .tab-row {{
+            background-color: @axys_chrome;
         }}
 
         headerbar,
@@ -302,7 +341,7 @@ pub fn stylesheet(dark: bool) -> String {
             padding: 7px 15px;
             border-radius: 18px;
             border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
-            background: alpha(@axys_fg, 0.045);
+            background: {address_background};
             box-shadow: none;
             font-size: 0.92em;
             color: @axys_fg;
@@ -424,6 +463,10 @@ pub fn stylesheet(dark: bool) -> String {
             box-shadow: none;
         }}
 
+        .toolbar button.flat {{
+            background: {toolbar_button_background};
+        }}
+
         button.flat:hover {{
             background: alpha(@axys_fg, 0.07);
         }}
@@ -446,7 +489,7 @@ pub fn stylesheet(dark: bool) -> String {
         .nav-cluster {{
             padding: 2px;
             border-radius: 12px;
-            background: alpha(@axys_fg, 0.035);
+            background: {nav_cluster_background};
             border: 1px solid alpha(@axys_fg, {subtle_border_alpha});
         }}
 
@@ -459,6 +502,7 @@ pub fn stylesheet(dark: bool) -> String {
 
         .toolbar {{
             padding: 0 2px;
+            {toolbar_row_style}
         }}
 
         .toolbar-actions {{
@@ -730,6 +774,37 @@ mod tests {
             r < 0x60 && g < 0x60 && b < 0x60,
             "dark background is too light: #{r:02x}{g:02x}{b:02x}"
         );
+    }
+
+    #[test]
+    fn the_toolbar_uses_the_dark_palette_background() {
+        fn rule<'a>(css: &'a str, selector: &str) -> &'a str {
+            let start = css.find(selector).expect("toolbar rule");
+            let end = css[start..].find('}').expect("closed toolbar rule");
+
+            &css[start..start + end]
+        }
+
+        let dark = super::stylesheet(true);
+        let light = super::stylesheet(false);
+
+        assert!(rule(&dark, ".browser-chrome {").contains("background-color: @axys_bg;"));
+        assert!(rule(&dark, ".toolbar {").contains("background: @axys_bg;"));
+
+        for selector in [".address-top {", ".nav-cluster {", ".toolbar button.flat {"] {
+            assert!(
+                rule(&dark, selector).contains("background: @axys_bg;"),
+                "{selector} should use the dark palette background"
+            );
+        }
+
+        assert!(rule(&light, ".address-top {").contains("background: alpha(@axys_fg, 0.045);"));
+        assert!(rule(&light, ".nav-cluster {").contains("background: alpha(@axys_fg, 0.035);"));
+        assert!(rule(&light, ".toolbar button.flat {").contains("background: transparent;"));
+        assert!(rule(&light, ".browser-chrome {").contains("background-color: @axys_chrome;"));
+        assert!(rule(&dark, ".tab-row {").contains("background-color: @axys_chrome;"));
+        assert!(rule(&light, ".tab-row {").contains("background-color: @axys_chrome;"));
+        assert!(!rule(&light, ".toolbar {").contains("background: @axys_bg;"));
     }
 
     #[test]

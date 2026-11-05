@@ -279,6 +279,13 @@ impl DownloadManager {
 
                                 notify_listeners(&listeners);
 
+                                // The save dialog already asked the user to
+                                // confirm replacing an existing file. WebKit
+                                // refuses to overwrite by default, so without
+                                // this a confirmed overwrite ended as a
+                                // failed download.
+                                download.set_allow_overwrite(true);
+
                                 download.set_destination(path_str);
                             }
 
@@ -462,7 +469,7 @@ impl DownloadManager {
 /// Linux limits one name component to 255 *bytes*, not characters: a short
 /// string of multibyte characters can exceed that and the save fails with
 /// `ENAMETOOLONG` even though it looked short.
-fn cap_filename_bytes(name: &str, max_bytes: usize) -> String {
+pub(crate) fn cap_filename_bytes(name: &str, max_bytes: usize) -> String {
     if name.len() <= max_bytes {
         return name.to_string();
     }
@@ -481,10 +488,15 @@ fn cap_filename_bytes(name: &str, max_bytes: usize) -> String {
 /// contain `../` or be an absolute path), control characters, and caps the
 /// length. Returns an empty string when nothing usable remains.
 pub(crate) fn sanitize_download_name(suggested: &str) -> String {
-    let base = Path::new(suggested)
+    // `file_name()` is `None` for names ending in `..` (`foo/..`): falling
+    // back to the whole string kept the separator and the dot-dot, so the
+    // dialog was offered a path instead of a name.
+    let Some(base) = Path::new(suggested)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(suggested);
+    else {
+        return String::new();
+    };
 
     let cleaned: String = base.chars().filter(|c| !c.is_control()).collect();
 
@@ -553,6 +565,8 @@ mod tests {
         assert_eq!(sanitize_download_name(".."), "");
         assert_eq!(sanitize_download_name(""), "");
         assert_eq!(sanitize_download_name("   "), "");
+        assert_eq!(sanitize_download_name("foo/.."), "");
+        assert_eq!(sanitize_download_name("../.."), "");
     }
 
     #[test]

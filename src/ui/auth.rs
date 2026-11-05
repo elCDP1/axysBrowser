@@ -5,7 +5,7 @@
 //! cloned `AuthenticationRequest` and either authenticates or cancels it.
 
 use gtk::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::{AuthenticationRequest, Credential, CredentialPersistence};
 
@@ -143,13 +143,37 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
         });
     }
 
+    // A tab closed while its sign-in dialog is open must not leave a modal
+    // dialog over the window for a request nobody is waiting for any more:
+    // closing the dialog cancels the request.
+    let destroy_handler: Rc<RefCell<Option<gtk::glib::SignalHandlerId>>> =
+        Rc::new(RefCell::new(None));
+
+    {
+        let dialog = dialog.downgrade();
+
+        let id = view.connect_destroy(move |_| {
+            if let Some(dialog) = dialog.upgrade() {
+                dialog.close();
+            }
+        });
+
+        *destroy_handler.borrow_mut() = Some(id);
+    }
+
     {
         let request = request.clone();
         let decided = decided.clone();
+        let view = view.clone();
+        let destroy_handler = destroy_handler.clone();
 
         dialog.connect_close_request(move |_| {
             if !decided.get() {
                 request.cancel();
+            }
+
+            if let Some(id) = destroy_handler.borrow_mut().take() {
+                view.disconnect(id);
             }
 
             gtk::glib::Propagation::Proceed

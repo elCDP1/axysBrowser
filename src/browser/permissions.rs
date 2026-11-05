@@ -68,6 +68,27 @@ impl PermissionKind {
         }
     }
 
+    /// Classifies a Permissions API name (`navigator.permissions.query`).
+    ///
+    /// These are web names (`camera`, `microphone`, `screen-wake-lock`), not
+    /// WebKit type names. Going through [`classify`](Self::classify) filed
+    /// `camera` and `microphone` under the combined `Media` kind, which only
+    /// reports a verdict when both devices agree, so a remembered
+    /// camera-only grant was reported as "prompt"; and `screen-wake-lock`
+    /// matched "screen" and reported the screen-sharing verdict.
+    pub fn classify_query(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "camera" => Self::Camera,
+            "microphone" => Self::Microphone,
+            "display-capture" => Self::ScreenShare,
+            "clipboard-read" => Self::Clipboard,
+            "notifications" | "push" => Self::Notification,
+            "geolocation" => Self::Geolocation,
+            other if other.contains("wake-lock") => Self::Other,
+            other => Self::classify(other),
+        }
+    }
+
     /// Like [`classify`](Self::classify) but aware of display capture and
     /// of which user-media devices are requested: `getDisplayMedia()`
     /// arrives as the very same `WebKitUserMediaPermissionRequest` type as
@@ -223,12 +244,21 @@ pub struct PermissionManager {
 impl PermissionManager {
     /// Loads (or starts) the persistent profile-wide manager.
     pub fn load() -> Self {
-        let path = Self::storage_path();
+        Self::load_from(Self::storage_path())
+    }
 
-        let mut store = fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| toml::from_str::<PermissionStore>(&contents).ok())
-            .unwrap_or_default();
+    fn load_from(path: PathBuf) -> Self {
+        let mut store = match fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<PermissionStore>(&contents) {
+                Ok(store) => store,
+                Err(_) => {
+                    crate::paths::quarantine_corrupt(&path);
+
+                    PermissionStore::default()
+                }
+            },
+            Err(_) => PermissionStore::default(),
+        };
 
         let migrated = Self::migrate_legacy_media(&mut store);
 
@@ -650,6 +680,34 @@ mod tests {
     }
 
     #[test]
+    fn permission_api_names_map_to_the_kind_that_was_remembered() {
+        assert_eq!(
+            PermissionKind::classify_query("camera"),
+            PermissionKind::Camera
+        );
+        assert_eq!(
+            PermissionKind::classify_query("microphone"),
+            PermissionKind::Microphone
+        );
+        assert_eq!(
+            PermissionKind::classify_query("display-capture"),
+            PermissionKind::ScreenShare
+        );
+        assert_eq!(
+            PermissionKind::classify_query("screen-wake-lock"),
+            PermissionKind::Other
+        );
+        assert_eq!(
+            PermissionKind::classify_query("Notifications"),
+            PermissionKind::Notification
+        );
+        assert_eq!(
+            PermissionKind::classify_query("geolocation"),
+            PermissionKind::Geolocation
+        );
+    }
+
+    #[test]
     fn corrupt_store_loads_empty() {
         let path = std::env::temp_dir().join("axys-permissions-corrupt-test.toml");
 
@@ -658,6 +716,41 @@ mod tests {
         assert!(load_store_for_test(&path).is_err());
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_corrupt_permission_file_is_preserved_before_using_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("axys-permissions-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("permissions.toml");
+
+        fs::write(&path, "not = [valid toml").unwrap();
+
+        let manager = PermissionManager::load_from(path.clone());
+
+        assert_eq!(manager.decision_count(), 0);
+        assert!(!path.exists());
+
+        let backup = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("permissions.toml.corrupt-")
+            })
+            .expect("the corrupt permissions must be preserved");
+
+        assert_eq!(
+            fs::read_to_string(backup.path()).unwrap(),
+            "not = [valid toml"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

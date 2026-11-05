@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.2.2`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.2.3`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 
@@ -182,6 +182,12 @@ xvfb-run -a bash .github/mhtml-smoke.sh  # export a page to MHTML and inspect it
 xvfb-run -a bash .github/history-smoke.sh # a visit reaches history.toml on exit
 ```
 
+CI runs formatting, build, tests and Clippy on stable and on the declared
+Rust 1.92 MSRV, plus ShellCheck and actionlint. A tag release calls that same
+workflow through `workflow_call`; publishing waits for it and for a check that
+the tag, `Cargo.toml` and this README agree. The uploaded binary gets a
+SHA-256 sidecar that is verified before it is attached to the release.
+
 `gui-smoke.sh` opens a local page and passes only when a WebKit web process
 exists and the page's own JavaScript reached the local server, so a broken
 web-process launch (sandbox, namespaces) cannot slip through. Its `strict`
@@ -291,12 +297,14 @@ always wins. The chosen renderer and the evidence behind it are printed at
 startup.
 
 Web processes get a memory ceiling sized to the machine: 35 % of usable RAM,
-clamped to 512 MiB–4 GiB (4 GiB when RAM cannot be read), and never above
+clamped to 512 MiB–4 GiB (512 MiB when RAM cannot be read), and never above
 half of usable RAM. The old 2 GiB floor let a single tab take a 1 GiB
 container's whole quota. "RAM" is the smaller of `/proc/meminfo` and the
-nearest cgroup v2/v1 memory quota, walking from the process's own nested
-cgroup up to the hierarchy root, so systemd slices and containers are not
-missed. The figure is **per web process**. It is printed at startup, and
+nearest cgroup v2/v1 memory quota. Mount points and their roots come from
+`/proc/self/mountinfo`, then the code walks from the process's own nested
+cgroup up to that mount's hierarchy root, so systemd slices, containers and
+non-standard mounts are not missed. The figure is **per web process**. It is
+printed at startup, and
 `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides it. A tab is still only killed when
 it really exceeds the ceiling, which no realistic page does: Discord, Slack
 and Figma sit well under 2 GB on machines that can hold them. WebKit's own
