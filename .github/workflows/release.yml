@@ -24,10 +24,10 @@ jobs:
 
           version="${GITHUB_REF_NAME#v}"
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          # The status line continues with a period after the version, so
-          # field-based parsing would include it; take only the backticked
-          # version instead.
-          readme_version="$(sed -n 's/^> Status: `\([^`]*\)`.*/\1/p' README.md | head -n1)"
+          # $3 is the backticked version plus the sentence's period. Strip
+          # both; octal 140 avoids a literal backtick in this shell script
+          # (ShellCheck SC2016 would otherwise reject it).
+          readme_version="$(grep -m1 '^> Status:' README.md | awk '{print $3}' | tr -d '\140.')"
 
           test -n "$cargo_version"
           test "$version" = "$cargo_version" || {
