@@ -24,7 +24,10 @@ jobs:
 
           version="${GITHUB_REF_NAME#v}"
           cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n1)"
-          readme_version="$(grep -m1 '^> Status:' README.md | tr -d '`' | awk '{print $3}')"
+          # The status line continues with a period after the version, so
+          # field-based parsing would include it; take only the backticked
+          # version instead.
+          readme_version="$(sed -n 's/^> Status: `\([^`]*\)`.*/\1/p' README.md | head -n1)"
 
           test -n "$cargo_version"
           test "$version" = "$cargo_version" || {
