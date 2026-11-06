@@ -220,25 +220,19 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                         }
 
                         '+' | '=' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level((view.zoom_level() + 0.1).clamp(0.25, 5.0));
-                            }
+                            activate("win.zoom-in");
 
                             return Propagation::Stop;
                         }
 
                         '-' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level((view.zoom_level() - 0.1).clamp(0.25, 5.0));
-                            }
+                            activate("win.zoom-out");
 
                             return Propagation::Stop;
                         }
 
                         '0' => {
-                            if let Some(view) = current_web_view.borrow().as_ref() {
-                                view.set_zoom_level(1.0);
-                            }
+                            activate("win.zoom-reset");
 
                             return Propagation::Stop;
                         }

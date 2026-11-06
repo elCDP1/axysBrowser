@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use std::cell::{Cell, RefCell};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use webkit6::{CookiePersistentStorage, NetworkSession};
@@ -362,13 +362,22 @@ impl AppState {
     }
 
     fn load_user_settings() -> UserSettings {
-        let path = Self::config_path();
+        Self::load_user_settings_from(&Self::config_path())
+    }
 
+    fn load_user_settings_from(path: &Path) -> UserSettings {
         let Ok(text) = fs::read_to_string(path) else {
             return UserSettings::default();
         };
 
-        let mut settings: UserSettings = toml::from_str(&text).unwrap_or_default();
+        let mut settings: UserSettings = match toml::from_str(&text) {
+            Ok(settings) => settings,
+            Err(_) => {
+                crate::paths::quarantine_corrupt(path);
+
+                UserSettings::default()
+            }
+        };
 
         settings.language = i18n::normalize_locale(&settings.language).to_string();
 
@@ -883,5 +892,49 @@ mod tests {
         // back when the browser did.
         assert_eq!(super::interface_color_scheme(true), 2, "DARK");
         assert_eq!(super::interface_color_scheme(false), 3, "LIGHT");
+    }
+
+    #[test]
+    fn malformed_settings_are_backed_up_before_defaults_are_used() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir =
+            std::env::temp_dir().join(format!("axys-settings-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("settings.toml");
+
+        std::fs::write(&path, "dark_mode = [oops").unwrap();
+
+        let _ = AppState::load_user_settings_from(&path);
+
+        assert!(!path.exists());
+
+        let backup = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("settings.toml.corrupt-")
+            })
+            .expect("the corrupt settings must be preserved");
+
+        assert_eq!(
+            std::fs::read_to_string(backup.path()).unwrap(),
+            "dark_mode = [oops"
+        );
+        assert_eq!(
+            std::fs::metadata(backup.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

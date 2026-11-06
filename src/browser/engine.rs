@@ -15,7 +15,27 @@ use webkit6::{
 
 use super::permissions::{PermissionKind, PermissionManager, clipboard_read_without_prompt};
 
+/// Whether this process runs inside WSL/WSLg. Kept here so the rendering
+/// setup in `app` and the WebKit settings below share one probe.
+pub(crate) fn running_under_wsl() -> bool {
+    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
+        return true;
+    }
+
+    if let Ok(version) = std::fs::read_to_string("/proc/version") {
+        let lower = version.to_ascii_lowercase();
+
+        if lower.contains("microsoft") || lower.contains("wsl") {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub struct BrowserEngine;
+
+const SOURCE_VIEW_KEY: &str = "axys-source-view";
 
 /// Handles WebKit's `authenticate` signal; the handler owns the request and
 /// must eventually authenticate or cancel it.
@@ -260,13 +280,13 @@ fn ensure_dirs() -> (String, String) {
 /// old 2048 MiB floor defeated it on small machines and containers: a 1 GiB
 /// container handed one tab twice its whole quota. The floor is now 512 MiB,
 /// and the ceiling also never exceeds half of usable RAM, so a small quota is
-/// never completely consumed by one web process. `/proc/meminfo` remains the
-/// fallback when RAM is unreadable. `AXYS_WEB_MEMORY_LIMIT` (MiB) overrides
-/// the result, so the policy can be measured on any machine.
+/// never completely consumed by one web process. When RAM cannot be read,
+/// 512 MiB is the safe conservative ceiling; a browser that refuses to start
+/// is less useful than one that can still load a page. `AXYS_WEB_MEMORY_LIMIT`
+/// (MiB) overrides the result, but cannot escape a container's half-RAM cap.
 fn web_process_memory_limit(usable_ram_mb: u64) -> u32 {
     if usable_ram_mb == 0 {
-        // No `/proc/meminfo` (not Linux, or hidden): keep the old ceiling.
-        return 4096;
+        return 512;
     }
 
     // The 35 % target, with a small absolute floor. The half-RAM cap keeps a
@@ -279,6 +299,19 @@ fn web_process_memory_limit(usable_ram_mb: u64) -> u32 {
     target.clamp(floor, cap).min(4096) as u32
 }
 
+/// Applies `AXYS_WEB_MEMORY_LIMIT` without letting an override opt a small
+/// container out of the half-RAM protection.
+fn clamp_memory_override(mib: u32, usable_ram_mb: u64) -> u32 {
+    let cap = if usable_ram_mb == 0 {
+        16_384
+    } else {
+        (usable_ram_mb / 2).clamp(1, 16_384)
+    } as u32;
+    let floor = 512.min(cap);
+
+    mib.clamp(floor, cap)
+}
+
 /// The cgroup membership paths parsed from `/proc/self/cgroup`.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct CgroupMembership {
@@ -286,6 +319,96 @@ struct CgroupMembership {
     v2_path: Option<String>,
     /// Memory controller path in a cgroup v1 hierarchy.
     v1_memory_path: Option<String>,
+}
+
+/// A cgroup filesystem mount and the hierarchy path it exposes.
+#[derive(Debug, PartialEq, Eq)]
+struct CgroupMount {
+    kind: CgroupKind,
+    root: PathBuf,
+    mount_point: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum CgroupKind {
+    V2,
+    V1Memory,
+}
+
+/// Decodes the octal escapes used by `/proc/self/mountinfo` (space, tab,
+/// newline and backslash). Operating on bytes avoids replacing invalid UTF-8
+/// with a different path.
+fn decode_mountinfo_field(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'\\'
+            && index + 3 < bytes.len()
+            && bytes[index + 1..=index + 3]
+                .iter()
+                .all(|byte| (b'0'..=b'7').contains(byte))
+        {
+            let value = bytes[index + 1..=index + 3]
+                .iter()
+                .fold(0_u8, |value, byte| value * 8 + (byte - b'0'));
+
+            decoded.push(value);
+            index += 4;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// Finds cgroup v2 and v1-memory mounts. Reading `/sys/fs/cgroup` directly is
+/// wrong in containers and on hosts that mount a hierarchy elsewhere, so the
+/// mount point and its root are taken from the kernel's own mount table.
+fn parse_cgroup_mounts(text: &str) -> Vec<CgroupMount> {
+    let mut mounts = Vec::new();
+
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+
+        let Some(separator) = fields.iter().position(|field| *field == "-") else {
+            continue;
+        };
+
+        if separator < 5 || fields.len() < separator + 4 {
+            continue;
+        }
+
+        let root = PathBuf::from(decode_mountinfo_field(fields[3]));
+        let mount_point = PathBuf::from(decode_mountinfo_field(fields[4]));
+
+        if !root.is_absolute() || !mount_point.is_absolute() {
+            continue;
+        }
+
+        let kind = match fields[separator + 1] {
+            "cgroup2" => CgroupKind::V2,
+            "cgroup"
+                if fields[separator + 3]
+                    .split(',')
+                    .any(|option| option == "memory") =>
+            {
+                CgroupKind::V1Memory
+            }
+            _ => continue,
+        };
+
+        mounts.push(CgroupMount {
+            kind,
+            root,
+            mount_point,
+        });
+    }
+
+    mounts
 }
 
 /// Normalizes a path from `/proc/self/cgroup`.
@@ -335,25 +458,42 @@ fn parse_cgroup_membership(text: &str) -> CgroupMembership {
     membership
 }
 
-/// Every candidate limit file from the process's cgroup up to the hierarchy
-/// root. Reading only the root missed nested quotas (systemd user slices,
-/// delegated containers), which is exactly where the real limit lives.
-fn cgroup_file_candidates(base: &Path, cgroup_path: &str, file: &str) -> Vec<PathBuf> {
-    let Some(relative) = cgroup_path.strip_prefix('/') else {
-        return Vec::new();
-    };
+/// Candidate limit files from a cgroup mount's own root to the process's
+/// cgroup. The mount root is not always `/`: container runtimes and systemd
+/// can expose a subtree, and joining the full membership path would then
+/// point at a file that does not exist.
+fn cgroup_file_candidates_from(
+    mount_point: &Path,
+    mount_root: &Path,
+    cgroup_path: &str,
+    file: &str,
+) -> Vec<PathBuf> {
+    let cgroup = Path::new(cgroup_path);
 
-    if relative.split('/').any(|part| part == "..") {
+    if !cgroup.is_absolute()
+        || cgroup
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
         return Vec::new();
     }
 
-    let mut directory = base.join(relative);
+    let Ok(relative) = cgroup.strip_prefix(mount_root) else {
+        return Vec::new();
+    };
+
+    let mut directory = mount_point.join(relative);
+
+    if !directory.starts_with(mount_point) {
+        return Vec::new();
+    }
+
     let mut candidates = Vec::new();
 
     loop {
         candidates.push(directory.join(file));
 
-        if directory == base {
+        if directory == mount_point {
             break;
         }
 
@@ -361,7 +501,7 @@ fn cgroup_file_candidates(base: &Path, cgroup_path: &str, file: &str) -> Vec<Pat
             break;
         };
 
-        if !parent.starts_with(base) {
+        if !parent.starts_with(mount_point) {
             break;
         }
 
@@ -371,29 +511,109 @@ fn cgroup_file_candidates(base: &Path, cgroup_path: &str, file: &str) -> Vec<Pat
     candidates
 }
 
+/// Compatibility wrapper for the conventional cgroup mount at
+/// `/sys/fs/cgroup`, whose hierarchy root is `/`.
+#[cfg(test)]
+fn cgroup_file_candidates(base: &Path, cgroup_path: &str, file: &str) -> Vec<PathBuf> {
+    cgroup_file_candidates_from(base, Path::new("/"), cgroup_path, file)
+}
+
+fn cgroup_candidates_for_mounts(
+    mount_points: &[&CgroupMount],
+    membership_path: Option<&str>,
+    file: &str,
+    fallback: &Path,
+) -> Vec<PathBuf> {
+    if mount_points.is_empty() {
+        return vec![fallback.to_path_buf()];
+    }
+
+    let mut candidates = Vec::new();
+
+    for mount in mount_points {
+        let path = membership_path.unwrap_or("/");
+
+        candidates.extend(cgroup_file_candidates_from(
+            &mount.mount_point,
+            &mount.root,
+            path,
+            file,
+        ));
+    }
+
+    if candidates.is_empty() {
+        // The membership path did not belong to this mount (a mount namespace
+        // can expose a different root). Reading only the root is still a safe
+        // fallback; we never guess a path outside the mount.
+        candidates.extend(
+            mount_points
+                .iter()
+                .map(|mount| mount.mount_point.join(file)),
+        );
+    }
+
+    candidates
+}
+
 /// Limit files for the unified and v1 hierarchies, from the process cgroup to
 /// each root. The old code only read the mount root, so a 2 GiB nested user
 /// slice on a 32 GiB host was invisible.
+#[cfg(test)]
 fn cgroup_limit_candidates(membership: &CgroupMembership) -> Vec<PathBuf> {
-    let mut candidates = Vec::new();
+    let v2 = [CgroupMount {
+        kind: CgroupKind::V2,
+        root: PathBuf::from("/"),
+        mount_point: PathBuf::from("/sys/fs/cgroup"),
+    }];
+    let v1 = [CgroupMount {
+        kind: CgroupKind::V1Memory,
+        root: PathBuf::from("/"),
+        mount_point: PathBuf::from("/sys/fs/cgroup/memory"),
+    }];
 
-    match membership.v2_path.as_deref() {
-        Some(path) => candidates.extend(cgroup_file_candidates(
-            Path::new("/sys/fs/cgroup"),
-            path,
-            "memory.max",
-        )),
-        None => candidates.push(PathBuf::from("/sys/fs/cgroup/memory.max")),
-    }
+    let mut candidates = cgroup_candidates_for_mounts(
+        &[&v2[0]],
+        membership.v2_path.as_deref(),
+        "memory.max",
+        Path::new("/sys/fs/cgroup/memory.max"),
+    );
 
-    match membership.v1_memory_path.as_deref() {
-        Some(path) => candidates.extend(cgroup_file_candidates(
-            Path::new("/sys/fs/cgroup/memory"),
-            path,
-            "memory.limit_in_bytes",
-        )),
-        None => candidates.push(PathBuf::from("/sys/fs/cgroup/memory/memory.limit_in_bytes")),
-    }
+    candidates.extend(cgroup_candidates_for_mounts(
+        &[&v1[0]],
+        membership.v1_memory_path.as_deref(),
+        "memory.limit_in_bytes",
+        Path::new("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ));
+
+    candidates
+}
+
+fn cgroup_limit_candidates_from_mounts(
+    membership: &CgroupMembership,
+    mounts: &[CgroupMount],
+) -> Vec<PathBuf> {
+    let v2: Vec<&CgroupMount> = mounts
+        .iter()
+        .filter(|mount| mount.kind == CgroupKind::V2)
+        .collect();
+    let v1: Vec<&CgroupMount> = mounts
+        .iter()
+        .filter(|mount| mount.kind == CgroupKind::V1Memory)
+        .collect();
+
+    let mut candidates = cgroup_candidates_for_mounts(
+        &v2,
+        membership.v2_path.as_deref(),
+        "memory.max",
+        Path::new("/sys/fs/cgroup/memory.max"),
+    );
+
+    candidates.extend(cgroup_candidates_for_mounts(
+        &v1,
+        membership.v1_memory_path.as_deref(),
+        "memory.limit_in_bytes",
+        Path::new("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+    ));
 
     candidates
 }
@@ -418,8 +638,11 @@ fn cgroup_memory_limit_bytes() -> Option<u64> {
     let membership = std::fs::read_to_string("/proc/self/cgroup")
         .map(|text| parse_cgroup_membership(&text))
         .unwrap_or_default();
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo")
+        .map(|text| parse_cgroup_mounts(&text))
+        .unwrap_or_default();
 
-    smallest_cgroup_limit(&cgroup_limit_candidates(&membership))
+    smallest_cgroup_limit(&cgroup_limit_candidates_from_mounts(&membership, &mounts))
 }
 
 /// Parses a cgroup limit file. `max` means unlimited and cgroup v1 reports
@@ -483,13 +706,13 @@ fn total_ram_mb() -> u64 {
 }
 
 /// `AXYS_WEB_MEMORY_LIMIT` in MiB, clamped to something WebKit accepts.
-fn memory_limit_override() -> Option<u32> {
+fn memory_limit_override(usable_ram_mb: u64) -> Option<u32> {
     let raw = std::env::var("AXYS_WEB_MEMORY_LIMIT").ok()?;
 
     raw.trim()
         .parse::<u32>()
         .ok()
-        .map(|mib| mib.clamp(512, 16384))
+        .map(|mib| clamp_memory_override(mib, usable_ram_mb))
 }
 
 fn tune_memory_pressure() {
@@ -499,7 +722,8 @@ fn tune_memory_pressure() {
     // to the machine instead of a fixed 4 GiB.
     let physical = total_ram_mb();
     let effective = usable_ram_mb(physical, cgroup_memory_limit_bytes());
-    let limit = memory_limit_override().unwrap_or_else(|| web_process_memory_limit(effective));
+    let limit =
+        memory_limit_override(effective).unwrap_or_else(|| web_process_memory_limit(effective));
 
     let mut settings = MemoryPressureSettings::new();
 
@@ -536,8 +760,10 @@ fn memory_description(effective_mb: u64, physical_mb: u64) -> String {
 #[cfg(test)]
 mod memory_policy_tests {
     use super::{
-        CgroupMembership, cgroup_file_candidates, cgroup_limit_candidates, memory_description,
-        parse_cgroup_limit, parse_cgroup_membership, smallest_cgroup_limit, usable_ram_mb,
+        CgroupKind, CgroupMembership, CgroupMount, cgroup_file_candidates,
+        cgroup_file_candidates_from, cgroup_limit_candidates, cgroup_limit_candidates_from_mounts,
+        clamp_memory_override, decode_mountinfo_field, memory_description, parse_cgroup_limit,
+        parse_cgroup_membership, parse_cgroup_mounts, smallest_cgroup_limit, usable_ram_mb,
         web_process_memory_limit,
     };
     use std::fs;
@@ -561,8 +787,8 @@ mod memory_policy_tests {
         assert_eq!(web_process_memory_limit(1024), 512);
         assert_eq!(web_process_memory_limit(512), 256);
 
-        // Unreadable `/proc/meminfo`: the old behaviour, not a tiny ceiling.
-        assert_eq!(web_process_memory_limit(0), 4096);
+        // Unreadable `/proc/meminfo`: fail safe rather than guessing 4 GiB.
+        assert_eq!(web_process_memory_limit(0), 512);
     }
 
     #[test]
@@ -623,6 +849,87 @@ mod memory_policy_tests {
             cgroup_file_candidates(Path::new("/sys/fs/cgroup"), "/../../etc", "memory.max")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn mountinfo_finds_alternative_roots_and_decodes_escapes() {
+        let mounts = parse_cgroup_mounts(
+            "36 25 0:32 / /sys/fs/cgroup rw - cgroup2 cgroup2 rw\n\
+             40 25 0:35 /docker/abc /run/cgroup\\040memory rw - cgroup cgroup rw,memory\n\
+             41 25 0:36 / /run/cgroup-cpu rw - cgroup cgroup rw,cpu\n",
+        );
+
+        assert_eq!(
+            mounts,
+            vec![
+                CgroupMount {
+                    kind: CgroupKind::V2,
+                    root: PathBuf::from("/"),
+                    mount_point: PathBuf::from("/sys/fs/cgroup"),
+                },
+                CgroupMount {
+                    kind: CgroupKind::V1Memory,
+                    root: PathBuf::from("/docker/abc"),
+                    mount_point: PathBuf::from("/run/cgroup memory"),
+                },
+            ]
+        );
+        assert_eq!(decode_mountinfo_field("/a\\040b\\011c"), "/a b\tc");
+    }
+
+    #[test]
+    fn a_mount_root_is_stripped_from_candidate_paths() {
+        let candidates = cgroup_file_candidates_from(
+            Path::new("/run/cgroup-memory"),
+            Path::new("/docker/abc"),
+            "/docker/abc/team/app",
+            "memory.limit_in_bytes",
+        );
+
+        assert_eq!(
+            candidates,
+            vec![
+                PathBuf::from("/run/cgroup-memory/team/app/memory.limit_in_bytes"),
+                PathBuf::from("/run/cgroup-memory/team/memory.limit_in_bytes"),
+                PathBuf::from("/run/cgroup-memory/memory.limit_in_bytes"),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_limits_from_mountinfo_are_combined() {
+        let membership = CgroupMembership {
+            v2_path: Some("/user.slice/app.scope".to_string()),
+            v1_memory_path: Some("/docker/abc/team".to_string()),
+        };
+        let mounts = vec![
+            CgroupMount {
+                kind: CgroupKind::V2,
+                root: PathBuf::from("/"),
+                mount_point: PathBuf::from("/sys/fs/cgroup"),
+            },
+            CgroupMount {
+                kind: CgroupKind::V1Memory,
+                root: PathBuf::from("/docker/abc"),
+                mount_point: PathBuf::from("/run/memory"),
+            },
+        ];
+
+        let candidates = cgroup_limit_candidates_from_mounts(&membership, &mounts);
+
+        assert!(candidates.contains(&PathBuf::from(
+            "/sys/fs/cgroup/user.slice/app.scope/memory.max"
+        )));
+        assert!(candidates.contains(&PathBuf::from("/run/memory/team/memory.limit_in_bytes")));
+        assert!(candidates.contains(&PathBuf::from("/run/memory/memory.limit_in_bytes")));
+    }
+
+    #[test]
+    fn a_memory_override_cannot_escape_the_container_cap() {
+        assert_eq!(clamp_memory_override(8192, 1024), 512);
+        assert_eq!(clamp_memory_override(1, 1024), 512);
+        assert_eq!(clamp_memory_override(8192, 0), 8192);
+        assert_eq!(clamp_memory_override(64, 0), 512);
     }
 
     #[test]
@@ -811,7 +1118,13 @@ impl BrowserEngine {
         // Compatibility shims without which complex SPAs misbehave.
         settings.set_enable_site_specific_quirks(true);
         settings.set_enable_page_cache(true);
-        settings.set_enable_smooth_scrolling(true);
+
+        // WSLg delivers high-resolution wheel deltas. WebKit then animates
+        // them on top of an already fine-grained device, which makes a normal
+        // wheel feel slow or as if scrolls are being dropped (WebKit bug
+        // 258926). Native Linux keeps smooth scrolling; WSL uses direct
+        // wheel steps so every notch registers.
+        settings.set_enable_smooth_scrolling(!running_under_wsl());
 
         // Media / realtime stack needed by Discord & friends.
         settings.set_enable_media(true);
@@ -1480,7 +1793,7 @@ impl BrowserEngine {
                 let kind = query
                     .name()
                     .as_deref()
-                    .map(PermissionKind::classify)
+                    .map(PermissionKind::classify_query)
                     .unwrap_or(PermissionKind::Other);
 
                 let origin = Self::permission_origin(view);
@@ -1676,6 +1989,22 @@ impl BrowserEngine {
         }
 
         marked
+    }
+
+    /// Marks a view that is about to show a generated "view source"
+    /// document. That document is loaded with the viewed page's URL as its
+    /// base, so without the mark its load looked like a fresh visit to that
+    /// page and every "view source" added a history entry.
+    pub fn mark_source_view(view: &WebView) {
+        unsafe {
+            view.set_data(SOURCE_VIEW_KEY, true);
+        }
+    }
+
+    /// Returns true (and clears the mark) for the load of a generated source
+    /// document, so history recording skips exactly that load.
+    pub fn take_source_view(view: &WebView) -> bool {
+        unsafe { view.steal_data::<bool>(SOURCE_VIEW_KEY).is_some() }
     }
 
     /// Removes persistent website data (IndexedDB, local storage, DOM

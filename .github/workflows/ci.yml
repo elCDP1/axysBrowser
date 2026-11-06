@@ -8,6 +8,8 @@ on:
   # the floating `stable` toolchain show up here instead of on a random push.
   schedule:
     - cron: '17 5 * * 1'
+  # The release workflow calls this whole gate before it publishes anything.
+  workflow_call:
 
 permissions:
   contents: read
@@ -19,7 +21,7 @@ concurrency:
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
@@ -31,9 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install GTK4 / WebKitGTK
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config
+        run: bash .github/install-deps.sh
 
       - name: Format
         run: cargo fmt --all --check
@@ -47,9 +47,70 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
 
+  msrv:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Keep in sync with `rust-version` in Cargo.toml.
+          toolchain: 1.92.0
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install GTK4 / WebKitGTK
+        run: bash .github/install-deps.sh
+
+      - name: Build on the declared MSRV
+        run: cargo build --locked
+
+      - name: Test on the declared MSRV
+        run: cargo test --locked
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install ShellCheck
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Install actionlint
+        env:
+          ACTIONLINT_VERSION: 1.7.7
+        run: |
+          set -euo pipefail
+
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSLo "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+
+          # Pin the downloaded binary instead of executing whatever the network
+          # returns. Update the version and this digest together.
+          echo "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757  $archive" \
+            | sha256sum -c -
+
+          tar -xzf "$archive" -C "$RUNNER_TEMP"
+
+      - name: Lint workflows and shell scripts
+        run: |
+          set -euo pipefail
+
+          "$RUNNER_TEMP/actionlint" -color .github/workflows/*.yml
+          shellcheck -S warning .github/*.sh
+
   gui-smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The dependency install can consume most of a 30-minute window on a slow
+    # mirror; leave room for the Xvfb smokes after it.
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
@@ -59,9 +120,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install GTK4 / WebKitGTK / Xvfb
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config xvfb bubblewrap
+        run: bash .github/install-deps.sh xvfb bubblewrap
 
       - name: Enable WebKit sandbox namespaces
         run: bash .github/enable-sandbox.sh
@@ -92,10 +151,11 @@ jobs:
 
   release:
     # The distributed profile uses LTO and was never built in CI; a
-    # release-only breakage would reach users. Weekly, on the scheduled run.
-    if: github.event_name == 'schedule'
+    # release-only breakage would reach users. Run it on main pushes, the
+    # weekly schedule and release tags; only pull-request runs skip it.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v7
@@ -105,9 +165,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install GTK4 / WebKitGTK
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgtk-4-dev libwebkitgtk-6.0-dev libjavascriptcoregtk-6.0-dev pkg-config
+        run: bash .github/install-deps.sh
 
       - name: Build (release)
         run: cargo build --release --locked

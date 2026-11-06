@@ -448,6 +448,25 @@ mod tests {
     }
 
     #[test]
+    fn script_and_data_schemes_never_become_navigation_targets() {
+        let config = load_config();
+
+        for input in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "vbscript:msgbox(1)",
+        ] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search."),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+    }
+
+    #[test]
     fn dotted_numbers_are_searched_instead_of_becoming_hosts() {
         let config = load_config();
 

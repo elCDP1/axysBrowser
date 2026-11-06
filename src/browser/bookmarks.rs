@@ -50,14 +50,17 @@ impl BookmarkManager {
     }
 
     fn load_from(path: PathBuf) -> Self {
-        let bookmarks = fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| {
-                toml::from_str::<BookmarkStore>(&contents)
-                    .ok()
-                    .map(|store| store.bookmarks)
-            })
-            .unwrap_or_default();
+        let bookmarks = match fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<BookmarkStore>(&contents) {
+                Ok(store) => store.bookmarks,
+                Err(_) => {
+                    crate::paths::quarantine_corrupt(&path);
+
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
 
         Self {
             bookmarks: Rc::new(RefCell::new(bookmarks)),
@@ -575,6 +578,73 @@ mod tests {
 
         let _ = fs::remove_file(&icon);
         let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn removing_a_bookmark_keeps_a_favicon_shared_by_another() {
+        let manager = test_manager("favicon-shared");
+        let icon =
+            std::env::temp_dir().join(format!("axys-favicon-shared-{}.png", std::process::id()));
+        let icon_path = icon.to_string_lossy().into_owned();
+
+        fs::write(&icon, b"png").unwrap();
+
+        for (title, url) in [
+            ("A", "https://a.example/page"),
+            ("B", "https://b.example/page"),
+        ] {
+            manager.bookmarks.borrow_mut().push(super::Bookmark {
+                title: title.to_string(),
+                url: url.to_string(),
+                favicon_path: Some(icon_path.clone()),
+            });
+        }
+
+        assert!(manager.remove("https://a.example/page"));
+        assert!(icon.exists(), "a shared favicon was deleted too early");
+
+        assert!(manager.remove("https://b.example/page"));
+        assert!(
+            !icon.exists(),
+            "the last reference did not remove the favicon"
+        );
+
+        let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn a_corrupt_bookmark_file_is_preserved_before_using_defaults() {
+        let dir =
+            std::env::temp_dir().join(format!("axys-bookmarks-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("bookmarks.toml");
+
+        fs::write(&path, "bookmarks = [oops").unwrap();
+
+        let manager = BookmarkManager::load_from(path.clone());
+
+        assert!(manager.entries().is_empty());
+        assert!(!path.exists());
+
+        let backup = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("bookmarks.toml.corrupt-")
+            })
+            .expect("the corrupt bookmarks must be preserved");
+
+        assert_eq!(
+            fs::read_to_string(backup.path()).unwrap(),
+            "bookmarks = [oops"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -108,6 +108,184 @@ pub fn build(window: &ApplicationWindow) -> Box {
     controls
 }
 
+/// Thickness (px) of the invisible resize strips along the window edges, and
+/// the side of the square grips in the corners.
+const GRIP_EDGE: i32 = 5;
+const GRIP_CORNER: i32 = 10;
+
+/// One resize grip: where it sits, which edge it drags and its cursor.
+struct Grip {
+    edge: gtk::gdk::SurfaceEdge,
+    cursor: &'static str,
+    halign: gtk::Align,
+    valign: gtk::Align,
+}
+
+fn grips() -> [Grip; 8] {
+    use gtk::Align::{End, Fill, Start};
+    use gtk::gdk::SurfaceEdge as Edge;
+
+    // Edges first, corners last: later overlay children sit on top, so a
+    // corner wins where it overlaps the ends of two edge strips.
+    [
+        Grip {
+            edge: Edge::North,
+            cursor: "n-resize",
+            halign: Fill,
+            valign: Start,
+        },
+        Grip {
+            edge: Edge::South,
+            cursor: "s-resize",
+            halign: Fill,
+            valign: End,
+        },
+        Grip {
+            edge: Edge::West,
+            cursor: "w-resize",
+            halign: Start,
+            valign: Fill,
+        },
+        Grip {
+            edge: Edge::East,
+            cursor: "e-resize",
+            halign: End,
+            valign: Fill,
+        },
+        Grip {
+            edge: Edge::NorthWest,
+            cursor: "nw-resize",
+            halign: Start,
+            valign: Start,
+        },
+        Grip {
+            edge: Edge::NorthEast,
+            cursor: "ne-resize",
+            halign: End,
+            valign: Start,
+        },
+        Grip {
+            edge: Edge::SouthWest,
+            cursor: "sw-resize",
+            halign: Start,
+            valign: End,
+        },
+        Grip {
+            edge: Edge::SouthEast,
+            cursor: "se-resize",
+            halign: End,
+            valign: End,
+        },
+    ]
+}
+
+/// Adds invisible resize strips around the window.
+///
+/// The window is undecorated, and GTK4 draws no resize border for an
+/// undecorated window (there is no client-side shadow to grab), so without
+/// these the window could not be resized with the mouse at all outside
+/// compositors that add their own grips. Each strip starts a compositor
+/// driven resize; they hide while the window is maximized or fullscreen.
+pub fn add_resize_grips(overlay: &gtk::Overlay, window: &ApplicationWindow) {
+    let mut widgets = Vec::new();
+
+    for grip in grips() {
+        let corner = matches!(
+            grip.edge,
+            gtk::gdk::SurfaceEdge::NorthWest
+                | gtk::gdk::SurfaceEdge::NorthEast
+                | gtk::gdk::SurfaceEdge::SouthWest
+                | gtk::gdk::SurfaceEdge::SouthEast
+        );
+
+        let strip = Box::new(Orientation::Horizontal, 0);
+
+        strip.set_halign(grip.halign);
+        strip.set_valign(grip.valign);
+        strip.set_cursor_from_name(Some(grip.cursor));
+
+        let (width, height) = if corner {
+            (GRIP_CORNER, GRIP_CORNER)
+        } else if grip.halign == gtk::Align::Fill {
+            (-1, GRIP_EDGE)
+        } else {
+            (GRIP_EDGE, -1)
+        };
+
+        strip.set_size_request(width, height);
+
+        let click = gtk::GestureClick::builder()
+            .button(gtk::gdk::BUTTON_PRIMARY)
+            .build();
+
+        {
+            let window = window.downgrade();
+            let edge = grip.edge;
+
+            click.connect_pressed(move |gesture, _presses, x, y| {
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+
+                if window.is_maximized() || window.is_fullscreen() {
+                    return;
+                }
+
+                let (Some(widget), Some(device), Some(surface)) =
+                    (gesture.widget(), gesture.device(), window.surface())
+                else {
+                    return;
+                };
+
+                let Ok(toplevel) = surface.downcast::<gtk::gdk::Toplevel>() else {
+                    return;
+                };
+
+                let (surface_x, surface_y) = widget
+                    .translate_coordinates(&window, x, y)
+                    .unwrap_or((x, y));
+
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+
+                toplevel.begin_resize(
+                    edge,
+                    Some(&device),
+                    gtk::gdk::BUTTON_PRIMARY as i32,
+                    surface_x,
+                    surface_y,
+                    gesture.current_event_time(),
+                );
+            });
+        }
+
+        strip.add_controller(click);
+
+        overlay.add_overlay(&strip);
+
+        widgets.push(strip);
+    }
+
+    let sync = move |window: &ApplicationWindow| {
+        let resizable = !window.is_maximized() && !window.is_fullscreen();
+
+        for strip in &widgets {
+            strip.set_visible(resizable);
+        }
+    };
+
+    sync(window);
+
+    let sync = std::rc::Rc::new(sync);
+
+    {
+        let sync = sync.clone();
+
+        window.connect_maximized_notify(move |window| sync(window));
+    }
+
+    window.connect_fullscreened_notify(move |window| sync(window));
+}
+
 #[cfg(test)]
 mod tests {
     use super::maximize_icon;

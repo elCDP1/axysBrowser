@@ -80,14 +80,17 @@ impl HistoryManager {
     }
 
     fn load_from(path: PathBuf) -> Self {
-        let mut entries = fs::read_to_string(&path)
-            .ok()
-            .and_then(|contents| {
-                toml::from_str::<HistoryStore>(&contents)
-                    .ok()
-                    .map(|store| store.entries)
-            })
-            .unwrap_or_default();
+        let mut entries = match fs::read_to_string(&path) {
+            Ok(contents) => match toml::from_str::<HistoryStore>(&contents) {
+                Ok(store) => store.entries,
+                Err(_) => {
+                    crate::paths::quarantine_corrupt(&path);
+
+                    Vec::new()
+                }
+            },
+            Err(_) => Vec::new(),
+        };
 
         if entries.len() > MAX_HISTORY_ENTRIES {
             let remove_count = entries.len() - MAX_HISTORY_ENTRIES;
@@ -990,5 +993,39 @@ mod tests {
         drop(loaded);
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_corrupt_history_is_preserved_before_using_defaults() {
+        let dir = std::env::temp_dir().join(format!("axys-history-corrupt-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("history.toml");
+
+        fs::write(&path, "entries = [oops").unwrap();
+
+        let manager = HistoryManager::load_from(path.clone());
+
+        assert!(manager.entries.borrow().is_empty());
+        assert!(!path.exists());
+
+        let backup = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("history.toml.corrupt-")
+            })
+            .expect("the corrupt history must be preserved");
+
+        assert_eq!(
+            fs::read_to_string(backup.path()).unwrap(),
+            "entries = [oops"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

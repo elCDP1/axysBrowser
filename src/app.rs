@@ -5,23 +5,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::app_state::AppState;
+use crate::browser::engine::running_under_wsl;
 use crate::ui::window::{build_window, build_window_with_url};
-
-fn running_under_wsl() -> bool {
-    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
-        return true;
-    }
-
-    if let Ok(version) = std::fs::read_to_string("/proc/version") {
-        let lower = version.to_ascii_lowercase();
-
-        if lower.contains("microsoft") || lower.contains("wsl") {
-            return true;
-        }
-    }
-
-    false
-}
 
 /// Whether the unprivileged user and network namespaces WebKit's bubblewrap
 /// sandbox needs actually work here. Ubuntu 24.04 restricts them with
@@ -54,6 +39,30 @@ fn sandbox_available() -> bool {
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Forcing the sandbox is a security promise: if the namespace probe fails,
+/// silently running without it would be worse than not starting at all.
+fn forced_sandbox_must_abort(force_sandbox: bool, sandbox_available: bool) -> bool {
+    force_sandbox && !sandbox_available
+}
+
+/// Turns off GTK's own event and input-feedback sounds. Website audio is
+/// WebKit/WebAudio and is deliberately untouched; this only removes feedback
+/// such as a beep when a button or destructive action is activated.
+fn disable_interface_sounds() {
+    let Some(settings) = gtk::Settings::default() else {
+        return;
+    };
+
+    for key in [
+        "gtk-enable-event-sounds",
+        "gtk-enable-input-feedback-sounds",
+    ] {
+        if settings.find_property(key).is_some() {
+            settings.set_property(key, false);
+        }
+    }
 }
 
 /// WebKit's DMA-BUF renderer is the fast GPU path on real Linux, but it can
@@ -650,6 +659,16 @@ pub fn run() -> gtk::glib::ExitCode {
     let disable_var = std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS");
     let force_sandbox = env_flag_is_set_os(std::env::var_os("AXYS_FORCE_SANDBOX").as_deref());
     let disable_requested = env_flag_is_set_os(disable_var.as_deref());
+    let sandbox_ready = sandbox_available();
+
+    if forced_sandbox_must_abort(force_sandbox, sandbox_ready) {
+        eprintln!(
+            "AXYS_FORCE_SANDBOX is set, but bubblewrap cannot create the required \
+             user/network namespaces. Refusing to start without the sandbox."
+        );
+
+        std::process::exit(1);
+    }
 
     if disable_var.is_some() && !disable_requested {
         unsafe {
@@ -682,7 +701,7 @@ pub fn run() -> gtk::glib::ExitCode {
                 }
 
                 eprintln!("WSL detected: WebKit sandbox disabled for compatibility");
-            } else if !sandbox_available() {
+            } else if !sandbox_ready {
                 unsafe {
                     std::env::set_var("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS", "1");
                 }
@@ -707,6 +726,7 @@ pub fn run() -> gtk::glib::ExitCode {
 
         app.connect_startup(move |app| {
             register_icon_theme();
+            disable_interface_sounds();
 
             let state = AppState::load(app);
 
@@ -769,11 +789,13 @@ pub fn run() -> gtk::glib::ExitCode {
                 let target = if is_web || is_internal || is_existing_file {
                     Some(uri)
                 } else {
-                    file.basename().map(|base| {
-                        let input = base.to_string_lossy().to_string();
-
-                        crate::browser::address::resolve_input(&input, &state.search.borrow())
-                    })
+                    file.path()
+                        .and_then(|path| {
+                            bare_input_from_path(&path, std::env::current_dir().ok().as_deref())
+                        })
+                        .map(|input| {
+                            crate::browser::address::resolve_input(&input, &state.search.borrow())
+                        })
                 };
 
                 if let Some(target) = target {
@@ -798,9 +820,54 @@ pub fn run() -> gtk::glib::ExitCode {
     app.run_with_args(&args)
 }
 
+/// Recovers what the user typed from the file GApplication made of it.
+///
+/// A bare word on the command line (`axysbrowser example.com/page`) reaches
+/// `open` as a path under the launch directory. Keeping only the last path
+/// segment turned that into a search for `page`; stripping the launch
+/// directory gives back `example.com/page`. When the path is not below the
+/// current directory (a remote activation from another directory) the last
+/// segment is all that is left.
+fn bare_input_from_path(path: &std::path::Path, cwd: Option<&std::path::Path>) -> Option<String> {
+    let relative = cwd
+        .and_then(|cwd| path.strip_prefix(cwd).ok())
+        .filter(|relative| !relative.as_os_str().is_empty());
+
+    let text = match relative {
+        Some(relative) => relative.as_os_str(),
+        None => path.file_name()?,
+    };
+
+    Some(text.to_string_lossy().into_owned())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{env_flag_is_set_os, should_disable_dmabuf};
+    use super::{
+        bare_input_from_path, env_flag_is_set_os, forced_sandbox_must_abort, should_disable_dmabuf,
+    };
+    use std::path::Path;
+
+    #[test]
+    fn a_bare_address_keeps_every_segment_below_the_launch_directory() {
+        let cwd = Path::new("/home/user");
+
+        assert_eq!(
+            bare_input_from_path(Path::new("/home/user/example.com/page"), Some(cwd)).as_deref(),
+            Some("example.com/page")
+        );
+        assert_eq!(
+            bare_input_from_path(Path::new("/home/user/example.com"), Some(cwd)).as_deref(),
+            Some("example.com")
+        );
+        // Another launch directory: only the last segment is recoverable.
+        assert_eq!(
+            bare_input_from_path(Path::new("/srv/example.com/page"), Some(cwd)).as_deref(),
+            Some("page")
+        );
+        assert_eq!(bare_input_from_path(Path::new("/"), None), None);
+    }
+
     use std::ffi::OsStr;
 
     #[test]
@@ -843,5 +910,13 @@ mod tests {
                 "{value:?} must count as set"
             );
         }
+    }
+
+    #[test]
+    fn a_forced_sandbox_refuses_to_start_without_namespaces() {
+        assert!(forced_sandbox_must_abort(true, false));
+        assert!(!forced_sandbox_must_abort(true, true));
+        assert!(!forced_sandbox_must_abort(false, false));
+        assert!(!forced_sandbox_must_abort(false, true));
     }
 }

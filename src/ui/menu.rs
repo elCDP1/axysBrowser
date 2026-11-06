@@ -714,6 +714,10 @@ pub fn build_picker(
 
     current.set_halign(Align::Start);
     current.set_hexpand(true);
+    // Keep long translations from stretching a settings row: the full text
+    // stays available in the tooltip set below.
+    current.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    current.set_max_width_chars(24);
 
     let arrow = Image::from_icon_name("pan-down-symbolic");
 

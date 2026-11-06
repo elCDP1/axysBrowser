@@ -189,6 +189,11 @@ pub fn build_settings(
         show_picker.clone(),
     );
 
+    // A picker is a control, not a full-width row: right-align it at its
+    // natural width so "Block third-party" cannot claim half the page.
+    cookies.set_halign(gtk::Align::End);
+    cookies.set_valign(gtk::Align::Center);
+
     cookies_row.append(&cookies);
 
     let clear_row = row(
