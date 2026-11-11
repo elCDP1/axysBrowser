@@ -324,16 +324,23 @@ pub fn build_settings(
         let permissions_desc_label = permissions_desc_label.clone();
 
         permissions_reset.connect_clicked(move |_| {
-            permissions.clear_all();
+            match permissions.clear_all() {
+                Ok(()) => {
+                    // Refresh the count in place: the description is built once.
+                    permissions_desc_label.set_text(&format!(
+                        "{} ({})",
+                        rust_i18n::t!("settings.permissions_description"),
+                        permissions.decision_count()
+                    ));
 
-            // Refresh the count in place: the description is built once.
-            permissions_desc_label.set_text(&format!(
-                "{} ({})",
-                rust_i18n::t!("settings.permissions_description"),
-                permissions.decision_count()
-            ));
-
-            permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
+                    permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
+                }
+                Err(error) => {
+                    eprintln!("Failed to forget permissions: {error}");
+                    permissions_status
+                        .set_text(&rust_i18n::t!("settings.permissions_clear_failed"));
+                }
+            }
         });
     }
 

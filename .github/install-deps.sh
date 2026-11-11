@@ -11,6 +11,18 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
+# GitHub's ubuntu-24.04 image points apt at an Azure mirror over plain HTTP.
+# That endpoint intermittently stops answering on hosted runners; the
+# 5-minute update cap then kills the job before anything is compiled. Prefer
+# the canonical HTTPS archive and force IPv4 so a broken IPv6 route cannot
+# stall the update either.
+if [ -f /etc/apt/apt-mirrors.txt ]; then
+  sudo sed -i \
+    -e 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' \
+    -e 's|https://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' \
+    /etc/apt/apt-mirrors.txt
+fi
+
 packages=(
   libgtk-4-dev
   libwebkitgtk-6.0-dev
@@ -21,6 +33,7 @@ packages=(
 
 apt_options=(
   -o Acquire::Retries=5
+  -o Acquire::ForceIPv4=true
   -o Acquire::http::Timeout=60
   -o Acquire::https::Timeout=60
 )

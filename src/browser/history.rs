@@ -222,7 +222,9 @@ impl HistoryManager {
             .collect()
     }
 
-    pub fn remove_url(&self, url: &str) -> bool {
+    pub fn remove_url(&self, url: &str) -> io::Result<bool> {
+        let previous = self.entries.borrow().clone();
+
         let removed = {
             let mut entries = self.entries.borrow_mut();
 
@@ -233,11 +235,23 @@ impl HistoryManager {
             entries.len() != before
         };
 
-        if removed {
-            self.persist_and_notify();
+        if !removed {
+            return Ok(false);
         }
 
-        removed
+        if let Err(error) = self.save() {
+            // Keep memory in sync with disk: a failed write must not make the
+            // page show a deletion that will come back on restart.
+            *self.entries.borrow_mut() = previous;
+
+            self.notify();
+
+            return Err(error);
+        }
+
+        self.notify();
+
+        Ok(true)
     }
 
     /// Forgets every entry and rewrites the history file. Always touches
@@ -245,9 +259,26 @@ impl HistoryManager {
     /// not be parsed at load time never survive a "clear"; the error is
     /// returned so callers can avoid claiming success.
     pub fn clear(&self) -> io::Result<()> {
-        self.entries.borrow_mut().clear();
+        // Write first, then commit the empty list: clearing memory before the
+        // write left the page empty even when the file still held every visit.
+        let previous = self.entries.replace(Vec::new());
 
-        let result = self.save();
+        if let Err(error) = self.save() {
+            *self.entries.borrow_mut() = previous;
+
+            return Err(error);
+        }
+
+        // Backups of an unreadable history file still hold browsing data.
+        let mut result = Ok(());
+
+        if let Some(path) = self.path.as_ref() {
+            result = match crate::paths::remove_corrupt_backups(path) {
+                Ok(0) => Ok(()),
+                Ok(_) => Err(io::Error::other("could not remove a history backup")),
+                Err(error) => Err(error),
+            };
+        }
 
         self.notify();
 
@@ -256,7 +287,9 @@ impl HistoryManager {
 
     /// Deletes every entry older than `max_age_secs`. Returns how many were
     /// removed. Used by the manual "delete older than …" tools.
-    pub fn remove_older_than(&self, max_age_secs: u64) -> usize {
+    pub fn remove_older_than(&self, max_age_secs: u64) -> io::Result<usize> {
+        let previous = self.entries.borrow().clone();
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs());
@@ -271,11 +304,21 @@ impl HistoryManager {
             before - entries.len()
         };
 
-        if removed > 0 {
-            self.persist_and_notify();
+        if removed == 0 {
+            return Ok(0);
         }
 
-        removed
+        if let Err(error) = self.save() {
+            *self.entries.borrow_mut() = previous;
+
+            self.notify();
+
+            return Err(error);
+        }
+
+        self.notify();
+
+        Ok(removed)
     }
 
     pub fn subscribe(&self, callback: &Rc<dyn Fn()>) {
@@ -358,14 +401,6 @@ impl HistoryManager {
 
             eprintln!("Failed to save browsing history: {error}");
         }
-    }
-
-    fn persist_and_notify(&self) {
-        if let Err(error) = self.save() {
-            eprintln!("Failed to save browsing history: {error}");
-        }
-
-        self.notify();
     }
 
     fn notify(&self) {
@@ -469,7 +504,7 @@ mod tests {
             .borrow_mut()
             .push(entry_at("https://new.example", now - 10));
 
-        let removed = manager.remove_older_than(3_600);
+        let removed = manager.remove_older_than(3_600).unwrap();
 
         assert_eq!(removed, 1);
 
@@ -492,6 +527,65 @@ mod tests {
         assert_eq!(manager.search_limited("españa", usize::MAX).len(), 1);
         assert_eq!(manager.search_limited("ESPAÑA", usize::MAX).len(), 1);
         assert!(manager.search_limited("portugal", usize::MAX).is_empty());
+    }
+
+    #[test]
+    fn a_failed_clear_keeps_the_history_visible() {
+        let manager = test_manager("clear-failure");
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://keep.example", 1));
+
+        block_path(test_path(&manager));
+
+        assert!(manager.clear().is_err());
+        assert_eq!(
+            manager.search_limited("", usize::MAX).len(),
+            1,
+            "a failed clear must not hide entries that still exist on disk"
+        );
+
+        let _ = fs::remove_dir_all(test_path(&manager));
+    }
+
+    #[test]
+    fn a_failed_remove_keeps_the_entry_visible() {
+        let manager = test_manager("remove-failure");
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://keep.example", 1));
+
+        block_path(test_path(&manager));
+
+        assert!(manager.remove_url("https://keep.example").is_err());
+        assert_eq!(manager.search_limited("", usize::MAX).len(), 1);
+
+        let _ = fs::remove_dir_all(test_path(&manager));
+    }
+
+    #[test]
+    fn a_failed_purge_keeps_the_entries_visible() {
+        let manager = test_manager("purge-failure");
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+
+        manager
+            .entries
+            .borrow_mut()
+            .push(entry_at("https://old.example", now - 100_000));
+
+        block_path(test_path(&manager));
+
+        assert!(manager.remove_older_than(3_600).is_err());
+        assert_eq!(manager.search_limited("", usize::MAX).len(), 1);
+
+        let _ = fs::remove_dir_all(test_path(&manager));
     }
 
     #[test]
@@ -993,6 +1087,41 @@ mod tests {
         drop(loaded);
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn clearing_history_also_removes_the_corrupt_backup() {
+        let dir =
+            std::env::temp_dir().join(format!("axys-history-clear-bak-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("history.toml");
+
+        fs::write(&path, "entries = [oops").unwrap();
+
+        let manager = HistoryManager::load_from(path.clone());
+
+        let backups = |dir: &std::path::Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("history.toml.corrupt-")
+                })
+                .count()
+        };
+
+        assert_eq!(backups(&dir), 1);
+
+        manager.clear().unwrap();
+
+        assert_eq!(backups(&dir), 0);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

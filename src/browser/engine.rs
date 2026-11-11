@@ -35,6 +35,20 @@ pub(crate) fn running_under_wsl() -> bool {
 
 pub struct BrowserEngine;
 
+/// Whether a `Content-Disposition` header value asks for a download. Only
+/// the disposition type counts (`attachment`, any case, optionally followed
+/// by parameters); `inline` and anything else is shown normally.
+fn is_attachment_disposition(value: &str) -> bool {
+    let kind = value
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+
+    kind == "attachment"
+}
+
 const SOURCE_VIEW_KEY: &str = "axys-source-view";
 
 /// Handles WebKit's `authenticate` signal; the handler owns the request and
@@ -350,12 +364,21 @@ fn decode_mountinfo_field(raw: &str) -> String {
                 .iter()
                 .all(|byte| (b'0'..=b'7').contains(byte))
         {
+            // Three octal digits reach 511: `\777` does not fit a byte and
+            // used to overflow (a panic in debug builds). The kernel only
+            // emits \040, \011, \012 and \134, so anything larger is kept
+            // as literal text.
             let value = bytes[index + 1..=index + 3]
                 .iter()
-                .fold(0_u8, |value, byte| value * 8 + (byte - b'0'));
+                .fold(0_u32, |value, byte| value * 8 + u32::from(byte - b'0'));
 
-            decoded.push(value);
-            index += 4;
+            if let Ok(value) = u8::try_from(value) {
+                decoded.push(value);
+                index += 4;
+            } else {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
         } else {
             decoded.push(bytes[index]);
             index += 1;
@@ -716,6 +739,16 @@ fn memory_limit_override(usable_ram_mb: u64) -> Option<u32> {
 }
 
 fn tune_memory_pressure() {
+    // The settings are process-wide and WebKit reads them before the first
+    // session exists, yet every new session (each private window) called
+    // this again, re-reading /proc and the cgroup files and logging the
+    // ceiling again. Apply them once.
+    static APPLIED: std::sync::Once = std::sync::Once::new();
+
+    APPLIED.call_once(apply_memory_pressure_settings);
+}
+
+fn apply_memory_pressure_settings() {
     // Discord / Slack / Figma easily exceed WebKit's default web-process
     // memory limit and get killed with ExceededMemoryLimit. Raise the ceiling
     // globally (once per process is enough; the call is process-wide), sized
@@ -875,6 +908,12 @@ mod memory_policy_tests {
             ]
         );
         assert_eq!(decode_mountinfo_field("/a\\040b\\011c"), "/a b\tc");
+    }
+
+    #[test]
+    fn an_octal_escape_beyond_a_byte_is_kept_literally_without_overflow() {
+        assert_eq!(decode_mountinfo_field("/a\\777b"), "/a\\777b");
+        assert_eq!(decode_mountinfo_field("/a\\377"), "/a\u{fffd}");
     }
 
     #[test]
@@ -1391,12 +1430,20 @@ impl BrowserEngine {
                     true
                 }
                 PolicyDecisionType::Response => {
-                    let supported = decision
-                        .downcast_ref::<ResponsePolicyDecision>()
-                        .map(|d| d.is_mime_type_supported())
-                        .unwrap_or(true);
+                    let response = decision.downcast_ref::<ResponsePolicyDecision>();
 
-                    if supported {
+                    let supported = response.map(|d| d.is_mime_type_supported()).unwrap_or(true);
+
+                    // `Content-Disposition: attachment` asks for a download
+                    // even when the type could be shown (text, images, PDF):
+                    // the MIME type alone made those open in the tab.
+                    let attachment = response
+                        .and_then(|d| d.response())
+                        .and_then(|r| r.http_headers())
+                        .and_then(|headers| headers.one("Content-Disposition"))
+                        .is_some_and(|value| is_attachment_disposition(&value));
+
+                    if supported && !attachment {
                         decision.use_();
                     } else {
                         // e.g. Discord file / blob downloads: hand to the
@@ -1558,6 +1605,9 @@ impl BrowserEngine {
         {
             dialog.set_transient_for(Some(&parent));
         }
+
+        // Escape dismisses the prompt, which counts as "not allowed".
+        crate::ui::window_controls::close_on_escape(&dialog);
 
         let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
 
@@ -2197,6 +2247,21 @@ impl BrowserEngine {
 
 #[cfg(test)]
 mod tests {
+    use super::is_attachment_disposition;
+
+    #[test]
+    fn only_the_attachment_disposition_forces_a_download() {
+        assert!(is_attachment_disposition("attachment"));
+        assert!(is_attachment_disposition("Attachment; filename=\"a.txt\""));
+        assert!(is_attachment_disposition("  ATTACHMENT ;filename=x"));
+        assert!(!is_attachment_disposition("inline"));
+        assert!(!is_attachment_disposition(
+            "inline; filename=\"attachment\""
+        ));
+        assert!(!is_attachment_disposition("attachments"));
+        assert!(!is_attachment_disposition(""));
+    }
+
     use super::*;
 
     const A: &str = "https://example.com/a";

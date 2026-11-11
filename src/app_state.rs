@@ -475,6 +475,10 @@ impl AppState {
         self.network_session.set_itp_enabled(enabled);
 
         self.save();
+
+        // Already-open private windows own ephemeral sessions that the line
+        // above cannot reach; their `settings_refresh` re-applies ITP.
+        self.notify_settings_changed();
     }
 
     /// Clipboard reads allowed without a per-site prompt (applied live: the

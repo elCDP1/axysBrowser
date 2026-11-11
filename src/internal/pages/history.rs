@@ -62,7 +62,9 @@ fn build_entry_row(
         let url = entry.url.clone();
 
         remove.connect_clicked(move |_| {
-            manager.remove_url(&url);
+            if let Err(error) = manager.remove_url(&url) {
+                eprintln!("Failed to remove history entry: {error}");
+            }
         });
     }
 

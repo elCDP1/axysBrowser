@@ -8,7 +8,7 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.2.3`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.2.4`. Linux only (a Windows build is experimental and not working yet).
 
 ## Contents
 

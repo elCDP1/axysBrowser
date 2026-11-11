@@ -49,6 +49,8 @@ fn bookmark_dialog(
         dialog.set_transient_for(Some(&parent_window));
     }
 
+    super::window_controls::close_on_escape(&dialog);
+
     let content = Box::new(Orientation::Vertical, 12);
 
     content.set_margin_top(18);
@@ -104,6 +106,22 @@ fn bookmark_dialog(
     buttons.append(&save);
 
     content.append(&buttons);
+
+    // The red "invalid" border must go away as soon as the field is edited,
+    // and Enter in either field saves like the Save button.
+    {
+        url.connect_changed(|url| url.remove_css_class("error"));
+
+        let save = save.clone();
+
+        name.connect_activate(move |_| save.emit_clicked());
+    }
+
+    {
+        let save = save.clone();
+
+        url.connect_activate(move |_| save.emit_clicked());
+    }
 
     {
         let dialog = dialog.downgrade();
@@ -166,8 +184,9 @@ fn bookmark_dialog(
         let existing = existing.clone();
 
         remove.connect_clicked(move |_| {
-            if let Some(bookmark) = existing.as_ref() {
-                state.bookmarks.remove(&bookmark.url);
+            if let Some(bookmark) = existing.as_ref()
+                && state.bookmarks.remove(&bookmark.url)
+            {
                 refresh_star();
 
                 if let Some(dialog) = dialog.upgrade() {

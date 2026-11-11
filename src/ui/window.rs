@@ -406,6 +406,7 @@ fn build_browser_window(
     };
 
     let select_tab: Rc<dyn Fn(usize)> = {
+        let window_weak = window.downgrade();
         let tabs = tabs.clone();
         let active_id = active_id.clone();
         let top_stack = top_stack.clone();
@@ -466,8 +467,14 @@ fn build_browser_window(
                 None
             };
 
-            // Keep an open findbar searching in the newly shown tab.
-            if showing_web && let Some(findbar) = findbar_slot.borrow().as_ref() {
+            // There is nothing to find on an internal page: close the bar
+            // instead of leaving it over the page with a stale count.
+            if !showing_web {
+                if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                    findbar.hide();
+                }
+            } else if let Some(findbar) = findbar_slot.borrow().as_ref() {
+                // Keep an open findbar searching in the newly shown tab.
                 findbar.research_in(&web_view);
             }
 
@@ -498,6 +505,19 @@ fn build_browser_window(
 
             if let Some(bookmark_bar) = bookmark_bar_slot.borrow().as_ref() {
                 bookmark_bar.refresh();
+            }
+
+            // The task switcher used to keep the title of the tab that was
+            // active when the window opened: update it on every switch.
+            if let Some(window) = window_weak.upgrade() {
+                let page_title = tabs
+                    .borrow()
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| tab.title.clone())
+                    .unwrap_or_default();
+
+                window.set_title(Some(&window_title_for(&page_title, private_mode)));
             }
         })
     };
@@ -1198,6 +1218,10 @@ fn build_browser_window(
         })
     };
 
+    // Captured by `new_tab` below: using `window` directly there would move
+    // the only strong handle into that closure.
+    let window_weak = window.downgrade();
+
     let new_tab: NewTabCallback = {
         let tabs = tabs.clone();
         let next_id = next_id.clone();
@@ -1580,6 +1604,7 @@ fn build_browser_window(
             }
 
             {
+                let window_weak = window_weak.clone();
                 let tabs = tabs.clone();
                 let active_id = active_id.clone();
                 let tabbar_slot = tabbar_slot.clone();
@@ -1595,7 +1620,9 @@ fn build_browser_window(
                             if private_mode {
                                 rust_i18n::t!("privacy.title").to_string()
                             } else {
-                                rust_i18n::t!("app.new_tab").to_string()
+                                view.uri()
+                                    .and_then(|uri| crate::browser::address::title_from_uri(&uri))
+                                    .unwrap_or_else(|| rust_i18n::t!("app.new_tab").to_string())
                             }
                         });
 
@@ -1604,13 +1631,19 @@ fn build_browser_window(
                             return;
                         }
 
-                        tab.title = title;
+                        tab.title = title.clone();
                     }
 
                     if let Some(slot) = tabbar_slot.upgrade()
                         && let Some(tabbar) = slot.borrow().as_ref()
                     {
                         tabbar.refresh(&tabs.borrow(), active_id.get());
+                    }
+
+                    if active_id.get() == id
+                        && let Some(window) = window_weak.upgrade()
+                    {
+                        window.set_title(Some(&window_title_for(&title, private_mode)));
                     }
                 });
             }
@@ -1694,8 +1727,37 @@ fn build_browser_window(
                 let toolbar_slot = toolbar_slot.clone();
                 let window_history = window_history.clone();
                 let current_web_view = current_web_view.clone();
+                let tabs = tabs.clone();
+                let tabbar_slot = tabbar_slot.clone();
 
                 web_view.connect_load_changed(move |view, event| {
+                    // A page without a `<title>` never fires a title change,
+                    // so the tab kept its "New tab" placeholder: name it
+                    // after the address once the load is over.
+                    if event == LoadEvent::Finished
+                        && !private_mode
+                        && view.title().is_none_or(|title| title.trim().is_empty())
+                        && let Some(title) = view
+                            .uri()
+                            .and_then(|uri| crate::browser::address::title_from_uri(&uri))
+                    {
+                        let mut changed = false;
+
+                        if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id)
+                            && tab.content.visible_child_name().as_deref() == Some("web")
+                        {
+                            tab.title = title;
+                            changed = true;
+                        }
+
+                        if changed
+                            && let Some(slot) = tabbar_slot.upgrade()
+                            && let Some(tabbar) = slot.borrow().as_ref()
+                        {
+                            tabbar.refresh(&tabs.borrow(), active_id.get());
+                        }
+                    }
+
                     // History is per-window, not per-visible-tab: a page
                     // finishing in the background must still be recorded.
                     // Private windows use an ephemeral manager, so this
@@ -1788,67 +1850,89 @@ fn build_browser_window(
             let base_for_load = base.clone();
             let current_web_view = current_web_view.clone();
 
-            view.evaluate_javascript(
-                "document.documentElement ? document.documentElement.outerHTML : ''",
-                None,
-                None,
-                gio::Cancellable::NONE,
-                move |result| {
-                    let source = match result {
-                        Ok(value) => value.to_str().to_string(),
-                        Err(error) => {
-                            eprintln!("Failed to read page source: {error}");
+            // Show the raw bytes the server sent, not the live DOM: the
+            // serialized DOM drops the doctype and rewrites attributes.
+            let show: Rc<dyn Fn(String)> = Rc::new(move |source: String| {
+                let document = crate::internal::pages::tools::source_document(&source);
 
-                            return;
-                        }
-                    };
+                let id = new_tab(None);
 
-                    let document = crate::internal::pages::tools::source_document(&source);
+                let tab_data = tabs
+                    .borrow()
+                    .iter()
+                    .find(|tab| tab.id == id)
+                    .map(|tab| (tab.content.clone(), tab.web_view.clone()));
 
-                    let id = new_tab(None);
+                if let Some((content, web_view)) = tab_data {
+                    // new_tab(None) lands on the New Tab child; switch
+                    // to the web child or the source document would be
+                    // loaded invisibly.
+                    content.set_visible_child_name("web");
 
-                    let tab_data = tabs
-                        .borrow()
-                        .iter()
-                        .find(|tab| tab.id == id)
-                        .map(|tab| (tab.content.clone(), tab.web_view.clone()));
-
-                    if let Some((content, web_view)) = tab_data {
-                        // new_tab(None) lands on the New Tab child; switch
-                        // to the web child or the source document would be
-                        // loaded invisibly.
-                        content.set_visible_child_name("web");
-
-                        if active_id.get() == id {
-                            *current_web_view.borrow_mut() = Some(web_view.clone());
-                        }
-
-                        if base_for_load.as_deref().is_some_and(is_web_uri) {
-                            BrowserEngine::mark_source_view(&web_view);
-                        }
-
-                        web_view.load_html(&document, base_for_load.as_deref());
+                    if active_id.get() == id {
+                        *current_web_view.borrow_mut() = Some(web_view.clone());
                     }
 
-                    // Mark the tab like Chromium's view-source: address.
-                    let label = base_for_load
-                        .as_ref()
-                        .map(|base| format!("view-source:{base}"))
-                        .unwrap_or_else(|| "view-source:".to_string());
-
-                    if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
-                        tab.uri = label.clone();
-                        tab.title = rust_i18n::t!("tools.view_source").to_string();
+                    if base_for_load.as_deref().is_some_and(is_web_uri) {
+                        BrowserEngine::mark_source_view(&web_view);
                     }
 
-                    if active_id.get() == id
-                        && let Some(slot) = toolbar_slot.upgrade()
-                        && let Some(toolbar) = slot.borrow().as_ref()
-                    {
-                        toolbar.address.set_text(&label);
-                    }
-                },
-            );
+                    web_view.load_html(&document, base_for_load.as_deref());
+                }
+
+                // Mark the tab like Chromium's view-source: address.
+                let label = base_for_load
+                    .as_ref()
+                    .map(|base| format!("view-source:{base}"))
+                    .unwrap_or_else(|| "view-source:".to_string());
+
+                if let Some(tab) = tabs.borrow_mut().iter_mut().find(|tab| tab.id == id) {
+                    tab.uri = label.clone();
+                    tab.title = rust_i18n::t!("tools.view_source").to_string();
+                }
+
+                if active_id.get() == id
+                    && let Some(slot) = toolbar_slot.upgrade()
+                    && let Some(toolbar) = slot.borrow().as_ref()
+                {
+                    toolbar.address.set_text(&label);
+                }
+            });
+
+            let from_dom: Rc<dyn Fn()> = {
+                let view = view.clone();
+                let show = show.clone();
+
+                Rc::new(move || {
+                    let show = show.clone();
+
+                    view.evaluate_javascript(
+                        "document.documentElement ? document.documentElement.outerHTML : ''",
+                        None,
+                        None,
+                        gio::Cancellable::NONE,
+                        move |result| match result {
+                            Ok(value) => show(value.to_str().to_string()),
+                            Err(error) => eprintln!("Failed to read page source: {error}"),
+                        },
+                    );
+                })
+            };
+
+            match view.main_resource() {
+                Some(resource) => {
+                    let show = show.clone();
+                    let from_dom = from_dom.clone();
+
+                    resource.data(gio::Cancellable::NONE, move |result| match result {
+                        Ok(bytes) if !bytes.is_empty() => {
+                            show(String::from_utf8_lossy(&bytes).into_owned());
+                        }
+                        _ => from_dom(),
+                    });
+                }
+                None => from_dom(),
+            }
         })
     };
 
@@ -2500,6 +2584,10 @@ fn build_browser_window(
                 &session,
                 &state.settings.borrow().cookie_policy,
             );
+
+            // A private window's ephemeral session is not the profile session
+            // updated by `set_tracking_prevention`, so re-apply ITP here too.
+            session.set_itp_enabled(state.settings.borrow().tracking_prevention);
 
             for tab in tabs.borrow().iter() {
                 if let Some(settings) = webkit6::prelude::WebViewExt::settings(&tab.web_view) {

@@ -61,6 +61,7 @@ settings:
   permissions_description: "Notifications, camera, microphone and other per-site decisions you remembered."
   permissions_reset: "Forget all"
   permissions_cleared: "Permissions forgotten."
+  permissions_clear_failed: "Could not forget permissions."
 
 error:
   crashed_title: "This page crashed"
@@ -102,6 +103,7 @@ tools:
   clearing: "Clearing…"
   clear_failed: "Could not clear everything."
   purged: "Deleted %{count} entries."
+  purge_failed: "Could not delete the history."
   note: "History, cookies, favicon cache and disk cache. Bookmarks are kept."
   open_downloads: "Downloads"
   bookmarks: "Bookmarks manager"

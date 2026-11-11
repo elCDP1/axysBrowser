@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::rc::Rc;
 
@@ -269,8 +270,8 @@ impl PermissionManager {
 
         // Persist immediately: otherwise a crash before the next decision
         // would leave the old `media` key on disk to migrate again.
-        if migrated {
-            manager.save();
+        if migrated && let Err(error) = manager.save() {
+            eprintln!("Failed to save permissions: {error}");
         }
 
         manager
@@ -361,14 +362,41 @@ impl PermissionManager {
             }
         }
 
-        self.save();
+        if let Err(error) = self.save() {
+            eprintln!("Failed to save permissions: {error}");
+        }
     }
 
     /// Forgets every remembered decision.
-    pub fn clear_all(&self) {
+    pub fn clear_all(&self) -> io::Result<()> {
+        // Write the empty store before clearing memory: if the profile is
+        // read-only, the UI must keep showing the decisions that are still on
+        // disk instead of claiming they were forgotten.
+        if let Some(path) = self.path.as_ref() {
+            let empty = PermissionStore::default();
+
+            let contents = toml::to_string_pretty(&empty).map_err(io::Error::other)?;
+
+            crate::paths::atomic_write(path, &contents)?;
+        }
+
         self.store.borrow_mut().decisions.clear();
 
-        self.save();
+        // The sidecar of an unreadable permissions file still contains
+        // origin/verdict pairs. Forgetting every decision must remove it too.
+        if let Some(path) = self.path.as_ref() {
+            match crate::paths::remove_corrupt_backups(path) {
+                Ok(0) => {}
+                Ok(failed) => {
+                    return Err(io::Error::other(format!(
+                        "could not remove {failed} permissions backup(s)"
+                    )));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        Ok(())
     }
 
     /// How many (origin, kind) decisions are stored.
@@ -381,19 +409,14 @@ impl PermissionManager {
             .sum()
     }
 
-    fn save(&self) {
+    fn save(&self) -> io::Result<()> {
         let Some(path) = self.path.as_ref() else {
-            return;
+            return Ok(());
         };
 
-        match toml::to_string_pretty(&*self.store.borrow()) {
-            Ok(contents) => {
-                if let Err(error) = crate::paths::atomic_write(path, &contents) {
-                    eprintln!("Failed to save permissions: {error}");
-                }
-            }
-            Err(error) => eprintln!("Failed to serialize permissions: {error}"),
-        }
+        let contents = toml::to_string_pretty(&*self.store.borrow()).map_err(io::Error::other)?;
+
+        crate::paths::atomic_write(path, &contents)
     }
 
     fn storage_path() -> PathBuf {
@@ -547,7 +570,7 @@ mod tests {
         // A combined grant is stored as two independent device decisions.
         assert_eq!(manager.decision_count(), 2);
 
-        manager.clear_all();
+        manager.clear_all().unwrap();
 
         assert_eq!(manager.decision_count(), 0);
     }
@@ -621,7 +644,7 @@ mod tests {
         normal.remember(origin, PermissionKind::Camera, true);
         private.remember(origin, PermissionKind::Camera, true);
 
-        private.clear_all();
+        private.clear_all().unwrap();
 
         assert_eq!(private.decision_count(), 0);
         assert_eq!(
@@ -749,6 +772,70 @@ mod tests {
             fs::read_to_string(backup.path()).unwrap(),
             "not = [valid toml"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn forgetting_permissions_removes_the_corrupt_backup() {
+        let dir =
+            std::env::temp_dir().join(format!("axys-permissions-clear-bak-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("permissions.toml");
+
+        fs::write(&path, "not = [valid toml").unwrap();
+
+        let manager = PermissionManager::load_from(path.clone());
+
+        let backups = |dir: &std::path::Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with("permissions.toml.corrupt-")
+                })
+                .count()
+        };
+
+        assert_eq!(backups(&dir), 1);
+
+        manager.clear_all().unwrap();
+
+        assert_eq!(backups(&dir), 0);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failed_clear_keeps_the_decisions_visible() {
+        let dir = std::env::temp_dir().join(format!(
+            "axys-permissions-clear-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&dir);
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+
+        let mut store = PermissionStore::default();
+
+        store
+            .decisions
+            .entry("https://meet.example:443".to_string())
+            .or_default()
+            .insert("camera".to_string(), true);
+
+        let manager = PermissionManager {
+            store: Rc::new(RefCell::new(store)),
+            path: Some(dir.clone()),
+        };
+
+        assert!(manager.clear_all().is_err());
+        assert_eq!(manager.decision_count(), 1);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -161,13 +161,27 @@ impl BookmarkManager {
                 .map(|path| path.to_string_lossy().into_owned())
         });
 
+        let new_favicon = favicon_path.clone();
+
         self.bookmarks.borrow_mut().push(Bookmark {
             title,
             url,
             favicon_path,
         });
 
-        self.persist_and_notify();
+        if let Err(error) = self.persist_and_notify() {
+            // Roll back: the dialog must not close (and the star must not fill)
+            // for a bookmark that is not on disk and would vanish on restart.
+            self.bookmarks.borrow_mut().pop();
+
+            if let Some(path) = new_favicon.as_deref() {
+                let _ = fs::remove_file(path);
+            }
+
+            eprintln!("Failed to save bookmarks: {error}");
+
+            return false;
+        }
 
         true
     }
@@ -219,6 +233,9 @@ impl BookmarkManager {
                 .map(|path| path.to_string_lossy().into_owned())
         });
 
+        let new_favicon_path = new_favicon.clone();
+        let old_bookmark = self.bookmarks.borrow()[index].clone();
+
         let old_favicon = {
             let mut bookmarks = self.bookmarks.borrow_mut();
 
@@ -241,44 +258,62 @@ impl BookmarkManager {
             old_favicon
         };
 
+        if let Err(error) = self.persist_and_notify() {
+            self.bookmarks.borrow_mut()[index] = old_bookmark;
+
+            if let Some(path) = new_favicon_path.as_deref()
+                && !self.favicon_referenced(path)
+            {
+                let _ = fs::remove_file(path);
+            }
+
+            eprintln!("Failed to save bookmarks: {error}");
+
+            return false;
+        }
+
         // Drop the previous favicon file once nothing references it, so
-        // editing a URL does not leak a PNG forever.
+        // editing a URL does not leak a PNG forever. This runs only after the
+        // new list is safely on disk: a failed save must not destroy the icon
+        // of the bookmark that is still stored.
         if let Some(old_favicon) = old_favicon.as_deref()
             && !self.favicon_referenced(old_favicon)
         {
             let _ = fs::remove_file(old_favicon);
         }
 
-        self.persist_and_notify();
-
         true
     }
 
     pub fn remove(&self, url: &str) -> bool {
-        let removed_favicon = {
+        let (index, removed) = {
             let mut bookmarks = self.bookmarks.borrow_mut();
 
-            let Some(bookmark) = bookmarks
+            let Some(index) = bookmarks
                 .iter()
-                .find(|bookmark| Self::same_url(&bookmark.url, url))
+                .position(|bookmark| Self::same_url(&bookmark.url, url))
             else {
                 return false;
             };
 
-            let favicon = bookmark.favicon_path.clone();
-
-            bookmarks.retain(|bookmark| !Self::same_url(&bookmark.url, url));
-
-            favicon
+            (index, bookmarks.remove(index))
         };
 
-        if let Some(path) = removed_favicon.as_deref()
+        if let Err(error) = self.persist_and_notify() {
+            // Put it back: removing it from memory before the write made the
+            // list (and the star) claim a deletion that never reached disk.
+            self.bookmarks.borrow_mut().insert(index, removed);
+
+            eprintln!("Failed to save bookmarks: {error}");
+
+            return false;
+        }
+
+        if let Some(path) = removed.favicon_path.as_deref()
             && !self.favicon_referenced(path)
         {
             let _ = fs::remove_file(path);
         }
-
-        self.persist_and_notify();
 
         true
     }
@@ -298,12 +333,12 @@ impl BookmarkManager {
         listeners.push(Rc::downgrade(callback));
     }
 
-    fn persist_and_notify(&self) {
-        if let Err(error) = self.save() {
-            eprintln!("Failed to save bookmarks: {error}");
-        }
+    fn persist_and_notify(&self) -> io::Result<()> {
+        self.save()?;
 
         self.notify();
+
+        Ok(())
     }
 
     fn notify(&self) {
@@ -610,6 +645,50 @@ mod tests {
         );
 
         let _ = fs::remove_file(&manager.path);
+    }
+
+    #[test]
+    fn a_failed_add_does_not_leave_a_bookmark_or_claim_success() {
+        let manager = test_manager("add-failure");
+
+        let path = manager.path.clone();
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir(&path).unwrap();
+
+        assert!(!manager.add_with_favicon("Example", "https://example.com", None));
+        assert!(
+            manager.entries().is_empty(),
+            "the failed add must roll back"
+        );
+        assert_eq!(manager.revision(), 0, "no change was committed");
+
+        let _ = fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn a_failed_remove_keeps_the_bookmark_and_its_revision() {
+        let manager = test_manager("remove-failure");
+
+        assert!(manager.add_with_favicon("Example", "https://example.com", None));
+
+        let revision = manager.revision();
+
+        let path = manager.path.clone();
+
+        let _ = fs::remove_file(&path);
+        fs::create_dir(&path).unwrap();
+
+        assert!(!manager.remove("https://example.com"));
+        assert!(manager.contains("https://example.com"));
+        assert_eq!(
+            manager.revision(),
+            revision,
+            "the failed remove must roll back"
+        );
+
+        let _ = fs::remove_dir_all(&path);
     }
 
     #[test]

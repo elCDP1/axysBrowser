@@ -171,6 +171,45 @@ pub fn quarantine_corrupt(path: &Path) {
     }
 }
 
+/// Deletes the `<name>.corrupt-*` backups [`quarantine_corrupt`] left next to
+/// `path`. They hold the old, unreadable content, so a "clear history" that
+/// left them behind would keep the very data the user asked to erase.
+/// Returns how many entries could not be removed; an unreadable directory is
+/// an error, not an empty result, so callers never report a successful wipe
+/// while old data may still be there.
+pub fn remove_corrupt_backups(path: &Path) -> io::Result<usize> {
+    let (Some(directory), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return Ok(0);
+    };
+
+    let prefix = format!("{name}.corrupt-");
+
+    let entries = fs::read_dir(directory)?;
+
+    let mut failed = 0;
+
+    for entry in entries {
+        let Ok(entry) = entry else {
+            failed += 1;
+            continue;
+        };
+
+        let matches = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|file| file.starts_with(&prefix));
+
+        if matches && fs::remove_file(entry.path()).is_err() {
+            failed += 1;
+        }
+    }
+
+    Ok(failed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,5 +383,39 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn corrupt_backups_are_removed_and_other_files_are_kept() {
+        let dir = unique_dir("remove-backups");
+        let _ = fs::remove_dir_all(&dir);
+
+        fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("history.toml");
+
+        fs::write(&path, "entries = []").unwrap();
+        fs::write(dir.join("history.toml.corrupt-1-2"), "old").unwrap();
+        fs::write(dir.join("history.toml.corrupt-3-4"), "old").unwrap();
+        fs::write(dir.join("bookmarks.toml.corrupt-1-2"), "other").unwrap();
+
+        assert_eq!(remove_corrupt_backups(&path).unwrap(), 0);
+
+        assert!(path.exists());
+        assert!(!dir.join("history.toml.corrupt-1-2").exists());
+        assert!(!dir.join("history.toml.corrupt-3-4").exists());
+        assert!(dir.join("bookmarks.toml.corrupt-1-2").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_backup_directory_is_an_error() {
+        let dir = unique_dir("missing-backups");
+        let _ = fs::remove_dir_all(&dir);
+
+        let path = dir.join("history.toml");
+
+        assert!(remove_corrupt_backups(&path).is_err());
     }
 }

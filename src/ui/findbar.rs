@@ -164,6 +164,8 @@ impl FindBar {
             let count = bar.count.clone();
             let entry_weak = bar.entry.downgrade();
             let changed_entry = bar.entry.clone();
+            let prev = bar.find_prev.clone();
+            let next = bar.find_next.clone();
 
             changed_entry.connect_changed(move |_| {
                 let Some(entry) = entry_weak.upgrade() else {
@@ -171,6 +173,11 @@ impl FindBar {
                 };
 
                 let text = entry.text().to_string();
+                let has_text = !text.trim().is_empty();
+
+                // Nothing to step through while the query is empty.
+                prev.set_sensitive(has_text);
+                next.set_sensitive(has_text);
 
                 search_current(&current_web_view, &hooked, &count, &entry, &text);
             });
@@ -241,14 +248,31 @@ impl FindBar {
 
         bar.container.set_visible(false);
 
+        bar.find_prev.set_sensitive(false);
+        bar.find_next.set_sensitive(false);
+
         bar
     }
 
-    /// Shows the bar and focuses its entry with the text selected.
+    /// Shows the bar and focuses its entry with the text selected. Does
+    /// nothing on internal pages or tabs without a WebView: there is nothing
+    /// to search there, and the bar used to open with a stale count.
     pub fn show(&self) {
+        let view = self.current_web_view.borrow().as_ref().cloned();
+
+        let Some(view) = view else {
+            self.container.set_visible(false);
+
+            return;
+        };
+
         self.container.set_visible(true);
         self.entry.grab_focus();
         self.entry.select_region(0, -1);
+
+        // Re-run the query in the current tab: reopening after a tab switch
+        // used to show the previous tab's match count with no highlights.
+        self.research_in(&view);
     }
 
     /// Hides the bar and stops highlighting.
@@ -310,8 +334,14 @@ impl FindBar {
 
         if text.is_empty() {
             self.count.set_text("");
+            self.find_prev.set_sensitive(false);
+            self.find_next.set_sensitive(false);
+
             return;
         }
+
+        self.find_prev.set_sensitive(true);
+        self.find_next.set_sensitive(true);
 
         if ensure_hooked(&self.hooked, view, &self.count, &self.entry).is_some() {
             search_current(

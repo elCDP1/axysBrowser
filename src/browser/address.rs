@@ -178,6 +178,19 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         }
     }
 
+    // `someone@example.com` is an email address, not a host: the hostname
+    // heuristic turned it into `https://someone@example.com`, which never
+    // loads. URLs with an explicit scheme (including `https://user@host`)
+    // were already returned above, so only bare inputs reach this check.
+    if input
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(input)
+        .contains('@')
+    {
+        return search_url(input, config);
+    }
+
     if input.contains('.') && looks_like_host(input) {
         let host = input.trim_end_matches('/');
 
@@ -210,8 +223,62 @@ fn search_url(input: &str, config: &SearchConfig) -> String {
     engine.replace("%s", &encoded)
 }
 
+/// A readable tab title for a web page that has none: the address without
+/// scheme, query or fragment (`example.com/file.txt`). Plain-text files and
+/// some APIs carry no `<title>`, and the tab used to read "New tab" for them.
+pub fn title_from_uri(uri: &str) -> Option<String> {
+    let rest = uri
+        .strip_prefix("https://")
+        .or_else(|| uri.strip_prefix("http://"))?;
+
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+
+    let (authority, path) = match rest.find('/') {
+        Some(index) => rest.split_at(index),
+        None => (rest, ""),
+    };
+
+    // URLs can carry `user:password@`; a tab title must never echo it.
+    let authority = authority.rsplit('@').next().unwrap_or(authority);
+
+    if authority.is_empty() {
+        return None;
+    }
+
+    Some(format!("{authority}{}", path.trim_end_matches('/')))
+}
+
 #[cfg(test)]
 mod tests {
+    use super::title_from_uri;
+
+    #[test]
+    fn a_missing_title_falls_back_to_the_address() {
+        assert_eq!(
+            title_from_uri("http://127.0.0.1:8765/attach.txt?x=1#y").as_deref(),
+            Some("127.0.0.1:8765/attach.txt")
+        );
+        assert_eq!(
+            title_from_uri("https://example.com/").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(title_from_uri("axys://history"), None);
+        assert_eq!(title_from_uri("https://"), None);
+    }
+
+    #[test]
+    fn credentials_are_not_shown_in_the_fallback_title() {
+        assert_eq!(
+            title_from_uri("https://user:secret@example.com/private?token=1#part").as_deref(),
+            Some("example.com/private")
+        );
+        assert_eq!(
+            title_from_uri("https://@example.com/").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(title_from_uri("https://user@/private"), None);
+    }
+
     use super::*;
 
     #[test]
@@ -257,6 +324,26 @@ mod tests {
         let config = load_config();
 
         assert_eq!(resolve_input("example.com", &config), "https://example.com");
+    }
+
+    #[test]
+    fn email_addresses_are_searched_instead_of_loaded_as_hosts() {
+        let config = load_config();
+
+        for input in ["someone@example.com", "first.last@sub.example.org"] {
+            let resolved = resolve_input(input, &config);
+
+            assert!(
+                resolved.starts_with("https://search."),
+                "{input} must be searched, got {resolved}"
+            );
+        }
+
+        // A scheme with userinfo is still a real URL.
+        assert_eq!(
+            resolve_input("https://user@example.com/private", &config),
+            "https://user@example.com/private"
+        );
     }
 
     #[test]

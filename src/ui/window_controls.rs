@@ -108,6 +108,29 @@ pub fn build(window: &ApplicationWindow) -> Box {
     controls
 }
 
+/// Makes Escape close a dialog window. A plain `gtk::Window` ignores Escape
+/// (only `GtkDialog` handles it), so the bookmark and permission prompts could
+/// only be dismissed with the mouse.
+pub fn close_on_escape(window: &gtk::Window) {
+    let weak = window.downgrade();
+
+    let key = gtk::EventControllerKey::new();
+
+    key.connect_key_pressed(move |_, keyval, _, _| {
+        if keyval == gtk::gdk::Key::Escape
+            && let Some(window) = weak.upgrade()
+        {
+            window.close();
+
+            return gtk::glib::Propagation::Stop;
+        }
+
+        gtk::glib::Propagation::Proceed
+    });
+
+    window.add_controller(key);
+}
+
 /// Thickness (px) of the invisible resize strips along the window edges, and
 /// the side of the square grips in the corners.
 const GRIP_EDGE: i32 = 5;

@@ -291,10 +291,14 @@ pub fn build_tools(deps: ToolsDeps) -> ScrolledWindow {
             let history = history.clone();
             let status = status.clone();
 
-            purge.connect_clicked(move |_| {
-                let removed = history.remove_older_than(max_age_secs);
-
-                status.set_text(&rust_i18n::t!("tools.purged", count = removed));
+            purge.connect_clicked(move |_| match history.remove_older_than(max_age_secs) {
+                Ok(removed) => {
+                    status.set_text(&rust_i18n::t!("tools.purged", count = removed));
+                }
+                Err(error) => {
+                    eprintln!("Failed to purge browsing history: {error}");
+                    status.set_text(&rust_i18n::t!("tools.purge_failed"));
+                }
             });
         }
 
