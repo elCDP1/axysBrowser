@@ -154,25 +154,43 @@ fn bookmark_dialog(
                 url.add_css_class("error");
                 return;
             }
+            url.remove_css_class("error");
 
-            let success = if let Some(bookmark) = existing.as_ref() {
-                state
-                    .bookmarks
-                    .update_with_favicon(&bookmark.url, title, target, favicon.as_ref())
+            let result = if let Some(bookmark) = existing.as_ref() {
+                state.bookmarks.try_update_with_favicon(
+                    &bookmark.url,
+                    title,
+                    target,
+                    favicon.as_ref(),
+                )
             } else {
                 state
                     .bookmarks
-                    .add_with_favicon(title, target, favicon.as_ref())
+                    .try_add_with_favicon(title, target, favicon.as_ref())
             };
 
-            if success {
-                refresh_star();
+            match result {
+                Ok(()) => {
+                    url.set_tooltip_text(None);
+                    refresh_star();
 
-                if let Some(dialog) = dialog.upgrade() {
-                    dialog.close();
+                    if let Some(dialog) = dialog.upgrade() {
+                        dialog.close();
+                    }
                 }
-            } else {
-                url.add_css_class("error");
+                Err(crate::browser::bookmarks::BookmarkError::AlreadyExists) => {
+                    url.set_tooltip_text(Some(&rust_i18n::t!("bookmarks.already_exists")));
+                }
+                Err(crate::browser::bookmarks::BookmarkError::NotFound) => {
+                    url.set_tooltip_text(Some(&rust_i18n::t!("bookmarks.not_found")));
+                }
+                Err(crate::browser::bookmarks::BookmarkError::InvalidUrl) => {
+                    url.add_css_class("error");
+                }
+                Err(crate::browser::bookmarks::BookmarkError::Storage(error)) => {
+                    url.set_tooltip_text(Some(&rust_i18n::t!("bookmarks.save_failed")));
+                    eprintln!("Failed to save bookmark: {error}");
+                }
             }
         });
     }

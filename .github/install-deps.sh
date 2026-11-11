@@ -11,15 +11,13 @@ set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
 
-# GitHub's ubuntu-24.04 image points apt at an Azure mirror over plain HTTP.
-# That endpoint intermittently stops answering on hosted runners; the
-# 5-minute update cap then kills the job before anything is compiled. Prefer
-# the canonical HTTPS archive and force IPv4 so a broken IPv6 route cannot
-# stall the update either.
+# GitHub's ubuntu-24.04 image points apt at an Azure mirror. Plain HTTP there
+# intermittently stops answering on hosted runners, while archive.ubuntu.com
+# does not resolve; prefer the Azure mirror over HTTPS. If it is still down,
+# fall back to security.ubuntu.com, which the hosted runners can reach.
 if [ -f /etc/apt/apt-mirrors.txt ]; then
   sudo sed -i \
-    -e 's|http://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' \
-    -e 's|https://azure.archive.ubuntu.com|https://archive.ubuntu.com|g' \
+    -e 's|http://azure.archive.ubuntu.com|https://azure.archive.ubuntu.com|g' \
     /etc/apt/apt-mirrors.txt
 fi
 
@@ -38,5 +36,27 @@ apt_options=(
   -o Acquire::https::Timeout=60
 )
 
-sudo timeout --kill-after=30 300 apt-get "${apt_options[@]}" update
+apt_update() {
+  sudo timeout --kill-after=30 300 apt-get "${apt_options[@]}" update
+}
+
+update_log=$(mktemp)
+update_ok=1
+if ! apt_update 2>&1 | tee "$update_log"; then
+  update_ok=0
+fi
+if grep -qE '^(Err:|E:|W: Failed to fetch)' "$update_log"; then
+  update_ok=0
+fi
+if [ "$update_ok" -eq 0 ]; then
+  echo "Azure apt mirror is unusable; falling back to security.ubuntu.com." >&2
+  if [ -f /etc/apt/apt-mirrors.txt ]; then
+    sudo sed -i \
+      -e 's|https://azure.archive.ubuntu.com|https://security.ubuntu.com|g' \
+      /etc/apt/apt-mirrors.txt
+  fi
+  apt_update
+fi
+rm -f "$update_log"
+
 sudo timeout --kill-after=30 2400 apt-get "${apt_options[@]}" install -y --no-install-recommends "${packages[@]}"

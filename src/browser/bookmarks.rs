@@ -5,6 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gtk::glib;
 use webkit6::gdk;
@@ -33,6 +34,8 @@ struct BookmarkStoreRef<'a> {
 type Listener = Weak<dyn Fn()>;
 type Listeners = Rc<RefCell<Vec<Listener>>>;
 
+static NEXT_FAVICON_ID: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Clone)]
 pub struct BookmarkManager {
     bookmarks: Rc<RefCell<Vec<Bookmark>>>,
@@ -42,6 +45,14 @@ pub struct BookmarkManager {
     /// unrelated reasons (navigation, tab switches) can skip rebuilding
     /// their widgets from unchanged data.
     revision: Rc<Cell<u64>>,
+}
+
+#[derive(Debug)]
+pub enum BookmarkError {
+    InvalidUrl,
+    AlreadyExists,
+    NotFound,
+    Storage(io::Error),
 }
 
 impl BookmarkManager {
@@ -135,16 +146,26 @@ impl BookmarkManager {
             .any(|bookmark| Self::same_url(&bookmark.url, url))
     }
 
+    #[cfg(test)]
     pub fn add_with_favicon(
         &self,
         title: impl Into<String>,
         url: impl Into<String>,
         favicon: Option<&gdk::Texture>,
     ) -> bool {
+        self.try_add_with_favicon(title, url, favicon).is_ok()
+    }
+
+    pub fn try_add_with_favicon(
+        &self,
+        title: impl Into<String>,
+        url: impl Into<String>,
+        favicon: Option<&gdk::Texture>,
+    ) -> Result<(), BookmarkError> {
         let url = url.into();
 
         if !Self::is_bookmarkable_url(&url) {
-            return false;
+            return Err(BookmarkError::InvalidUrl);
         }
 
         let title = sanitize_title(title.into(), &url);
@@ -152,7 +173,7 @@ impl BookmarkManager {
         // Deduplicate before writing a favicon so a rejected add never
         // leaves an orphaned PNG behind.
         if self.contains(&url) {
-            return false;
+            return Err(BookmarkError::AlreadyExists);
         }
 
         let favicon_path = favicon.and_then(|texture| {
@@ -180,12 +201,13 @@ impl BookmarkManager {
 
             eprintln!("Failed to save bookmarks: {error}");
 
-            return false;
+            return Err(BookmarkError::Storage(error));
         }
 
-        true
+        Ok(())
     }
 
+    #[cfg(test)]
     pub fn update_with_favicon(
         &self,
         old_url: &str,
@@ -193,10 +215,21 @@ impl BookmarkManager {
         new_url: impl Into<String>,
         favicon: Option<&gdk::Texture>,
     ) -> bool {
+        self.try_update_with_favicon(old_url, title, new_url, favicon)
+            .is_ok()
+    }
+
+    pub fn try_update_with_favicon(
+        &self,
+        old_url: &str,
+        title: impl Into<String>,
+        new_url: impl Into<String>,
+        favicon: Option<&gdk::Texture>,
+    ) -> Result<(), BookmarkError> {
         let new_url = new_url.into();
 
         if !Self::is_bookmarkable_url(&new_url) {
-            return false;
+            return Err(BookmarkError::InvalidUrl);
         }
 
         let title = sanitize_title(title.into(), &new_url);
@@ -212,7 +245,7 @@ impl BookmarkManager {
                 .position(|bookmark| Self::same_url(&bookmark.url, old_url))
             {
                 Some(index) => index,
-                None => return false,
+                None => return Err(BookmarkError::NotFound),
             }
         };
 
@@ -224,7 +257,7 @@ impl BookmarkManager {
             .enumerate()
             .any(|(i, bookmark)| i != index && Self::same_url(&bookmark.url, &new_url))
         {
-            return false;
+            return Err(BookmarkError::AlreadyExists);
         }
 
         let new_favicon = favicon.and_then(|texture| {
@@ -269,7 +302,7 @@ impl BookmarkManager {
 
             eprintln!("Failed to save bookmarks: {error}");
 
-            return false;
+            return Err(BookmarkError::Storage(error));
         }
 
         // Drop the previous favicon file once nothing references it, so
@@ -282,7 +315,7 @@ impl BookmarkManager {
             let _ = fs::remove_file(old_favicon);
         }
 
-        true
+        Ok(())
     }
 
     pub fn remove(&self, url: &str) -> bool {
@@ -379,7 +412,8 @@ impl BookmarkManager {
 
         let hash = hasher.finish();
 
-        Self::favicon_directory().join(format!("{hash:016x}.png"))
+        let id = NEXT_FAVICON_ID.fetch_add(1, Ordering::Relaxed);
+        Self::favicon_directory().join(format!("{hash:016x}-{}-{id}.png", std::process::id()))
     }
 
     fn save_favicon(url: &str, texture: &gdk::Texture) -> Result<PathBuf, glib::BoolError> {

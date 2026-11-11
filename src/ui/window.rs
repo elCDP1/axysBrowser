@@ -702,7 +702,7 @@ fn build_browser_window(
             move |anchor: gtk::Button,
                   options: Vec<String>,
                   selected: usize,
-                  on_pick: Rc<dyn Fn(usize)>| {
+                  on_pick: Rc<dyn Fn(usize) -> bool>| {
                 let Some(toolbar_slot) = toolbar_slot.upgrade() else {
                     return;
                 };

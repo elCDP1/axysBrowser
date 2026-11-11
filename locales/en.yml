@@ -38,6 +38,7 @@ settings:
   spanish: "Spanish"
   search: "Search"
   search_note: "Used by the address bar and the new tab page. Changes apply immediately."
+  save_failed: "Could not save this setting. The previous value was restored."
   privacy_security: "Privacy & Security"
   tracking_prevention: "Tracking prevention"
   tracking_description: "Use WebKit Intelligent Tracking Prevention for normal browsing."
@@ -163,6 +164,9 @@ history:
   older_month: "30 days"
 
 bookmarks:
+  already_exists: "This bookmark already exists."
+  not_found: "This bookmark no longer exists."
+  save_failed: "Could not save the bookmark. Check disk space and permissions."
   add: "Add bookmark"
   edit: "Edit bookmark"
   more: "More bookmarks"
@@ -183,6 +187,7 @@ find:
   close: "Close find bar"
 
 permission:
+  remember_failed: "This decision applies only to this session because it could not be saved."
   title: "Permission request"
   message: "%{host} wants to: %{capability}."
   remember: "Remember this decision"

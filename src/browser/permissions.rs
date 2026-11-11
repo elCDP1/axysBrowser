@@ -344,46 +344,34 @@ impl PermissionManager {
     ///
     /// A combined camera+microphone decision is stored as two separate
     /// entries so each device can later be revoked independently.
-    pub fn remember(&self, origin: &str, kind: PermissionKind, allowed: bool) {
+    pub fn remember(&self, origin: &str, kind: PermissionKind, allowed: bool) -> io::Result<()> {
         if origin == GENERIC_ORIGIN {
-            return;
+            return Ok(());
         }
 
-        {
-            let mut store = self.store.borrow_mut();
-
-            let kinds = store.decisions.entry(origin.to_string()).or_default();
-
-            if kind == PermissionKind::Media {
-                kinds.insert(kind_key(PermissionKind::Camera), allowed);
-                kinds.insert(kind_key(PermissionKind::Microphone), allowed);
-            } else {
-                kinds.insert(kind_key(kind), allowed);
-            }
+        let mut candidate = self.store.borrow().clone();
+        let kinds = candidate.decisions.entry(origin.to_string()).or_default();
+        if kind == PermissionKind::Media {
+            kinds.insert(kind_key(PermissionKind::Camera), allowed);
+            kinds.insert(kind_key(PermissionKind::Microphone), allowed);
+        } else {
+            kinds.insert(kind_key(kind), allowed);
         }
 
-        if let Err(error) = self.save() {
-            eprintln!("Failed to save permissions: {error}");
+        if let Some(path) = self.path.as_ref() {
+            let contents = toml::to_string_pretty(&candidate).map_err(io::Error::other)?;
+            crate::paths::atomic_write(path, &contents)?;
         }
+
+        *self.store.borrow_mut() = candidate;
+        Ok(())
     }
 
     /// Forgets every remembered decision.
     pub fn clear_all(&self) -> io::Result<()> {
-        // Write the empty store before clearing memory: if the profile is
-        // read-only, the UI must keep showing the decisions that are still on
-        // disk instead of claiming they were forgotten.
-        if let Some(path) = self.path.as_ref() {
-            let empty = PermissionStore::default();
-
-            let contents = toml::to_string_pretty(&empty).map_err(io::Error::other)?;
-
-            crate::paths::atomic_write(path, &contents)?;
-        }
-
-        self.store.borrow_mut().decisions.clear();
-
-        // The sidecar of an unreadable permissions file still contains
-        // origin/verdict pairs. Forgetting every decision must remove it too.
+        // Remove recoverable copies before writing an empty store. If either
+        // step fails, retain the in-memory decisions and report failure; this
+        // avoids claiming success while a corrupt backup still holds grants.
         if let Some(path) = self.path.as_ref() {
             match crate::paths::remove_corrupt_backups(path) {
                 Ok(0) => {}
@@ -394,7 +382,13 @@ impl PermissionManager {
                 }
                 Err(error) => return Err(error),
             }
+
+            let empty = PermissionStore::default();
+            let contents = toml::to_string_pretty(&empty).map_err(io::Error::other)?;
+            crate::paths::atomic_write(path, &contents)?;
         }
+
+        self.store.borrow_mut().decisions.clear();
 
         Ok(())
     }
@@ -500,7 +494,9 @@ mod tests {
     fn camera_grant_does_not_cover_screen_share() {
         let manager = PermissionManager::ephemeral();
 
-        manager.remember("https://meet.example:443", PermissionKind::Media, true);
+        manager
+            .remember("https://meet.example:443", PermissionKind::Media, true)
+            .unwrap();
 
         assert_eq!(
             manager.remembered("https://meet.example:443", PermissionKind::ScreenShare),
@@ -512,7 +508,9 @@ mod tests {
     fn camera_and_microphone_do_not_cross_grant() {
         let manager = PermissionManager::ephemeral();
 
-        manager.remember("https://meet.example:443", PermissionKind::Camera, true);
+        manager
+            .remember("https://meet.example:443", PermissionKind::Camera, true)
+            .unwrap();
 
         // The camera grant must not authorize the microphone…
         assert_eq!(
@@ -536,7 +534,9 @@ mod tests {
     fn combined_media_grant_covers_both_devices() {
         let manager = PermissionManager::ephemeral();
 
-        manager.remember("https://meet.example:443", PermissionKind::Media, true);
+        manager
+            .remember("https://meet.example:443", PermissionKind::Media, true)
+            .unwrap();
 
         assert_eq!(
             manager.remembered("https://meet.example:443", PermissionKind::Camera),
@@ -561,7 +561,9 @@ mod tests {
             None
         );
 
-        manager.remember("example.com", PermissionKind::Media, true);
+        manager
+            .remember("example.com", PermissionKind::Media, true)
+            .unwrap();
 
         assert_eq!(
             manager.remembered("example.com", PermissionKind::Media),
@@ -576,28 +578,54 @@ mod tests {
     }
 
     #[test]
+    fn failed_persistent_remember_does_not_change_memory() {
+        let root = std::env::temp_dir().join(format!("axys-permissions-{}", std::process::id()));
+        let path = root.join("permissions.toml");
+        fs::create_dir_all(&path).unwrap(); // A directory cannot be replaced by the store file.
+        let manager = PermissionManager {
+            store: Rc::new(RefCell::new(PermissionStore::default())),
+            path: Some(path.clone()),
+        };
+
+        assert!(
+            manager
+                .remember("https://example.com", PermissionKind::Camera, true)
+                .is_err()
+        );
+        assert_eq!(
+            manager.remembered("https://example.com", PermissionKind::Camera),
+            None
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn ephemeral_clones_share_one_window_scope() {
         // The window hands clones of its manager to every page and to the
         // Settings view; all of them must see the same decisions.
         let manager = PermissionManager::ephemeral();
         let page_copy = manager.clone();
 
-        manager.remember(
-            "https://meet.example:443",
-            PermissionKind::Notification,
-            true,
-        );
+        manager
+            .remember(
+                "https://meet.example:443",
+                PermissionKind::Notification,
+                true,
+            )
+            .unwrap();
 
         assert_eq!(
             page_copy.remembered("https://meet.example:443", PermissionKind::Notification),
             Some(true)
         );
 
-        page_copy.remember(
-            "https://maps.example:443",
-            PermissionKind::Geolocation,
-            false,
-        );
+        page_copy
+            .remember(
+                "https://maps.example:443",
+                PermissionKind::Geolocation,
+                false,
+            )
+            .unwrap();
 
         assert_eq!(
             manager.remembered("https://maps.example:443", PermissionKind::Geolocation),
@@ -615,16 +643,22 @@ mod tests {
         let private = PermissionManager::ephemeral();
         let origin = "https://meet.example:443";
 
-        normal.remember(origin, PermissionKind::Camera, true);
+        normal
+            .remember(origin, PermissionKind::Camera, true)
+            .unwrap();
 
         assert_eq!(private.remembered(origin, PermissionKind::Camera), None);
 
-        private.remember(origin, PermissionKind::Microphone, true);
-        private.remember(
-            "https://private.example:443",
-            PermissionKind::Notification,
-            true,
-        );
+        private
+            .remember(origin, PermissionKind::Microphone, true)
+            .unwrap();
+        private
+            .remember(
+                "https://private.example:443",
+                PermissionKind::Notification,
+                true,
+            )
+            .unwrap();
 
         assert_eq!(normal.remembered(origin, PermissionKind::Microphone), None);
         assert_eq!(
@@ -641,8 +675,12 @@ mod tests {
         let private = PermissionManager::ephemeral();
         let origin = "https://meet.example:443";
 
-        normal.remember(origin, PermissionKind::Camera, true);
-        private.remember(origin, PermissionKind::Camera, true);
+        normal
+            .remember(origin, PermissionKind::Camera, true)
+            .unwrap();
+        private
+            .remember(origin, PermissionKind::Camera, true)
+            .unwrap();
 
         private.clear_all().unwrap();
 
@@ -682,12 +720,16 @@ mod tests {
         };
         let private = PermissionManager::ephemeral();
 
-        profile.remember(
-            "https://normal.example:443",
-            PermissionKind::Notification,
-            true,
-        );
-        private.remember("https://private.example:443", PermissionKind::Camera, true);
+        profile
+            .remember(
+                "https://normal.example:443",
+                PermissionKind::Notification,
+                true,
+            )
+            .unwrap();
+        private
+            .remember("https://private.example:443", PermissionKind::Camera, true)
+            .unwrap();
 
         let saved: PermissionStore =
             toml::from_str(&fs::read_to_string(&path).expect("profile file was written"))
@@ -926,7 +968,9 @@ mod tests {
     fn generic_origin_is_never_recorded_or_consulted() {
         let manager = PermissionManager::ephemeral();
 
-        manager.remember(GENERIC_ORIGIN, PermissionKind::Notification, true);
+        manager
+            .remember(GENERIC_ORIGIN, PermissionKind::Notification, true)
+            .unwrap();
 
         assert_eq!(manager.decision_count(), 0);
         assert_eq!(
@@ -941,8 +985,12 @@ mod tests {
 
         let manager = PermissionManager::ephemeral();
 
-        manager.remember(origin, PermissionKind::Camera, true);
-        manager.remember(origin, PermissionKind::Microphone, false);
+        manager
+            .remember(origin, PermissionKind::Camera, true)
+            .unwrap();
+        manager
+            .remember(origin, PermissionKind::Microphone, false)
+            .unwrap();
 
         assert_eq!(manager.remembered(origin, PermissionKind::Media), None);
         assert_eq!(
@@ -1074,14 +1122,18 @@ mod tests {
         let manager = PermissionManager::ephemeral();
         let web = origin_for_uri(Some("https://example.com/"));
 
-        manager.remember(&web, PermissionKind::Camera, true);
+        manager
+            .remember(&web, PermissionKind::Camera, true)
+            .unwrap();
 
         let file = origin_for_uri(Some("file://fileserver/share/page.html"));
 
         assert_eq!(file, GENERIC_ORIGIN);
         assert_eq!(manager.remembered(&file, PermissionKind::Camera), None);
 
-        manager.remember(&file, PermissionKind::Camera, true);
+        manager
+            .remember(&file, PermissionKind::Camera, true)
+            .unwrap();
 
         assert_eq!(
             manager.decision_count(),

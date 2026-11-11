@@ -695,7 +695,7 @@ impl TabMenuPanel {
 ///
 /// Internal pages do not own the window overlay, so they receive this
 /// callback (through `PageCallbacks`) instead of embedding the rows.
-pub type ShowPicker = Rc<dyn Fn(Button, Vec<String>, usize, Rc<dyn Fn(usize)>)>;
+pub type ShowPicker = Rc<dyn Fn(Button, Vec<String>, usize, Rc<dyn Fn(usize) -> bool>)>;
 
 /// Option toggle (Settings/Welcome): shows the current value and asks the
 /// window to open its floating picker under this button, so the page layout
@@ -703,7 +703,7 @@ pub type ShowPicker = Rc<dyn Fn(Button, Vec<String>, usize, Rc<dyn Fn(usize)>)>;
 pub fn build_picker(
     options: Vec<String>,
     selected: usize,
-    on_pick: Rc<dyn Fn(usize)>,
+    on_pick: Rc<dyn Fn(usize) -> bool>,
     show_picker: ShowPicker,
 ) -> Button {
     let toggle = Button::new();
@@ -734,7 +734,7 @@ pub fn build_picker(
 
     // Runs the caller's setter and keeps the button label in sync. Weak to
     // the label and button: they are this button's own descendants.
-    let choose: Rc<dyn Fn(usize)> = {
+    let choose: Rc<dyn Fn(usize) -> bool> = {
         let current = current.downgrade();
         let toggle = toggle.downgrade();
         let options = options.clone();
@@ -742,11 +742,16 @@ pub fn build_picker(
         let on_pick = on_pick.clone();
 
         Rc::new(move |index| {
-            on_pick(index);
+            if !on_pick(index) {
+                if let Some(toggle) = toggle.upgrade() {
+                    toggle.set_tooltip_text(Some(&rust_i18n::t!("settings.save_failed")));
+                }
+                return false;
+            }
             picked.set(index);
 
             let Some(text) = options.get(index) else {
-                return;
+                return false;
             };
 
             if let Some(current) = current.upgrade() {
@@ -756,6 +761,8 @@ pub fn build_picker(
             if let Some(toggle) = toggle.upgrade() {
                 toggle.set_tooltip_text(Some(text));
             }
+
+            true
         })
     };
 
@@ -958,7 +965,7 @@ impl PickerPanel {
         anchor: &Button,
         options: &[String],
         selected: usize,
-        on_pick: Rc<dyn Fn(usize)>,
+        on_pick: Rc<dyn Fn(usize) -> bool>,
     ) {
         let same_anchor = self
             .anchor

@@ -222,7 +222,6 @@ impl DownloadManager {
             {
                 let entries = Rc::downgrade(&manager.entries);
                 let listeners = Rc::downgrade(&manager.listeners);
-                let application = manager.application.clone();
 
                 download.connect_decide_destination(move |download, suggested_filename| {
                     let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
@@ -252,8 +251,16 @@ impl DownloadManager {
                     let listeners = listeners.clone();
                     let download = download.clone();
 
+                    // Resolve the parent from the WebView that initiated the
+                    // download. The active window may have changed while
+                    // WebKit was deciding the destination.
+                    let parent = download
+                        .web_view()
+                        .and_then(|view| view.root())
+                        .and_then(|root| root.downcast::<gtk::Window>().ok());
+
                     dialog.save(
-                        application.active_window().as_ref(),
+                        parent.as_ref(),
                         gio::Cancellable::NONE,
                         move |result| match result {
                             Ok(file) => {

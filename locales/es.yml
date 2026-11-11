@@ -38,6 +38,7 @@ settings:
   spanish: "Español"
   search: "Búsqueda"
   search_note: "Se usa en la barra de direcciones y en la página de nueva pestaña. Los cambios se aplican inmediatamente."
+  save_failed: "No se pudo guardar este ajuste. Se restauró el valor anterior."
   privacy_security: "Privacidad y seguridad"
   tracking_prevention: "Prevención de seguimiento"
   tracking_description: "Usar la prevención inteligente de seguimiento de WebKit para la navegación normal."
@@ -163,6 +164,9 @@ history:
   older_month: "30 días"
 
 bookmarks:
+  already_exists: "Este marcador ya existe."
+  not_found: "Este marcador ya no existe."
+  save_failed: "No se pudo guardar el marcador. Comprueba el espacio y los permisos del disco."
   add: "Añadir marcador"
   edit: "Editar marcador"
   more: "Más marcadores"
@@ -183,6 +187,7 @@ find:
   close: "Cerrar búsqueda"
 
 permission:
+  remember_failed: "Esta decisión solo se aplica a esta sesión porque no se pudo guardar."
   title: "Solicitud de permiso"
   message: "%{host} quiere: %{capability}."
   remember: "Recordar esta decisión"

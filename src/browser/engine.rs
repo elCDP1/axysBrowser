@@ -1626,6 +1626,11 @@ impl BrowserEngine {
         message.set_halign(gtk::Align::Start);
 
         let remember = gtk::CheckButton::with_label(&rust_i18n::t!("permission.remember"));
+        let remember_status = gtk::Label::new(None);
+        remember_status.add_css_class("dim-label");
+        remember_status.set_halign(gtk::Align::Start);
+        remember_status.set_wrap(true);
+        remember_status.set_visible(false);
 
         let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         buttons.set_halign(gtk::Align::End);
@@ -1639,6 +1644,7 @@ impl BrowserEngine {
 
         content.append(&message);
         content.append(&remember);
+        content.append(&remember_status);
         content.append(&buttons);
 
         // Answered tracks whether Allow/Block ran: if the dialog is
@@ -1655,6 +1661,7 @@ impl BrowserEngine {
             let permissions = permissions.clone();
             let origin = origin.clone();
             let remember = remember.clone();
+            let remember_status = remember_status.clone();
             let request = request.clone();
             let answered = answered.clone();
 
@@ -1678,14 +1685,31 @@ impl BrowserEngine {
                     return;
                 }
 
-                if remember.is_active() {
-                    permissions.remember(&origin, kind, true);
+                let mut remember_failed = false;
+                if remember.is_active()
+                    && let Err(error) = permissions.remember(&origin, kind, true)
+                {
+                    remember_failed = true;
+                    eprintln!(
+                        "Permission allowed for this session only; could not remember it: {error}"
+                    );
+                    remember_status.set_text(&rust_i18n::t!("permission.remember_failed"));
+                    remember_status.set_visible(true);
                 }
 
                 request.allow();
 
                 if let Some(dialog) = dialog.upgrade() {
-                    dialog.close();
+                    if remember_failed {
+                        let dialog = dialog.downgrade();
+                        gtk::glib::timeout_add_seconds_local_once(3, move || {
+                            if let Some(dialog) = dialog.upgrade() {
+                                dialog.close();
+                            }
+                        });
+                    } else {
+                        dialog.close();
+                    }
                 }
             });
         }
@@ -1695,6 +1719,7 @@ impl BrowserEngine {
             let view = view.downgrade();
             let permissions = permissions.clone();
             let remember = remember.clone();
+            let remember_status = remember_status.clone();
             let request = request.clone();
             let answered = answered.clone();
 
@@ -1706,14 +1731,32 @@ impl BrowserEngine {
                     .map(|view| Self::permission_origin(&view))
                     .unwrap_or_default();
 
-                if Self::verdict_applies_to(&origin, &current_origin) && remember.is_active() {
-                    permissions.remember(&origin, kind, false);
+                let mut remember_failed = false;
+                if Self::verdict_applies_to(&origin, &current_origin)
+                    && remember.is_active()
+                    && let Err(error) = permissions.remember(&origin, kind, false)
+                {
+                    remember_failed = true;
+                    eprintln!(
+                        "Permission blocked for this session only; could not remember it: {error}"
+                    );
+                    remember_status.set_text(&rust_i18n::t!("permission.remember_failed"));
+                    remember_status.set_visible(true);
                 }
 
                 request.deny();
 
                 if let Some(dialog) = dialog.upgrade() {
-                    dialog.close();
+                    if remember_failed {
+                        let dialog = dialog.downgrade();
+                        gtk::glib::timeout_add_seconds_local_once(3, move || {
+                            if let Some(dialog) = dialog.upgrade() {
+                                dialog.close();
+                            }
+                        });
+                    } else {
+                        dialog.close();
+                    }
                 }
             });
         }

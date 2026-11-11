@@ -79,9 +79,7 @@ pub fn build_settings(
         {
             let state = state.clone();
 
-            Rc::new(move |selected| {
-                state.set_dark_mode(selected == 0);
-            })
+            Rc::new(move |selected| state.set_dark_mode(selected == 0))
         },
         show_picker.clone(),
     );
@@ -111,9 +109,9 @@ pub fn build_settings(
             let state = state.clone();
 
             Rc::new(move |picked| {
-                if let Some((id, _)) = crate::browser::address::KNOWN_ENGINES.get(picked) {
-                    state.set_search_engine(id);
-                }
+                crate::browser::address::KNOWN_ENGINES
+                    .get(picked)
+                    .is_some_and(|(id, _)| state.set_search_engine(id))
             })
         },
         show_picker.clone(),
@@ -149,9 +147,15 @@ pub fn build_settings(
 
     {
         let state = state.clone();
+        let tracking_switch_weak = tracking_switch.downgrade();
 
         tracking_switch.connect_active_notify(move |switch| {
-            state.set_tracking_prevention(switch.is_active());
+            if !state.set_tracking_prevention(switch.is_active())
+                && let Some(switch) = tracking_switch_weak.upgrade()
+            {
+                switch.set_tooltip_text(Some(&rust_i18n::t!("settings.save_failed")));
+                switch.set_active(!switch.is_active());
+            }
         });
     }
 
@@ -183,7 +187,7 @@ pub fn build_settings(
                     _ => "no-third-party",
                 };
 
-                state.set_cookie_policy(policy);
+                state.set_cookie_policy(policy)
             })
         },
         show_picker.clone(),
@@ -253,9 +257,15 @@ pub fn build_settings(
 
     {
         let state = state.clone();
+        let developer_switch_weak = developer_switch.downgrade();
 
         developer_switch.connect_active_notify(move |switch| {
-            state.set_developer_tools(switch.is_active());
+            if !state.set_developer_tools(switch.is_active())
+                && let Some(switch) = developer_switch_weak.upgrade()
+            {
+                switch.set_tooltip_text(Some(&rust_i18n::t!("settings.save_failed")));
+                switch.set_active(!switch.is_active());
+            }
         });
     }
 
@@ -274,9 +284,15 @@ pub fn build_settings(
 
     {
         let state = state.clone();
+        let hw_switch_weak = hw_switch.downgrade();
 
         hw_switch.connect_active_notify(move |switch| {
-            state.set_hardware_acceleration(switch.is_active());
+            if !state.set_hardware_acceleration(switch.is_active())
+                && let Some(switch) = hw_switch_weak.upgrade()
+            {
+                switch.set_tooltip_text(Some(&rust_i18n::t!("settings.save_failed")));
+                switch.set_active(!switch.is_active());
+            }
         });
     }
 
@@ -295,9 +311,15 @@ pub fn build_settings(
 
     {
         let state = state.clone();
+        let clipboard_switch_weak = clipboard_switch.downgrade();
 
         clipboard_switch.connect_active_notify(move |switch| {
-            state.set_allow_clipboard_reads(switch.is_active());
+            if !state.set_allow_clipboard_reads(switch.is_active())
+                && let Some(switch) = clipboard_switch_weak.upgrade()
+            {
+                switch.set_tooltip_text(Some(&rust_i18n::t!("settings.save_failed")));
+                switch.set_active(!switch.is_active());
+            }
         });
     }
 
@@ -367,9 +389,7 @@ pub fn build_settings(
         {
             let state = state.clone();
 
-            Rc::new(move |picked| {
-                state.set_language(if picked == 1 { "es" } else { "en" });
-            })
+            Rc::new(move |picked| state.set_language(if picked == 1 { "es" } else { "en" }))
         },
         show_picker,
     );

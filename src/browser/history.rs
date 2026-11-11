@@ -259,6 +259,18 @@ impl HistoryManager {
     /// not be parsed at load time never survive a "clear"; the error is
     /// returned so callers can avoid claiming success.
     pub fn clear(&self) -> io::Result<()> {
+        // A quarantined copy still contains browsing history. Remove those
+        // copies before changing the live store; if removal fails, leave the
+        // current history intact and let the caller report that the clear
+        // did not complete.
+        if let Some(path) = self.path.as_ref() {
+            match crate::paths::remove_corrupt_backups(path) {
+                Ok(0) => {}
+                Ok(_) => return Err(io::Error::other("could not remove a history backup")),
+                Err(error) => return Err(error),
+            }
+        }
+
         // Write first, then commit the empty list: clearing memory before the
         // write left the page empty even when the file still held every visit.
         let previous = self.entries.replace(Vec::new());
@@ -269,20 +281,9 @@ impl HistoryManager {
             return Err(error);
         }
 
-        // Backups of an unreadable history file still hold browsing data.
-        let mut result = Ok(());
-
-        if let Some(path) = self.path.as_ref() {
-            result = match crate::paths::remove_corrupt_backups(path) {
-                Ok(0) => Ok(()),
-                Ok(_) => Err(io::Error::other("could not remove a history backup")),
-                Err(error) => Err(error),
-            };
-        }
-
         self.notify();
 
-        result
+        Ok(())
     }
 
     /// Deletes every entry older than `max_age_secs`. Returns how many were

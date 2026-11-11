@@ -202,7 +202,7 @@ fn set_gtk_color_scheme(gtk_settings: &GtkSettings, dark: bool) {
 /// fires with success once the asynchronous wipe finishes.
 pub type ClearBrowsingData = Rc<dyn Fn(Rc<dyn Fn(bool)>)>;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserSettings {
     #[serde(default = "default_true")]
     pub dark_mode: bool,
@@ -384,16 +384,30 @@ impl AppState {
         settings
     }
 
-    pub fn save(&self) {
+    pub fn save(&self) -> std::io::Result<()> {
         let path = Self::config_path();
-
         let settings = self.settings.borrow();
+        let text = toml::to_string_pretty(&*settings).map_err(std::io::Error::other)?;
+        crate::paths::atomic_write(&path, &text)
+    }
 
-        if let Ok(text) = toml::to_string_pretty(&*settings)
-            && let Err(error) = crate::paths::atomic_write(&path, &text)
-        {
-            eprintln!("Failed to save settings: {error}");
+    /// Applies a settings edit only when it has been written successfully.
+    /// On failure, restore the last persisted snapshot so callers and the UI
+    /// never keep presenting an unsaved value as the active setting.
+    fn commit_settings(&self, update: impl FnOnce(&mut UserSettings)) -> bool {
+        let previous = self.settings.borrow().clone();
+        update(&mut self.settings.borrow_mut());
+        if *self.settings.borrow() == previous {
+            return true;
         }
+
+        if let Err(error) = self.save() {
+            *self.settings.borrow_mut() = previous;
+            eprintln!("Failed to save settings; reverted change: {error}");
+            return false;
+        }
+
+        true
     }
 
     pub fn apply_theme(&self) {
@@ -430,84 +444,92 @@ impl AppState {
         notify_listeners(&self.language_listeners);
     }
 
-    pub fn set_search_engine(&self, engine: &str) {
+    pub fn set_search_engine(&self, engine: &str) -> bool {
         if !self.search.borrow().engines.contains_key(engine) {
-            return;
+            return false;
+        }
+
+        if !self.commit_settings(|settings| settings.search_engine = engine.to_string()) {
+            return false;
         }
 
         self.search.borrow_mut().default_engine = engine.to_string();
 
-        self.settings.borrow_mut().search_engine = engine.to_string();
-
-        self.save();
-
         // Live-update subscribers (e.g. the address placeholder).
         self.notify_settings_changed();
+        true
     }
 
-    pub fn set_dark_mode(&self, dark: bool) {
-        self.settings.borrow_mut().dark_mode = dark;
+    pub fn set_dark_mode(&self, dark: bool) -> bool {
+        if !self.commit_settings(|settings| settings.dark_mode = dark) {
+            return false;
+        }
 
         self.apply_theme();
-        self.save();
+        true
     }
 
-    pub fn set_developer_tools(&self, enabled: bool) {
-        self.settings.borrow_mut().developer_tools = enabled;
-
-        self.save();
+    pub fn set_developer_tools(&self, enabled: bool) -> bool {
+        if !self.commit_settings(|settings| settings.developer_tools = enabled) {
+            return false;
+        }
 
         self.notify_settings_changed();
+        true
     }
 
     /// Hardware acceleration for every open tab (applied live).
-    pub fn set_hardware_acceleration(&self, enabled: bool) {
-        self.settings.borrow_mut().hardware_acceleration = enabled;
-
-        self.save();
+    pub fn set_hardware_acceleration(&self, enabled: bool) -> bool {
+        if !self.commit_settings(|settings| settings.hardware_acceleration = enabled) {
+            return false;
+        }
 
         self.notify_settings_changed();
+        true
     }
 
-    pub fn set_tracking_prevention(&self, enabled: bool) {
-        self.settings.borrow_mut().tracking_prevention = enabled;
+    pub fn set_tracking_prevention(&self, enabled: bool) -> bool {
+        if !self.commit_settings(|settings| settings.tracking_prevention = enabled) {
+            return false;
+        }
 
         self.network_session.set_itp_enabled(enabled);
-
-        self.save();
 
         // Already-open private windows own ephemeral sessions that the line
         // above cannot reach; their `settings_refresh` re-applies ITP.
         self.notify_settings_changed();
+        true
     }
 
     /// Clipboard reads allowed without a per-site prompt (applied live: the
     /// permission handler reads the setting for every request).
-    pub fn set_allow_clipboard_reads(&self, enabled: bool) {
-        self.settings.borrow_mut().allow_clipboard_reads = enabled;
-
-        self.save();
+    pub fn set_allow_clipboard_reads(&self, enabled: bool) -> bool {
+        if !self.commit_settings(|settings| settings.allow_clipboard_reads = enabled) {
+            return false;
+        }
 
         self.notify_settings_changed();
+        true
     }
 
-    pub fn set_cookie_policy(&self, policy: &str) {
+    pub fn set_cookie_policy(&self, policy: &str) -> bool {
         let Some(normalized) = cookie_policy_change(&self.settings.borrow().cookie_policy, policy)
         else {
-            return;
+            return false;
         };
 
-        self.settings.borrow_mut().cookie_policy = normalized.clone();
+        if !self.commit_settings(|settings| settings.cookie_policy = normalized.clone()) {
+            return false;
+        }
 
         crate::browser::engine::apply_cookie_policy(&self.network_session, &normalized);
-
-        self.save();
 
         // Every window's `settings_refresh` listener re-applies the policy to
         // its own session, which is the only way an already-open private
         // window (whose ephemeral session `set_cookie_policy` cannot reach)
         // ever sees the change.
         self.notify_settings_changed();
+        true
     }
 
     /// Real "clear browsing data": history, all cookies, favicon cache,
@@ -621,20 +643,20 @@ impl AppState {
         gtk::glib::timeout_add_seconds_local_once(30, move || watchdog.abort());
     }
 
-    pub fn set_language(&self, language: &str) {
+    pub fn set_language(&self, language: &str) -> bool {
         let language = i18n::normalize_locale(language);
 
         if self.settings.borrow().language == language {
-            return;
+            return true;
+        }
+
+        if !self.commit_settings(|settings| settings.language = language.to_string()) {
+            return false;
         }
 
         i18n::set_locale(language);
-
-        self.settings.borrow_mut().language = language.to_string();
-
-        self.save();
-
         self.notify_language_changed();
+        true
     }
 }
 

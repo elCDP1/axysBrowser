@@ -49,9 +49,9 @@ pub fn build_welcome(
             let state = state.clone();
 
             Rc::new(move |picked| {
-                if let Some((id, _)) = KNOWN_ENGINES.get(picked) {
-                    state.set_search_engine(id);
-                }
+                KNOWN_ENGINES
+                    .get(picked)
+                    .is_some_and(|(id, _)| state.set_search_engine(id))
             })
         },
         show_picker,
