@@ -7,7 +7,7 @@
 
 use gtk::prelude::*;
 use gtk::{Align, Box, Button, Entry, Label, Orientation};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::{FindController, FindOptions, WebView, prelude::WebViewExt};
 
@@ -22,76 +22,153 @@ pub struct FindBar {
     find_next: Button,
     find_close: Button,
     current_web_view: Rc<RefCell<Option<WebView>>>,
-    hooked: Rc<RefCell<Vec<FindController>>>,
+    hooked: Rc<RefCell<Vec<FindHook>>>,
+    /// Incremented for every search and when the bar stops. Async signals
+    /// carry the value they started with, so a late reply from an older query
+    /// or tab can never overwrite the current match count.
+    generation: Rc<Cell<u64>>,
 }
 
-/// Hooks match-count feedback for `view`'s controller, at most once per
-/// controller (each tab owns its own).
-fn ensure_hooked(
-    hooked: &Rc<RefCell<Vec<FindController>>>,
-    view: &WebView,
+/// A controller whose match-count handlers belong to the current search.
+struct FindHook {
+    controller: FindController,
+    found: gtk::glib::SignalHandlerId,
+    failed: gtk::glib::SignalHandlerId,
+}
+
+/// Removes `find`'s handlers and forgets it. Keeping the old handlers would
+/// both leak them and let a queued result update the next query.
+fn disconnect_hook(hooked: &Rc<RefCell<Vec<FindHook>>>, find: &FindController) {
+    let removed = {
+        let mut hooks = hooked.borrow_mut();
+        let index = hooks.iter().position(|hook| &hook.controller == find);
+        index.map(|index| hooks.remove(index))
+    };
+
+    if let Some(hook) = removed {
+        let FindHook {
+            controller,
+            found,
+            failed,
+        } = hook;
+
+        controller.disconnect(found);
+        controller.disconnect(failed);
+    }
+}
+
+/// Connects one pair of handlers for `search_id`. The weak view/entry/count
+/// references avoid the controller -> handler -> widget cycle that used to
+/// keep closed tabs and bars alive.
+fn hook_search(
+    current_web_view: &Rc<RefCell<Option<WebView>>>,
+    hooked: &Rc<RefCell<Vec<FindHook>>>,
+    generation: &Rc<Cell<u64>>,
     count: &Label,
     entry: &Entry,
-) -> Option<FindController> {
-    let find = view.find_controller()?;
+    find: &FindController,
+    search_id: u64,
+) {
+    let count_ok = count.downgrade();
+    let entry_ok = entry.downgrade();
+    let view_ok = Rc::downgrade(current_web_view);
+    let generation_ok = generation.clone();
 
-    // Each tab owns its controller; remember every one already wired so
-    // switching tabs back and forth never stacks duplicate handlers.
-    let known = hooked.borrow().iter().any(|known| known == &find);
+    let found = find.connect_found_text(move |controller, matches| {
+        if generation_ok.get() != search_id {
+            return;
+        }
 
-    if !known {
-        // Weak: these handlers live on the FindController, which `hooked`
-        // (reachable from the entry) keeps alive; holding `count`/`entry`
-        // strongly would form a cycle that leaks the controller (and the
-        // WebView it pins) for good.
-        let count_ok = count.downgrade();
-        let entry_ok = entry.downgrade();
+        let Some(view_slot) = view_ok.upgrade() else {
+            return;
+        };
 
-        find.connect_found_text(move |_, matches| {
-            if let Some(count) = count_ok.upgrade() {
-                count.set_text(&matches.to_string());
-            }
+        let Some(active) = view_slot.borrow().as_ref().cloned() else {
+            return;
+        };
 
-            if let Some(entry) = entry_ok.upgrade() {
-                entry.remove_css_class("error");
-            }
-        });
+        let Some(active_find) = active.find_controller() else {
+            return;
+        };
 
-        let count_fail = count.downgrade();
-        let entry_fail = entry.downgrade();
+        if &active_find != controller {
+            return;
+        }
 
-        find.connect_failed_to_find_text(move |_| {
-            if let Some(count) = count_fail.upgrade() {
-                count.set_text("0");
-            }
+        if let Some(count) = count_ok.upgrade() {
+            count.set_text(&matches.to_string());
+        }
 
-            if let Some(entry) = entry_fail.upgrade() {
-                entry.add_css_class("error");
-            }
-        });
+        if let Some(entry) = entry_ok.upgrade() {
+            entry.remove_css_class("error");
+        }
+    });
 
-        hooked.borrow_mut().push(find.clone());
-    }
+    let count_fail = count.downgrade();
+    let entry_fail = entry.downgrade();
+    let view_fail = Rc::downgrade(current_web_view);
+    let generation_fail = generation.clone();
 
-    Some(find)
+    let failed = find.connect_failed_to_find_text(move |controller| {
+        if generation_fail.get() != search_id {
+            return;
+        }
+
+        let Some(view_slot) = view_fail.upgrade() else {
+            return;
+        };
+
+        let Some(active) = view_slot.borrow().as_ref().cloned() else {
+            return;
+        };
+
+        let Some(active_find) = active.find_controller() else {
+            return;
+        };
+
+        if &active_find != controller {
+            return;
+        }
+
+        if let Some(count) = count_fail.upgrade() {
+            count.set_text("0");
+        }
+
+        if let Some(entry) = entry_fail.upgrade() {
+            entry.add_css_class("error");
+        }
+    });
+
+    hooked.borrow_mut().push(FindHook {
+        controller: find.clone(),
+        found,
+        failed,
+    });
 }
 
 /// Runs a query against the active view. Takes the pieces instead of the
 /// whole bar so signal handlers can avoid capturing it and forming cycles.
 fn search_current(
     current_web_view: &Rc<RefCell<Option<WebView>>>,
-    hooked: &Rc<RefCell<Vec<FindController>>>,
+    hooked: &Rc<RefCell<Vec<FindHook>>>,
+    generation: &Rc<Cell<u64>>,
     count: &Label,
     entry: &Entry,
     text: &str,
 ) {
+    generation.set(generation.get().wrapping_add(1));
+
+    let search_id = generation.get();
+
     let Some(view) = current_web_view.borrow().as_ref().cloned() else {
         return;
     };
 
-    let Some(find) = ensure_hooked(hooked, &view, count, entry) else {
+    let Some(find) = view.find_controller() else {
         return;
     };
+
+    disconnect_hook(hooked, &find);
 
     if text.is_empty() {
         find.search_finish();
@@ -99,6 +176,16 @@ fn search_current(
         entry.remove_css_class("error");
         return;
     }
+
+    hook_search(
+        current_web_view,
+        hooked,
+        generation,
+        count,
+        entry,
+        &find,
+        search_id,
+    );
 
     find.search(text, FindOptions::WRAP_AROUND.bits(), 500);
 
@@ -154,6 +241,7 @@ impl FindBar {
             find_close: close.clone(),
             current_web_view,
             hooked: Rc::new(RefCell::new(Vec::new())),
+            generation: Rc::new(Cell::new(0)),
         };
 
         {
@@ -161,6 +249,7 @@ impl FindBar {
             // handler (a permanent leak). Keep the entry weak instead.
             let current_web_view = bar.current_web_view.clone();
             let hooked = bar.hooked.clone();
+            let generation = bar.generation.clone();
             let count = bar.count.clone();
             let entry_weak = bar.entry.downgrade();
             let changed_entry = bar.entry.clone();
@@ -179,7 +268,14 @@ impl FindBar {
                 prev.set_sensitive(has_text);
                 next.set_sensitive(has_text);
 
-                search_current(&current_web_view, &hooked, &count, &entry, &text);
+                search_current(
+                    &current_web_view,
+                    &hooked,
+                    &generation,
+                    &count,
+                    &entry,
+                    &text,
+                );
             });
         }
 
@@ -226,15 +322,22 @@ impl FindBar {
             // container`, leaking the bar (and its FindControllers) forever.
             let container = bar.container.downgrade();
             let current_web_view = bar.current_web_view.clone();
+            let hooked = bar.hooked.clone();
+            let generation = bar.generation.clone();
 
             close.connect_clicked(move |_| {
                 if let Some(container) = container.upgrade() {
                     container.set_visible(false);
                 }
 
-                if let Some(view) = current_web_view.borrow().as_ref()
+                generation.set(generation.get().wrapping_add(1));
+
+                let view = current_web_view.borrow().as_ref().cloned();
+
+                if let Some(view) = view
                     && let Some(find) = view.find_controller()
                 {
+                    disconnect_hook(&hooked, &find);
                     find.search_finish();
                 }
             });
@@ -278,10 +381,14 @@ impl FindBar {
     /// Hides the bar and stops highlighting.
     pub fn hide(&self) {
         self.container.set_visible(false);
+        self.generation.set(self.generation.get().wrapping_add(1));
 
-        if let Some(view) = self.current_web_view.borrow().as_ref()
+        let view = self.current_web_view.borrow().as_ref().cloned();
+
+        if let Some(view) = view
             && let Some(find) = view.find_controller()
         {
+            disconnect_hook(&self.hooked, &find);
             find.search_finish();
         }
     }
@@ -291,6 +398,8 @@ impl FindBar {
         if self.is_visible()
             && let Some(find) = view.find_controller()
         {
+            self.generation.set(self.generation.get().wrapping_add(1));
+            disconnect_hook(&self.hooked, &find);
             find.search_finish();
         }
     }
@@ -320,7 +429,7 @@ impl FindBar {
     /// lazily on the next search.
     pub fn forget_hook(&self, view: &WebView) {
         if let Some(find) = view.find_controller() {
-            self.hooked.borrow_mut().retain(|known| known != &find);
+            disconnect_hook(&self.hooked, &find);
         }
     }
 
@@ -333,9 +442,16 @@ impl FindBar {
         let text = self.entry.text().to_string();
 
         if text.is_empty() {
+            self.generation.set(self.generation.get().wrapping_add(1));
             self.count.set_text("");
             self.find_prev.set_sensitive(false);
             self.find_next.set_sensitive(false);
+            self.entry.remove_css_class("error");
+
+            if let Some(find) = view.find_controller() {
+                disconnect_hook(&self.hooked, &find);
+                find.search_finish();
+            }
 
             return;
         }
@@ -343,14 +459,13 @@ impl FindBar {
         self.find_prev.set_sensitive(true);
         self.find_next.set_sensitive(true);
 
-        if ensure_hooked(&self.hooked, view, &self.count, &self.entry).is_some() {
-            search_current(
-                &self.current_web_view,
-                &self.hooked,
-                &self.count,
-                &self.entry,
-                &text,
-            );
-        }
+        search_current(
+            &self.current_web_view,
+            &self.hooked,
+            &self.generation,
+            &self.count,
+            &self.entry,
+            &text,
+        );
     }
 }

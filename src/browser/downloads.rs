@@ -264,12 +264,7 @@ impl DownloadManager {
                         gio::Cancellable::NONE,
                         move |result| match result {
                             Ok(file) => {
-                                let Some(path) = file.path() else {
-                                    download.cancel();
-                                    return;
-                                };
-
-                                let Some(path_str) = path.to_str() else {
+                                let Some((path, uri)) = download_target(&file) else {
                                     download.cancel();
                                     return;
                                 };
@@ -294,7 +289,10 @@ impl DownloadManager {
                                 // failed download.
                                 download.set_allow_overwrite(true);
 
-                                download.set_destination(path_str);
+                                // WebKit expects a URI here, not a filesystem
+                                // path: the URI is what safely encodes spaces
+                                // and non-ASCII characters in the local path.
+                                download.set_destination(&uri);
                             }
 
                             Err(_) => {
@@ -473,6 +471,12 @@ impl DownloadManager {
     }
 }
 
+/// Returns the local path for the UI and the URI WebKit needs as the
+/// destination. `file.uri()` percent-encodes spaces and non-ASCII names.
+fn download_target(file: &gio::File) -> Option<(PathBuf, String)> {
+    Some((file.path()?, file.uri().as_str().to_owned()))
+}
+
 /// Caps a filename suggestion to `max_bytes` without splitting a character.
 /// Linux limits one name component to 255 *bytes*, not characters: a short
 /// string of multibyte characters can exceed that and the save fails with
@@ -553,6 +557,17 @@ mod tests {
         assert_eq!(format_speed(f64::NAN), "");
         assert_eq!(format_speed(f64::INFINITY), "");
         assert_eq!(format_speed(1536.0), "1.5 KB/s");
+    }
+
+    #[test]
+    fn download_target_uses_an_encoded_uri() {
+        let path = std::env::temp_dir().join("axys download ñ.txt");
+        let file = gio::File::for_path(&path);
+        let (target, uri) = download_target(&file).expect("local file has a path and URI");
+
+        assert_eq!(target, path);
+        assert!(uri.starts_with("file://"));
+        assert!(!uri.contains(' '), "spaces must be encoded: {uri}");
     }
 
     #[test]

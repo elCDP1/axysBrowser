@@ -63,9 +63,11 @@ fn looks_like_host(input: &str) -> bool {
 
     let host = input.split(['/', '?', '#']).next().unwrap_or(input);
 
-    // Drop a numeric port before looking at the last label.
+    // Drop a valid numeric port before looking at the last label. An invalid
+    // or out-of-range port leaves the colon in place, so the check below
+    // sends the input to search instead of building an unloadable URL.
     let host = match host.rsplit_once(':') {
-        Some((head, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => head,
+        Some((head, port)) if valid_port(port) => head,
         _ => host,
     };
 
@@ -83,6 +85,27 @@ fn looks_like_host(input: &str) -> bool {
     };
 
     last_label.chars().count() >= 2 && !last_label.chars().all(|c| c.is_ascii_digit())
+}
+
+/// True for `localhost`, `localhost/...` and `localhost:<valid port>...`.
+/// Non-numeric or out-of-range ports must fall through to search, not become
+/// an unloadable `http://localhost:abc` URL.
+fn valid_port(port: &str) -> bool {
+    !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) && port.parse::<u16>().is_ok()
+}
+
+fn is_localhost_input(lower: &str) -> bool {
+    if lower == "localhost" || lower.starts_with("localhost/") {
+        return true;
+    }
+
+    let Some(rest) = lower.strip_prefix("localhost:") else {
+        return false;
+    };
+
+    let port = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+
+    valid_port(port)
 }
 
 pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
@@ -152,11 +175,7 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
         }
     }
 
-    if !input.contains(' ')
-        && (lower == "localhost"
-            || lower.starts_with("localhost:")
-            || lower.starts_with("localhost/"))
-    {
+    if !input.contains(' ') && is_localhost_input(&lower) {
         return format!("http://{input}");
     }
 
@@ -166,14 +185,24 @@ pub fn resolve_input(input: &str, config: &SearchConfig) -> String {
     if !input.contains(' ') {
         let host = input.split(['/', '?', '#']).next().unwrap_or(input);
 
-        let host_only = match host.rsplit_once(':') {
-            Some((head, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
-                head
+        let (host_only, port_ok) = if let Some(rest) = host.strip_prefix('[') {
+            let port_ok = match rest.split_once(']') {
+                Some((_, "")) => true,
+                Some((_, suffix)) => suffix.strip_prefix(':').is_some_and(valid_port),
+                None => false,
+            };
+
+            (host, port_ok)
+        } else {
+            match host.rsplit_once(':') {
+                Some((head, port)) => (head, valid_port(port)),
+                None => (host, true),
             }
-            _ => host,
         };
 
-        if host_only.starts_with('[') || host_only.parse::<std::net::Ipv4Addr>().is_ok() {
+        if port_ok
+            && (host_only.starts_with('[') || host_only.parse::<std::net::Ipv4Addr>().is_ok())
+        {
             return format!("http://{input}");
         }
     }
@@ -394,6 +423,33 @@ mod tests {
             resolve_input("localhost:3000", &config),
             "http://localhost:3000"
         );
+        assert_eq!(
+            resolve_input("localhost/page", &config),
+            "http://localhost/page"
+        );
+        assert_eq!(
+            resolve_input("LOCALHOST:3000/page", &config),
+            "http://LOCALHOST:3000/page"
+        );
+    }
+
+    #[test]
+    fn localhost_with_an_invalid_port_is_searched() {
+        let config = load_config();
+
+        for input in [
+            "localhost:abc",
+            "localhost:99999",
+            "localhost:65536",
+            "localhost:",
+        ] {
+            let result = resolve_input(input, &config);
+
+            assert!(
+                result.starts_with("https://search.brave.com/search?q="),
+                "{input} resolved to {result}"
+            );
+        }
     }
 
     #[test]
@@ -412,6 +468,21 @@ mod tests {
         let config = load_config();
 
         assert_eq!(resolve_input("[::1]:8080", &config), "http://[::1]:8080");
+        assert_eq!(resolve_input("[::1]", &config), "http://[::1]");
+    }
+
+    #[test]
+    fn ip_literals_with_an_invalid_port_are_searched() {
+        let config = load_config();
+
+        for input in ["127.0.0.1:99999", "127.0.0.1:abc", "[::1]:99999"] {
+            let result = resolve_input(input, &config);
+
+            assert!(
+                result.starts_with("https://search.brave.com/search?q="),
+                "{input} resolved to {result}"
+            );
+        }
     }
 
     #[test]
@@ -605,7 +676,12 @@ mod tests {
     fn a_non_numeric_port_is_searched_not_loaded_as_a_broken_url() {
         let config = load_config();
 
-        for input in ["example.com:abc", "example.com:http"] {
+        for input in [
+            "example.com:abc",
+            "example.com:http",
+            "example.com:99999",
+            "example.com:65536",
+        ] {
             let resolved = resolve_input(input, &config);
 
             assert!(
