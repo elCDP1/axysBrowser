@@ -4,9 +4,10 @@ name: Windows + Servo (proof of concept)
 # runner. This is the gate that proves Servo embeds in a Windows process before
 # any engine work starts on the `windows` branch.
 #
-# The self-test needs no GPU and no desktop session: it renders through Servo's
-# software context, so a green run means the engine initialised, loaded a page,
-# executed JavaScript and produced pixels.
+# The self-test needs no GPU and no desktop session: Servo renders through ANGLE
+# (EGL over D3D11, which falls back to WARP without a graphics card), so a green
+# run means the engine initialised, loaded a page, executed JavaScript and
+# produced pixels.
 
 on:
   workflow_dispatch:
@@ -30,8 +31,9 @@ concurrency:
 jobs:
   poc:
     runs-on: windows-2022
-    # Servo compiles SpiderMonkey and several hundred crates on a cold cache.
-    timeout-minutes: 180
+    # Servo compiles SpiderMonkey, ANGLE and several hundred crates on a cold
+    # cache. This machine has done it in ~15 minutes; the rest is headroom.
+    timeout-minutes: 240
 
     env:
       CARGO_TERM_COLOR: always
@@ -47,14 +49,14 @@ jobs:
           targets: x86_64-pc-windows-msvc
           components: rustfmt
 
-      # Servo's dependency build dominates the job; without the cache every
-      # push pays the full SpiderMonkey cost again.
+      # The dependency build dominates the job; without the cache every push
+      # pays the full SpiderMonkey + ANGLE cost again.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: poc/windows-servo
           # Bump to force a fresh engine build after a Servo upgrade.
-          key: servo-0.7
+          key: servo-0.7-angle
           # A red run is the normal state while the port is being fixed; without
           # this every iteration pays the full engine build again.
           cache-on-failure: true
@@ -65,6 +67,20 @@ jobs:
           choco install nasm --no-progress -y
           if (Test-Path 'C:\ProgramData\chocolatey\bin\nasm.exe') {
             'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
+      - name: Point bindgen at libclang
+        # mozangle generates the ANGLE bindings with bindgen, which loads
+        # libclang at build time.
+        shell: pwsh
+        run: |
+          $candidates = @('C:\Program Files\LLVM\bin', 'C:\Program Files (x86)\LLVM\bin')
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir 'libclang.dll')) {
+              "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              Write-Output "LIBCLANG_PATH=$dir"
+              break
+            }
           }
 
       - name: Check formatting
@@ -89,6 +105,25 @@ jobs:
                 Write-Output "::error::$line"
               }
             exit 1
+          }
+
+      - name: Make the ANGLE DLLs loadable
+        # Servo's `no-wgl` build reaches OpenGL ES through ANGLE, and ANGLE is
+        # loaded from beside the executable. mozangle leaves libEGL/libGLESv2 in
+        # its build output, so publish them next to the binary.
+        working-directory: poc/windows-servo
+        shell: pwsh
+        run: |
+          $out = 'target\debug'
+          foreach ($name in @('libEGL.dll', 'libGLESv2.dll')) {
+            $found = Get-ChildItem -Path 'target\debug\build' -Recurse -Filter $name -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($found) {
+              Copy-Item $found.FullName (Join-Path $out $name) -Force
+              Write-Output "copied $($found.FullName) -> $out\$name"
+            } else {
+              Write-Output "::warning::$name was not produced by the build"
+            }
           }
 
       - name: Self-test (headless, software rendering)

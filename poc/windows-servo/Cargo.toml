@@ -10,7 +10,11 @@ description = "axysBrowser Windows port: Servo embedding proof of concept"
 [workspace]
 
 [dependencies]
-servo = "0.7"
+# `no-wgl` makes Servo go through ANGLE (EGL over D3D11) instead of WGL. A
+# Windows machine without a vendor OpenGL driver — every CI runner, and plenty
+# of real ones — cannot create a WGL context at all, and WARP then provides the
+# D3D11 device underneath ANGLE. This is Servo's own supported route on Windows.
+servo = { version = "0.7", features = ["no-wgl"] }
 winit = "0.30"
 euclid = "0.22"
 url = "2"
