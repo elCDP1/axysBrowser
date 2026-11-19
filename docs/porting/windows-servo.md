@@ -1,6 +1,10 @@
 # Windows + Servo: audit and port plan
 
-Status: **phase 1 (audit + proof of concept), not yet approved for migration.**
+Status: **phase 1 (audit + proof of concept) complete.** The Windows engine
+backend (phases 3–5) is not written: `Cargo.toml` still depends on `webkit6`
+unconditionally, so **there is no Windows build of the browser yet** and no
+Windows release asset can be produced. The proof of concept below only shows
+that Servo embeds in a Windows process.
 
 This document is the report required before any engine work starts. It records
 what the repository contains today, how the code splits between shared, Linux
@@ -178,7 +182,9 @@ host it on Windows.
 
 * GTK4 officially supports Windows; gvsbuild ships current builds
   (GTK 4.22.4 in its 2026.6.0 release), and the project's
-  `.github/workflows/windows.yml` already installs it that way.
+  gvsbuild is the supported route (the old experimental
+  `.github/workflows/windows.yml` did it that way before it was removed, see
+  §8).
 * `gtk4 0.11` targets GTK ≥ 4.10, so the same crate version builds against it.
 * A known caveat: gvsbuild patches out DirectComposition by default, so GSK
   silently falls back to the Cairo renderer unless `GDK_DEBUG=dcomp` is set.
@@ -340,8 +346,10 @@ Kept on `main` unchanged: format, build, test, clippy, MSRV, the Xvfb smokes and
 the release build. Added on `windows`:
 
 1. `windows` job: `cargo build`, `cargo test`, `cargo clippy -D warnings`
-   against gvsbuild GTK4 (the existing experimental `windows.yml` gains the
-   real dependency install).
+   against gvsbuild GTK4. It lands **with** the `servo/` backend: the old
+   experimental `windows.yml` was removed because a crate that depends on
+   `webkit6` cannot build on Windows at all, so that job could only ever be
+   red.
 2. `windows-servo-poc` job: **done**, `.github/workflows/windows-servo.yml`
    builds the POC and runs its headless self-test. It needs libclang for the
    ANGLE bindings, NASM for `aws-lc-sys`, the ANGLE DLLs beside the binary,
