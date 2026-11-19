@@ -301,7 +301,8 @@ impl WebViewDelegate for Delegate {
                 Ok(JSValue::String(value)) => value,
                 Ok(other) => format!("{other:?}"),
                 Err(error) => {
-                    eprintln!("[js] evaluation failed: {error}");
+                    // `JavaScriptEvaluationError` has no `Display` impl.
+                    eprintln!("[js] evaluation failed: {error:?}");
                     String::new()
                 }
             };
@@ -402,12 +403,15 @@ impl AppState {
             .window_handle()
             .map_err(|error| format!("no window handle: {error}"))?;
 
-        let rendering_context: Rc<dyn RenderingContext> = Rc::new(WindowRenderingContext::new(
-            display_handle,
-            window_handle,
-            window.inner_size(),
-        )?);
-        rendering_context.make_current()?;
+        // `surfman::Error` implements neither `Display` nor `std::error::Error`,
+        // so it cannot travel through `?` into `Box<dyn Error>`.
+        let rendering_context: Rc<dyn RenderingContext> = Rc::new(
+            WindowRenderingContext::new(display_handle, window_handle, window.inner_size())
+                .map_err(|error| format!("window rendering context: {error:?}"))?,
+        );
+        rendering_context
+            .make_current()
+            .map_err(|error| format!("make_current: {error:?}"))?;
 
         let state = Self::opened(
             Some(window),
@@ -430,9 +434,13 @@ impl AppState {
         shared: Rc<Shared>,
     ) -> Result<Rc<Self>, Box<dyn Error>> {
         let size = PhysicalSize::new(1024, 768);
-        let rendering_context: Rc<dyn RenderingContext> =
-            Rc::new(SoftwareRenderingContext::new(size)?);
-        rendering_context.make_current()?;
+        let rendering_context: Rc<dyn RenderingContext> = Rc::new(
+            SoftwareRenderingContext::new(size)
+                .map_err(|error| format!("software rendering context: {error:?}"))?,
+        );
+        rendering_context
+            .make_current()
+            .map_err(|error| format!("make_current: {error:?}"))?;
 
         let state = Self::opened(None, rendering_context, servo, proxy, options, shared);
         state.boot(&options.url);
