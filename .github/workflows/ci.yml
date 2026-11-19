@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
-    branches: [ main ]
+    # `windows` shares this Linux gate: the platform-neutral code, the axys://
+    # pages and the whole test suite are the same tree, so a change made for
+    # the Windows backend must not be able to break the Linux line unnoticed.
+    branches: [ main, windows ]
   pull_request:
   # Weekly run on an unchanged tree: new RustSec advisories and new lints in
   # the floating `stable` toolchain show up here instead of on a random push.
