@@ -55,6 +55,9 @@ jobs:
           workspaces: poc/windows-servo
           # Bump to force a fresh engine build after a Servo upgrade.
           key: servo-0.7
+          # A red run is the normal state while the port is being fixed; without
+          # this every iteration pays the full engine build again.
+          cache-on-failure: true
 
       - name: Install NASM
         # aws-lc-sys (TLS) assembles with NASM; CMake is already on the image.
