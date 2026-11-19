@@ -68,17 +68,44 @@ jobs:
         working-directory: poc/windows-servo
         run: cargo fmt --all --check
 
+      # Compiler errors are re-emitted as annotations on purpose: check-run
+      # annotations stay readable for a public repository without a token, so
+      # a red run can be diagnosed from the outside instead of only in the UI.
       - name: Build
         working-directory: poc/windows-servo
-        run: cargo build --locked
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'build.log'
+          cargo build --locked --message-format=short 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $log |
+              Select-String -Pattern 'error(\[|:)' |
+              Select-Object -First 40 |
+              ForEach-Object {
+                $line = $_.Line -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+                Write-Output "::error::$line"
+              }
+            exit 1
+          }
 
       - name: Self-test (headless, software rendering)
         working-directory: poc/windows-servo
+        shell: pwsh
         # The test enforces its own 120 s deadline; this is the outer guard.
         timeout-minutes: 15
         run: |
+          $log = Join-Path $env:RUNNER_TEMP 'selftest.log'
           $env:RUST_BACKTRACE = '1'
-          & .\target\debug\axys-servo-poc.exe --self-test --headless
+          & .\target\debug\axys-servo-poc.exe --self-test --headless 2>&1 |
+            Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           Write-Output "self-test exit code: $code"
+          if ($code -ne 0) {
+            Get-Content $log |
+              Select-Object -Last 40 |
+              ForEach-Object {
+                $line = $_ -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+                Write-Output "::error::$line"
+              }
+          }
           exit $code
