@@ -8,7 +8,8 @@
 A lightweight, privacy-focused web browser for Linux, written in Rust with
 GTK4 and WebKitGTK 6.
 
-> Status: `1.2.6`. Linux only (a Windows build is experimental and not working yet).
+> Status: `1.3.0`. Linux (GTK4 + WebKitGTK 6) is the reference platform; the
+> Windows + Servo port lives on the `windows` branch.
 
 ## Contents
 
