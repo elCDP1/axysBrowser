@@ -471,20 +471,36 @@ impl AppState {
     /// Reads the rendered frame back and reports whether anything was drawn.
     /// This is what turns "the page loaded" into "the engine rendered".
     fn saw_pixels(&self) -> bool {
-        self.paint();
+        let Some(webview) = self.webview() else {
+            return false;
+        };
+
+        // Paint into the back buffer and read it *before* presenting: a
+        // double-buffered context swaps buffers on present, and the fresh back
+        // buffer is blank, so reading afterwards always looks empty.
+        webview.paint();
+
         let size = self.rendering_context.size();
         let rect: DeviceIntRect = euclid::Box2D::new(
             euclid::Point2D::new(0i32, 0i32),
             euclid::Point2D::new(size.width as i32, size.height as i32),
         );
-        let Some(image) = self.rendering_context.read_to_image(rect) else {
+        let image = self.rendering_context.read_to_image(rect);
+        self.rendering_context.present();
+
+        let Some(image) = image else {
+            println!("[pixels] the rendering context had no image to read");
             return false;
         };
+
         // Any meaningful colour beats a blank buffer; the test page is white.
-        image
-            .as_raw()
+        let raw = image.as_raw();
+        let lit = raw
             .chunks_exact(4)
-            .any(|pixel| pixel[0] > 8 || pixel[1] > 8 || pixel[2] > 8)
+            .filter(|pixel| pixel[0] > 8 || pixel[1] > 8 || pixel[2] > 8)
+            .count();
+        println!("[pixels] {lit} of {} pixels carry colour", raw.len() / 4);
+        lit > 0
     }
 
     fn point(&self) -> WebViewPoint {
