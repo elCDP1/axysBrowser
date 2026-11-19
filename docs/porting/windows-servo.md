@@ -301,12 +301,38 @@ cargo run -- --self-test                   # exit 0 = pass
 asserts the value read back from Rust equals `js-ok:2`. That is the
 machine-checkable gate for CI.
 
-**Not yet verified.** This machine has no MSVC C++ toolchain (the `link.exe`
-rustc finds is MSYS's, not the MSVC linker) and no CMake/NASM, so the crate has
-not been compiled or run here. It must be built and run on a `windows-2022`
-runner (which has MSVC; CMake and NASM still need installing for
-`aws-lc-sys`) before the POC counts as proven. Treat the code as written, not
-as tested until that run is green.
+### Build and result
+
+`.github/workflows/windows-servo.yml` builds it on `windows-2022` and runs the
+headless self-test. Run **44566879766** (commit `75302f5`) is green:
+`cargo fmt --check`, `cargo build --locked`, and `--self-test --headless`
+passing.
+
+What that run actually proves, in order of the log:
+
+* Servo initialises inside our process; no external browser is involved.
+* A `SoftwareRenderingContext` is created through ANGLE — EGL over D3D11 with
+  WARP, so a machine with no graphics driver still renders. Plain WGL was the
+  first attempt and fails there (`RequiredExtensionUnavailable`), which is why
+  the crate enables Servo's `no-wgl` feature; this is also what a packaged
+  Windows build will need on driver-less machines.
+* A `data:` page loads to `LoadStatus::Complete`.
+* `document.title` read back through `evaluate_javascript` equals `js-ok:2`,
+  so script execution and the value bridge into Rust both work.
+* Frames are painted and read back as pixels.
+
+Two things the run taught that belong in the port notes:
+
+* `surfman::Error` implements neither `Display` nor `std::error::Error`, so
+  rendering-context errors cannot go through `?` into `Box<dyn Error>`.
+* Read the frame **before** `present()`. A double-buffered context swaps on
+  present, so reading afterwards returns the fresh, blank back buffer; the
+  first green-attempt failed its pixel assertion for exactly this reason.
+
+What it does **not** prove: the windowed path (`WindowRenderingContext` on a
+real HWND), human-driven mouse/keyboard/scroll, several windows at once, and
+memory behaviour. Those need a desktop session, so they stay manual for now;
+CI covers the engine, not the input plumbing.
 
 ## 8. CI plan
 
@@ -316,8 +342,11 @@ the release build. Added on `windows`:
 1. `windows` job: `cargo build`, `cargo test`, `cargo clippy -D warnings`
    against gvsbuild GTK4 (the existing experimental `windows.yml` gains the
    real dependency install).
-2. `windows-servo-poc` job: build `poc/windows-servo` and run `--self-test`.
-   Servo's dependency build is long; it needs a cache and a large timeout.
+2. `windows-servo-poc` job: **done**, `.github/workflows/windows-servo.yml`
+   builds the POC and runs its headless self-test. It needs libclang for the
+   ANGLE bindings, NASM for `aws-lc-sys`, the ANGLE DLLs beside the binary,
+   a dependency cache (key `servo-0.7-angle`) and a long timeout — a cold build
+   is ~25 minutes, a cached one ~4.
 3. Windows memory smoke: the ported `mem-smoke` schedule with private-commit
    thresholds.
 4. A sync check: shared modules must hash identically on `main` and `windows`;
