@@ -1,0 +1,84 @@
+name: Windows + Servo (proof of concept)
+
+# Builds poc/windows-servo and runs its headless self-test on a native Windows
+# runner. This is the gate that proves Servo embeds in a Windows process before
+# any engine work starts on the `windows` branch.
+#
+# The self-test needs no GPU and no desktop session: it renders through Servo's
+# software context, so a green run means the engine initialised, loaded a page,
+# executed JavaScript and produced pixels.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ windows ]
+    paths:
+      - 'poc/windows-servo/**'
+      - '.github/workflows/windows-servo.yml'
+  pull_request:
+    paths:
+      - 'poc/windows-servo/**'
+      - '.github/workflows/windows-servo.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  poc:
+    runs-on: windows-2022
+    # Servo compiles SpiderMonkey and several hundred crates on a cold cache.
+    timeout-minutes: 180
+
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_RETRY: '5'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install native Windows Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      # Servo's dependency build dominates the job; without the cache every
+      # push pays the full SpiderMonkey cost again.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: poc/windows-servo
+          # Bump to force a fresh engine build after a Servo upgrade.
+          key: servo-0.7
+
+      - name: Install NASM
+        # aws-lc-sys (TLS) assembles with NASM; CMake is already on the image.
+        run: |
+          choco install nasm --no-progress -y
+          if (Test-Path 'C:\ProgramData\chocolatey\bin\nasm.exe') {
+            'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
+      - name: Check formatting
+        working-directory: poc/windows-servo
+        run: cargo fmt --all --check
+
+      - name: Build
+        working-directory: poc/windows-servo
+        run: cargo build --locked
+
+      - name: Self-test (headless, software rendering)
+        working-directory: poc/windows-servo
+        # The test enforces its own 120 s deadline; this is the outer guard.
+        timeout-minutes: 15
+        run: |
+          $env:RUST_BACKTRACE = '1'
+          & .\target\debug\axys-servo-poc.exe --self-test --headless
+          $code = $LASTEXITCODE
+          Write-Output "self-test exit code: $code"
+          exit $code

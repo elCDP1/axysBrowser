@@ -1,0 +1,27 @@
+[package]
+name = "axys-servo-poc"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "axysBrowser Windows port: Servo embedding proof of concept"
+
+# Standalone workspace: this crate is not part of the Linux package and must
+# never be pulled into the axysbrowser build.
+[workspace]
+
+[dependencies]
+servo = "0.7"
+winit = "0.30"
+euclid = "0.22"
+url = "2"
+# Must match the rustls major/minor Servo links, so the installed crypto
+# provider is the one Servo's network stack actually uses.
+rustls = "0.23"
+
+[profile.dev]
+# Servo is unusable unoptimised even in a debug build; the engine's own build
+# notes ask embedders to optimise dependencies.
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2
