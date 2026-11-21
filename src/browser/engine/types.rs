@@ -24,7 +24,9 @@ pub struct ViewConfig {
 pub enum LoadState {
     /// A navigation started (including a redirect chain's first hop).
     Started,
-    /// A redirect was followed.
+    /// A redirect was followed. Only the backend that reports the stage has
+    /// it: WebKit does, Servo 0.7 reports started and finished only.
+    #[cfg(target_os = "linux")]
     Redirected,
     /// The first bytes of the document arrived: the URL is real now.
     Committed,

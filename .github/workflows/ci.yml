@@ -293,6 +293,12 @@ jobs:
             exit 1
           }
 
+      # The Linux jobs have run clippy with `-D warnings` since day one; the
+      # Windows line gets the same bar, so a `cfg(windows)` branch cannot rot
+      # into dead or suspicious code that nobody sees until it is used.
+      - name: Clippy (Servo backend, MSVC)
+        run: cargo clippy --locked --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
       # Compiling is not passing: a test can type-check on this target and fail
       # the moment it runs (a `/proc` read, a POSIX path, an absolute path
       # without a drive). The Linux jobs have always run the suite; this line

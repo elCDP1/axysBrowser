@@ -318,7 +318,9 @@ fn build_browser_window(
 
     // One permission manager per window: private windows share a single
     // ephemeral one across all their tabs (never persisted), normal
-    // windows share the profile-wide persisted one.
+    // windows share the profile-wide persisted one. Absent on the backend
+    // that cannot ask a page for a decision at all.
+    #[cfg(target_os = "linux")]
     let window_permissions = if private_mode {
         crate::browser::permissions::PermissionManager::ephemeral()
     } else {
@@ -1255,6 +1257,7 @@ fn build_browser_window(
         let zoom_level = zoom_level.clone();
         let show_picker = show_picker.clone();
         let page_builders = page_builders.clone();
+        #[cfg(target_os = "linux")]
         let window_permissions = window_permissions.clone();
         let on_private = open_private_toggle.clone();
 
@@ -1346,17 +1349,30 @@ fn build_browser_window(
                 web_view.add_controller(zoom_wheel);
             }
 
+            #[cfg(target_os = "linux")]
             let permissions = window_permissions.clone();
 
             let on_authenticate: crate::browser::engine::AuthenticateHandler =
                 Rc::new(crate::ui::auth::prompt);
 
+            #[cfg(target_os = "linux")]
             BrowserEngine::wire_view(
                 &web_view,
                 open_in_new_tab.clone(),
                 show_notification.clone(),
                 on_authenticate,
                 permissions,
+                clipboard_reads.clone(),
+            );
+
+            // Servo has no permission store to hand over: it denies every
+            // request itself, so the seam takes one argument less there.
+            #[cfg(not(target_os = "linux"))]
+            BrowserEngine::wire_view(
+                &web_view,
+                open_in_new_tab.clone(),
+                show_notification.clone(),
+                on_authenticate,
                 clipboard_reads.clone(),
             );
 
@@ -1450,6 +1466,7 @@ fn build_browser_window(
                 let on_tool = on_tool.clone();
                 let zoom_level = zoom_level.clone();
                 let show_picker = show_picker.clone();
+                #[cfg(target_os = "linux")]
                 let window_permissions = window_permissions.clone();
                 let state = state.clone();
                 let downloads = downloads.clone();
@@ -1466,6 +1483,7 @@ fn build_browser_window(
                             on_history: local_history.clone(),
                             on_clear_browsing_data: local_clear_browsing_data.clone(),
                             history: window_history.clone(),
+                            #[cfg(target_os = "linux")]
                             permissions: window_permissions.clone(),
                             tab_rows: tab_rows.clone(),
                             on_close_tab: local_close_tab.clone(),
@@ -1806,7 +1824,18 @@ fn build_browser_window(
                         toolbar.set_loading(view.is_loading());
 
                         match state {
+                            #[cfg(target_os = "linux")]
                             LoadState::Started | LoadState::Committed | LoadState::Redirected => {
+                                toolbar.set_navigation_state(
+                                    view.can_go_back(),
+                                    view.can_go_forward(),
+                                );
+                            }
+
+                            // The backend that reports no redirect stage names
+                            // the two it does report.
+                            #[cfg(not(target_os = "linux"))]
+                            LoadState::Started | LoadState::Committed => {
                                 toolbar.set_navigation_state(
                                     view.can_go_back(),
                                     view.can_go_forward(),
@@ -2364,6 +2393,7 @@ fn build_browser_window(
         let on_tool = on_tool.clone();
         let zoom_level = zoom_level.clone();
         let show_picker = show_picker.clone();
+        #[cfg(target_os = "linux")]
         let window_permissions = window_permissions.clone();
         let on_private = open_private_toggle.clone();
 
@@ -2476,6 +2506,7 @@ fn build_browser_window(
                             on_history: local_history.clone(),
                             on_clear_browsing_data: local_clear_browsing_data.clone(),
                             history: window_history.clone(),
+                            #[cfg(target_os = "linux")]
                             permissions: window_permissions.clone(),
                             tab_rows: tab_rows.clone(),
                             on_close_tab: local_close_tab.clone(),

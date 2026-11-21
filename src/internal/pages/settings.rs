@@ -39,11 +39,65 @@ fn row_with_description(title: &str, description: &str) -> (Box, Label) {
     (row, description_label)
 }
 
+/// The "remembered site permissions" row: the count and a button that forgets
+/// them all.
+///
+/// Only the backend that can ask a page for a decision has one. Servo 0.7
+/// cannot, so the Windows build has no store to show and gets no row that would
+/// report a count of zero forever.
+#[cfg(target_os = "linux")]
+fn remembered_permissions_row(permissions: crate::browser::permissions::PermissionManager) -> Box {
+    let description = format!(
+        "{} ({})",
+        rust_i18n::t!("settings.permissions_description"),
+        permissions.decision_count()
+    );
+
+    let (row, description_label) =
+        row_with_description(&rust_i18n::t!("settings.permissions"), &description);
+
+    let reset = gtk::Button::with_label(&rust_i18n::t!("settings.permissions_reset"));
+
+    reset.set_valign(gtk::Align::Center);
+
+    let status = Label::new(None);
+
+    status.add_css_class("dim-label");
+
+    {
+        let permissions = permissions.clone();
+        let status = status.clone();
+        let description_label = description_label.clone();
+
+        reset.connect_clicked(move |_| match permissions.clear_all() {
+            Ok(()) => {
+                // Refresh the count in place: the description is built once.
+                description_label.set_text(&format!(
+                    "{} ({})",
+                    rust_i18n::t!("settings.permissions_description"),
+                    permissions.decision_count()
+                ));
+
+                status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
+            }
+            Err(error) => {
+                eprintln!("Failed to forget permissions: {error}");
+                status.set_text(&rust_i18n::t!("settings.permissions_clear_failed"));
+            }
+        });
+    }
+
+    row.append(&status);
+    row.append(&reset);
+
+    row
+}
+
 pub fn build_settings(
     state: Rc<AppState>,
     on_clear_browsing_data: crate::app_state::ClearBrowsingData,
     show_picker: ShowPicker,
-    permissions: crate::browser::permissions::PermissionManager,
+    #[cfg(target_os = "linux")] permissions: crate::browser::permissions::PermissionManager,
 ) -> ScrolledWindow {
     let page = Box::new(Orientation::Vertical, 18);
 
@@ -323,51 +377,8 @@ pub fn build_settings(
         });
     }
 
-    let permissions_desc = format!(
-        "{} ({})",
-        rust_i18n::t!("settings.permissions_description"),
-        permissions.decision_count()
-    );
-
-    let (permissions_row, permissions_desc_label) =
-        row_with_description(&rust_i18n::t!("settings.permissions"), &permissions_desc);
-
-    let permissions_reset = gtk::Button::with_label(&rust_i18n::t!("settings.permissions_reset"));
-
-    permissions_reset.set_valign(gtk::Align::Center);
-
-    let permissions_status = Label::new(None);
-
-    permissions_status.add_css_class("dim-label");
-
-    {
-        let permissions = permissions.clone();
-        let permissions_status = permissions_status.clone();
-        let permissions_desc_label = permissions_desc_label.clone();
-
-        permissions_reset.connect_clicked(move |_| {
-            match permissions.clear_all() {
-                Ok(()) => {
-                    // Refresh the count in place: the description is built once.
-                    permissions_desc_label.set_text(&format!(
-                        "{} ({})",
-                        rust_i18n::t!("settings.permissions_description"),
-                        permissions.decision_count()
-                    ));
-
-                    permissions_status.set_text(&rust_i18n::t!("settings.permissions_cleared"));
-                }
-                Err(error) => {
-                    eprintln!("Failed to forget permissions: {error}");
-                    permissions_status
-                        .set_text(&rust_i18n::t!("settings.permissions_clear_failed"));
-                }
-            }
-        });
-    }
-
-    permissions_row.append(&permissions_status);
-    permissions_row.append(&permissions_reset);
+    #[cfg(target_os = "linux")]
+    let permissions_row = remembered_permissions_row(permissions);
 
     let language_title = Label::new(Some(&rust_i18n::t!("settings.language")));
 
@@ -422,6 +433,7 @@ pub fn build_settings(
 
     page.append(&clipboard_row);
 
+    #[cfg(target_os = "linux")]
     page.append(&permissions_row);
 
     page.append(&language_title);

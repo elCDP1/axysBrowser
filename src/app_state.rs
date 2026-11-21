@@ -2,6 +2,7 @@ use crate::browser::address::{SearchConfig, load_config};
 use crate::browser::bookmarks::BookmarkManager;
 use crate::browser::downloads::DownloadManager;
 use crate::browser::history::HistoryManager;
+#[cfg(target_os = "linux")]
 use crate::browser::permissions::PermissionManager;
 use crate::i18n;
 use crate::theme;
@@ -256,6 +257,9 @@ pub struct AppState {
     pub downloads: DownloadManager,
     pub history: HistoryManager,
     pub bookmarks: BookmarkManager,
+    /// Remembered permission decisions. Only the backend that can ask a page
+    /// for one keeps them (`browser::permissions`).
+    #[cfg(target_os = "linux")]
     pub permissions: PermissionManager,
     language_listeners: LanguageListeners,
     settings_listeners: SettingsListeners,
@@ -323,6 +327,7 @@ impl AppState {
 
         let bookmarks = BookmarkManager::load();
 
+        #[cfg(target_os = "linux")]
         let permissions = PermissionManager::load();
 
         let state = Rc::new(Self {
@@ -334,6 +339,7 @@ impl AppState {
             downloads,
             history,
             bookmarks,
+            #[cfg(target_os = "linux")]
             permissions,
             language_listeners: Rc::new(RefCell::new(Vec::new())),
             settings_listeners: Rc::new(RefCell::new(Vec::new())),

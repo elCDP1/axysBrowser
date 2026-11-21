@@ -10,13 +10,16 @@
 //! instead of pretending. `docs/porting/windows-servo.md` carries the list;
 //! the two entries that matter for privacy are that a private window is **not**
 //! isolated, and that the third-party-cookie policy is not enforced.
+//!
+//! There is no download hook either: Servo 0.7 cannot start a transfer, so
+//! [`server::download::Download`](super::download) has no values and nothing
+//! could ever call one.
 
 use std::path::Path;
 
 use servo::StorageType;
 
 use super::BrowserEngine;
-use super::download::Download;
 use super::view::View;
 use crate::browser::engine::types::ViewConfig;
 
@@ -96,10 +99,4 @@ impl Session {
 
         done(true);
     }
-
-    /// Every transfer started in this session.
-    ///
-    /// Servo 0.7 has no download interception, so this never fires. See
-    /// [`Download`], which is uninhabited on this backend.
-    pub fn on_download_started(&self, _f: impl Fn(Download) + 'static) {}
 }

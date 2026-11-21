@@ -415,10 +415,17 @@ policy cannot drift between platforms.
 | clear cookies / site data | `SiteDataManager`, `NetworkManager::clear_cache` | written |
 | find | — | **`FindOutcome { 0, false }`**: the seam has no error channel |
 | print, MHTML | — | **`Err(Unsupported)`** |
-| downloads | — | **uninhabited `Download`**; `on_download_started` never fires |
-| permissions | `request_permission` | **denies every request**, and logs which |
+| downloads | — | **uninhabited `Download`**: the session hook, the save dialog and the manager's interception are not compiled on this backend |
+| permissions | `request_permission` | **denies every request**, and logs which; the permission store is not part of this build |
 | popups | `request_create_new` | **closed**: the request carries no URL to open |
 | private windows, ITP, cookie policy | — | **not isolated, not enforced**: one profile, no policy API |
+
+Windows has no dead code standing in for these features either: what the engine
+cannot produce is not compiled. `LoadState::Redirected` exists only where a
+backend reports redirects, `browser::permissions` and its settings row only
+where a backend can ask for a decision, and `DownloadManager::watch` with the
+save dialog only where a transfer can start. `cargo clippy --all-targets -- -D
+warnings` is clean on both lines.
 
 Details worth keeping:
 

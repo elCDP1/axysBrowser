@@ -45,10 +45,13 @@ pub fn build_row(
             }
         }
 
+        // Only a backend that can finish a transfer produces either of these.
+        #[cfg(target_os = "linux")]
         DownloadStatus::Completed => rust_i18n::t!("downloads.completed").to_string(),
 
         DownloadStatus::Cancelled => rust_i18n::t!("downloads.cancelled").to_string(),
 
+        #[cfg(target_os = "linux")]
         DownloadStatus::Failed(message) => {
             rust_i18n::t!("downloads.failed", message = message).to_string()
         }
@@ -101,6 +104,7 @@ pub fn build_row(
             row.append(&cancel);
         }
 
+        #[cfg(target_os = "linux")]
         DownloadStatus::Completed => {
             let show = Button::from_icon_name("folder-symbolic");
 

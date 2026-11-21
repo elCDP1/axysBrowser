@@ -4,14 +4,22 @@ use std::rc::{Rc, Weak};
 
 use crate::browser::engine::{Download, Session};
 use gtk::Application;
+// The save dialog is the only gio user, and it answers a real transfer.
+#[cfg(target_os = "linux")]
 use gtk::gio;
+// Only the interception touches widgets; without it the file is plain data.
+#[cfg(target_os = "linux")]
 use gtk::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DownloadStatus {
     InProgress,
+    /// Reached only by a transfer that gets to finish, which needs a backend
+    /// that can start one.
+    #[cfg(target_os = "linux")]
     Completed,
     Cancelled,
+    #[cfg(target_os = "linux")]
     Failed(String),
 }
 
@@ -26,6 +34,8 @@ impl DownloadStatus {
 pub struct DownloadEntry {
     pub id: u64,
     pub filename: String,
+    /// Where the save dialog put it. Only a transfer that was saved has one.
+    #[cfg(target_os = "linux")]
     pub path: PathBuf,
     pub progress: f64,
     pub status: DownloadStatus,
@@ -117,7 +127,12 @@ fn notify_listeners(listeners: &DownloadListeners) {
 pub struct DownloadManager {
     entries: Rc<RefCell<Vec<DownloadEntry>>>,
     listeners: DownloadListeners,
+    /// Ids are handed out where a transfer arrives, so only a backend that can
+    /// produce one needs a counter.
+    #[cfg(target_os = "linux")]
     next_id: Rc<RefCell<u64>>,
+    /// Only a finished transfer is announced.
+    #[cfg(target_os = "linux")]
     application: Application,
     /// Whether finished downloads pop a desktop notification (off in
     /// private windows: the filename would linger in the shell).
@@ -128,10 +143,15 @@ pub struct DownloadManager {
 
 impl DownloadManager {
     pub fn new(application: Application) -> Self {
+        #[cfg(not(target_os = "linux"))]
+        let _ = application;
+
         Self {
             entries: Rc::new(RefCell::new(Vec::new())),
             listeners: Rc::new(RefCell::new(Vec::new())),
+            #[cfg(target_os = "linux")]
             next_id: Rc::new(RefCell::new(1)),
+            #[cfg(target_os = "linux")]
             application,
             announce: Rc::new(std::cell::Cell::new(true)),
             private: Rc::new(std::cell::Cell::new(false)),
@@ -183,6 +203,9 @@ impl DownloadManager {
     }
 
     /// Opens the system file manager with the given file selected/highlighted.
+    /// Only a finished transfer has a folder to show: this is called from the
+    /// downloads page's "completed" row, which exists where transfers do.
+    #[cfg(target_os = "linux")]
     pub fn open_containing_folder(path: &Path) {
         let launcher = gtk::FileLauncher::new(Some(&gio::File::for_path(path)));
 
@@ -193,9 +216,16 @@ impl DownloadManager {
         });
     }
 
+    /// Nothing to watch: the Servo backend cannot produce a [`Download`] at
+    /// all, so the seam's session hook never fires and a handler registered
+    /// here would be code that can never run.
+    #[cfg(not(target_os = "linux"))]
+    pub fn watch(&self, _session: &Session) {}
+
     /// Wires up a session so downloads started in it (triggered by web
     /// content, e.g. clicking a download link or "Save Image As") are tracked
     /// here and prompt the user for a destination.
+    #[cfg(target_os = "linux")]
     pub fn watch(&self, session: &Session) {
         let manager = self.clone();
 
@@ -467,6 +497,9 @@ impl DownloadManager {
 
 /// Returns the local path for the UI and the URI WebKit needs as the
 /// destination. `file.uri()` percent-encodes spaces and non-ASCII names.
+///
+/// Only the save dialog that answers a real transfer asks for one.
+#[cfg(target_os = "linux")]
 fn download_target(file: &gio::File) -> Option<(PathBuf, String)> {
     Some((file.path()?, file.uri().as_str().to_owned()))
 }
@@ -553,6 +586,7 @@ mod tests {
         assert_eq!(format_speed(1536.0), "1.5 KB/s");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn download_target_uses_an_encoded_uri() {
         let path = std::env::temp_dir().join("axys download ñ.txt");
@@ -649,8 +683,10 @@ mod tests {
     #[test]
     fn only_an_in_progress_download_is_cancellable() {
         assert!(DownloadStatus::InProgress.is_cancellable());
+        #[cfg(target_os = "linux")]
         assert!(!DownloadStatus::Completed.is_cancellable());
         assert!(!DownloadStatus::Cancelled.is_cancellable());
+        #[cfg(target_os = "linux")]
         assert!(!DownloadStatus::Failed("network".to_string()).is_cancellable());
     }
 }

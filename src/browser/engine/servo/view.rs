@@ -560,16 +560,25 @@ impl<T: ?Sized> Hook<T> {
     }
 }
 
+/// A `Hook` around the callback that receives the URI or the title.
+type UriHook = Hook<dyn Fn(Option<&str>)>;
+
+/// A `Hook` around the callback that answers an authentication request.
+type AuthHook = Hook<dyn Fn(&View, AuthPrompt)>;
+
+/// The authentication handler as the interface hands it over.
+type AuthCallback = Rc<dyn Fn(&View, AuthPrompt)>;
+
 /// Everything the interface registered on a page.
 #[derive(Default)]
 struct Hooks {
     load: Option<Hook<dyn Fn(LoadState)>>,
-    uri: Option<Hook<dyn Fn(Option<&str>)>>,
-    title: Option<Hook<dyn Fn(Option<&str>)>>,
+    uri: Option<UriHook>,
+    title: Option<UriHook>,
     loading: Option<Hook<dyn Fn(bool)>>,
     context_menu: Option<Hook<dyn Fn() -> Vec<MenuItem>>>,
     notification: Option<Hook<dyn Fn(String, String)>>,
-    authenticate: Option<Hook<dyn Fn(&View, AuthPrompt)>>,
+    authenticate: Option<AuthHook>,
 }
 
 /// What a page owns. Backend-internal: the interface only ever holds [`View`].
@@ -1361,7 +1370,7 @@ pub(crate) fn wire(
     view: &View,
     _open_in_new_tab: Rc<dyn Fn(String)>,
     show_notification: Rc<dyn Fn(String, String)>,
-    on_authenticate: Rc<dyn Fn(&View, AuthPrompt)>,
+    on_authenticate: AuthCallback,
 ) {
     let mut hooks = view.inner.hooks.borrow_mut();
 

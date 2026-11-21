@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use crate::app_state::AppState;
 use crate::browser::history::HistoryManager;
+#[cfg(target_os = "linux")]
 use crate::browser::permissions::PermissionManager;
 use crate::ui::menu::ShowPicker;
 
@@ -59,6 +60,8 @@ pub struct PageCallbacks {
     /// History store for this window (ephemeral in private windows).
     pub history: HistoryManager,
     /// Permission decisions for this window (ephemeral in private windows).
+    /// Absent on a backend that cannot ask for one.
+    #[cfg(target_os = "linux")]
     pub permissions: PermissionManager,
     /// Snapshot of the window's open tabs (resources page).
     pub tab_rows: Rc<dyn Fn() -> Vec<TabRow>>,
@@ -85,6 +88,7 @@ pub fn route(
         on_history,
         on_clear_browsing_data,
         history,
+        #[cfg(target_os = "linux")]
         permissions,
         tab_rows,
         on_close_tab,
@@ -103,7 +107,13 @@ pub fn route(
         "axys://about" => Some(build_about().upcast()),
 
         "axys://settings" => {
-            Some(build_settings(state, on_clear_browsing_data, show_picker, permissions).upcast())
+            #[cfg(target_os = "linux")]
+            let page = build_settings(state, on_clear_browsing_data, show_picker, permissions);
+
+            #[cfg(not(target_os = "linux"))]
+            let page = build_settings(state, on_clear_browsing_data, show_picker);
+
+            Some(page.upcast())
         }
 
         "axys://tools" => Some(

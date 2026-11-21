@@ -28,7 +28,6 @@ use servo::{EventLoopWaker, Servo, ServoBuilder};
 
 use crate::browser::engine::shared;
 use crate::browser::engine::types::{AuthPrompt, ViewConfig};
-use crate::browser::permissions::PermissionManager;
 
 mod download;
 mod session;
@@ -210,7 +209,6 @@ impl BrowserEngine {
         open_in_new_tab: Rc<dyn Fn(String)>,
         show_notification: Rc<dyn Fn(String, String)>,
         on_authenticate: AuthenticateHandler,
-        _permissions: PermissionManager,
         _clipboard_reads: Rc<dyn Fn() -> bool>,
     ) {
         view::wire(view, open_in_new_tab, show_notification, on_authenticate);
