@@ -1,0 +1,16 @@
+[advisories]
+# RUSTSEC-2026-0459 / CVE-2026-119375: the SQLite that `libsqlite3-sys` builds
+# from source is older than 3.54.0, and opening a crafted database plus `-wal`
+# pair can disclose page-cache memory.
+#
+# There is nothing to upgrade to. Servo's storage stack enables rusqlite's
+# `bundled` feature, rusqlite 0.38 accepts only `libsqlite3-sys ^0.36`, and the
+# fix ships in libsqlite3-sys 0.39 / rusqlite 0.41. The newest Servo (0.8.0)
+# still declares `rusqlite ^0.38`, so no released Servo can clear this and a
+# `cargo update` cannot either.
+#
+# What that leaves is a local-only issue: an attacker must be able to write
+# both files into the profile, which is created owner-only (0700) by
+# `paths::secure_dirs`. Remove this line as soon as Servo moves to
+# rusqlite 0.41.
+ignore = ["RUSTSEC-2026-0459"]
