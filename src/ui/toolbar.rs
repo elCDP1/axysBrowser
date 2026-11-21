@@ -2,7 +2,8 @@ use gtk::prelude::*;
 use gtk::{Align, Box, Button, CenterBox, Entry, Image, Orientation, Stack, Window};
 use std::cell::RefCell;
 use std::rc::Rc;
-use webkit6::{WebView, prelude::WebViewExt};
+
+use crate::browser::engine::View;
 
 use super::menu::{MenuPanel, PickerPanel, TabMenuPanel};
 use super::spinner::LoadingSpinner;
@@ -257,7 +258,7 @@ pub struct ToolbarOptions {
 
 impl Toolbar {
     pub fn new(
-        current_web_view: Rc<RefCell<Option<WebView>>>,
+        current_web_view: Rc<RefCell<Option<View>>>,
         on_navigate: Rc<dyn Fn(String)>,
         on_reload: Action,
         on_back: Action,

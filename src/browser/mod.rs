@@ -5,3 +5,4 @@ pub mod engine;
 pub mod history;
 pub mod permissions;
 pub mod tabs;
+pub mod util;

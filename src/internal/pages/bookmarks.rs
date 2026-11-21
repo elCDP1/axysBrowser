@@ -6,7 +6,7 @@ use crate::browser::bookmarks::{Bookmark, BookmarkManager};
 
 fn favicon(bookmark: &Bookmark) -> Image {
     if let Some(path) = bookmark.favicon_path.as_ref()
-        && let Ok(texture) = webkit6::gdk::Texture::from_filename(path)
+        && let Ok(texture) = gtk::gdk::Texture::from_filename(path)
     {
         let image = Image::from_paintable(Some(&texture));
 

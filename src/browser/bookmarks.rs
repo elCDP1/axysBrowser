@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use gtk::gdk;
+use gtk::gdk::prelude::TextureExt;
 use gtk::glib;
-use webkit6::gdk;
-use webkit6::gdk::prelude::TextureExt;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Bookmark {

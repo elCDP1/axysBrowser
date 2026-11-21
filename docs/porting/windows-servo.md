@@ -1,10 +1,39 @@
 # Windows + Servo: audit and port plan
 
-Status: **phase 1 (audit + proof of concept) complete.** The Windows engine
-backend (phases 3–5) is not written: `Cargo.toml` still depends on `webkit6`
-unconditionally, so **there is no Windows build of the browser yet** and no
-Windows release asset can be produced. The proof of concept below only shows
-that Servo embeds in a Windows process.
+Status: **phases 1–4 written; nothing has run on Windows yet.** The shared
+interface no longer names an engine: everything outside
+`src/browser/engine/` talks to the seam (`View`, `Session`, `Download`,
+`AuthPrompt`, `BrowserEngine`). Both backends exist — `engine/webkit` for
+Linux/WebKitGTK and `engine/servo` for Windows/Servo — and `Cargo.toml`
+resolves each engine only for its own target, so Linux is unchanged and a
+Windows build no longer pulls WebKitGTK.
+
+The Servo backend has **never been compiled**. This machine has no MSVC, no
+GTK4 for Windows and no CMake/NASM/libclang, and the only place a Servo build
+can be proved is the `windows-2022` runner, which needs a push. Its code was
+written against Servo 0.7's published sources — every signature in it was read
+from the crate, not remembered — but *written* is not *works*; §8 lists what is
+checked and §12 what is still open.
+
+Two blockers remain:
+
+* **Platform modules: done.** `paths.rs` no longer reaches for
+  `std::os::unix::fs`: owner-only files go through `restrict`,
+  `create_private_dir` and `create_private_file`, which set 0700/0600 on Unix
+  and do nothing on Windows, where the profile's ACL already restricts them.
+  `config_dir`/`data_dir`/`cache_dir` fall back to `%APPDATA%`/`%LOCALAPPDATA%`
+  when neither `XDG_*` nor `HOME` exist, so the profile never lands in the
+  working directory. `app.rs` takes `running_under_wsl` from
+  `platform::windows`, where it is always false. `ui/memprobe.rs` compiles on
+  Windows because it only *reads* `/proc` at runtime. The Windows check
+  (`cargo check --locked --target x86_64-pc-windows-msvc`, also with
+  `--all-targets`) now compiles the crate with no errors.
+* **GTK4 for MSVC.** The interface is GTK4 on both platforms; a Windows build
+  needs gvsbuild GTK4 import libraries and ~40 DLLs at runtime.
+* **Verification.** The `windows` CI job now exists (§9) and has not run on a
+  runner yet; locally the crate compiles for the Windows target. The rule
+  "green on Linux *and* Windows before a commit" still keeps this work out of a
+  commit.
 
 This document is the report required before any engine work starts. It records
 what the repository contains today, how the code splits between shared, Linux
@@ -41,8 +70,9 @@ and nothing has been committed.
 dependencies: `gtk4 0.11` (feature `v4_10`) and `webkit6 0.6.1` (feature
 `v2_52`). 505 lines mention GTK or WebKit.
 
-WebKitGTK is reached through a **single module**, `src/browser/engine.rs`
-(2,687 lines): `BrowserEngine::configure`, `load`, `reload`, `open_external`,
+WebKitGTK is reached through a **single module**, `src/browser/engine/`
+(`mod.rs`, the seam, plus `webkit.rs`, 2,687 lines at the move):
+`BrowserEngine::configure`, `load`, `reload`, `open_external`,
 the timeout/error pages, the source-view marker, plus the signal handlers for
 popups, permissions, authentication, downloads and script dialogs.
 
@@ -63,7 +93,7 @@ That is a good starting position: the engine boundary is already narrow, and
 
 | Module | Lines | Class | Notes |
 | --- | --- | --- | --- |
-| `browser/engine.rs` | 2,687 | **engine adapter** | Split into a trait + `webkit/` + `servo/` |
+| `browser/engine/webkit.rs` | 2,687 | **engine adapter** | Moved behind the `browser/engine/mod.rs` facade in phase 3 |
 | `ui/window.rs` | 2,976 | mostly shared, engine point | Owns the `WebView` child in the GTK tree |
 | `ui/menu.rs` | 1,517 | shared (GTK only) | No engine references at all |
 | `ui/toolbar.rs` | 844 | shared (GTK only) | Two engine calls |
@@ -184,7 +214,7 @@ host it on Windows.
   (GTK 4.22.4 in its 2026.6.0 release), and the project's
   gvsbuild is the supported route (the old experimental
   `.github/workflows/windows.yml` did it that way before it was removed, see
-  §8).
+  §9).
 * `gtk4 0.11` targets GTK ≥ 4.10, so the same crate version builds against it.
 * A known caveat: gvsbuild patches out DirectComposition by default, so GSK
   silently falls back to the Cairo renderer unless `GDK_DEBUG=dcomp` is set.
@@ -238,9 +268,9 @@ src/
   core/          shared and engine-agnostic: address, history, bookmarks,
                  settings, paths, i18n, theme
   engine/
-    mod.rs       the small trait the UI talks to
-    webkit/      cfg(target_os = "linux") — today's engine.rs, unchanged in behaviour
-    servo/       cfg(windows)
+    mod.rs       the seam: platform selection and the backend contract
+    webkit.rs    cfg(target_os = "linux") — today's engine.rs, unchanged in behaviour
+    servo.rs     cfg(windows)
   ui/            GTK4 widgets, shared by both platforms
   internal/      axys:// pages, shared
   platform/
@@ -248,9 +278,26 @@ src/
     windows/     known folders, Win32 memory probe, process enumeration
 ```
 
-`engine/mod.rs` should stay small — the operations `BrowserEngine` already
-exposes (load, reload, zoom, find, capture, permission answer, download
-events). Anything wider will not survive two different engines.
+The types the seam has to expose, the migration order and the tests it makes
+possible are in [`phase4-engine-api.md`](phase4-engine-api.md).
+
+`engine/mod.rs` is deliberately a facade, not an abstraction: it picks the
+backend for the platform and re-exports its surface, and it documents what a
+backend has to provide (`BrowserEngine` and its methods, the session and view
+types, `AuthenticateHandler`, the cookie/UA/cache helpers). Phase 3 stopped
+here on purpose. A trait or a set of type aliases written against a single
+backend would be guesswork about Servo's shape, so the real abstraction is
+drawn in phase 4, with two implementations to check it against — and the
+interface files then only change if a second engine proves they must.
+What phase 3 does establish: `browser::engine` is the only module that
+*selects* the engine, so adding a platform is one `cfg` and a backend file in
+one place. What it does not establish yet is type isolation — WebKit types
+still reach the interface in 16 files (`ui/window.rs`, `ui/findbar.rs`,
+`browser/downloads.rs`, `ui/auth.rs`, the session in `app_state.rs`, the
+`/proc` diagnostics), because those files hold a `WebView`, a `NetworkSession`
+or a `Download` directly. Narrowing the seam to the engine's own types is
+part of phase 4, where a second implementation says what the shared shape
+actually has to be.
 
 Linux must keep building exactly as it does today: `cargo build` on `main`
 touches none of the new modules.
@@ -340,16 +387,74 @@ real HWND), human-driven mouse/keyboard/scroll, several windows at once, and
 memory behaviour. Those need a desktop session, so they stay manual for now;
 CI covers the engine, not the input plumbing.
 
-## 8. CI plan
+## 8. The Servo backend
+
+`src/browser/engine/servo.rs` plus `servo/{view,session,download}.rs` implement
+the same surface `engine/webkit` exposes, so `ui/` compiles against either.
+Everything engine-specific lives in `engine/`: no `webkit6` name remains outside
+it, and the two backends share `engine/shared.rs` (external-scheme policy, the
+confirmation rule, the failure page, the `data:`/JS-string encoders) so that
+policy cannot drift between platforms.
+
+| Seam operation | Servo 0.7 call | State |
+| --- | --- | --- |
+| create a page | `WebViewBuilder::new(servo, SoftwareRenderingContext)` | written |
+| frames | `notify_new_frame_ready` → `paint()` → `read_to_image()` → `gdk::MemoryTexture` → `gtk::Picture` | written |
+| resize | `WebView::resize` when the picture's allocation changes | written |
+| input | `GestureClick` / `EventControllerMotion` / `EventControllerScroll` / `EventControllerKey` → `InputEvent` | written; `Code::Unidentified` |
+| load, reload, back/forward | `load`, `reload`, `can_go_back`/`go_back(1)`, `can_go_forward`/`go_forward(1)` | direct |
+| URI, title, loading | delegate → `on_uri_changed`, `on_title_changed`, `on_load`, `on_loading_changed` | direct; two load stages |
+| zoom | `set_page_zoom` / `page_zoom` | direct |
+| close | drop the `WebView` (the delegate holds `Weak<ViewInner>`) | direct |
+| authentication | `request_authentication` → `AuthPrompt` | written |
+| script dialogs | `EmbedderControl::SimpleDialog` → `gtk::AlertDialog` | written; `prompt()` dismissed |
+| context menu | `EmbedderControl::ContextMenu` → `gtk::Popover` (Servo's entries + the interface's) | written |
+| notifications | `show_notification` | written |
+| external schemes | `request_navigation` + shared policy → `gtk::UriLauncher` | written |
+| failure page | `document.write` of the shared page, keeping the URL | written |
+| clear cookies / site data | `SiteDataManager`, `NetworkManager::clear_cache` | written |
+| find | — | **`FindOutcome { 0, false }`**: the seam has no error channel |
+| print, MHTML | — | **`Err(Unsupported)`** |
+| downloads | — | **uninhabited `Download`**; `on_download_started` never fires |
+| permissions | `request_permission` | **denies every request**, and logs which |
+| popups | `request_create_new` | **closed**: the request carries no URL to open |
+| private windows, ITP, cookie policy | — | **not isolated, not enforced**: one profile, no policy API |
+
+Details worth keeping:
+
+* **The pump.** `EventLoopWaker` turns Servo's wake into
+  `glib::MainContext::wakeup()`, and one `glib::timeout_add_local(16 ms)` spins
+  `Servo::spin_event_loop()` and paints the pages whose delegate saw a frame. A
+  wake-driven pump is the optimisation; this timer is what keeps a page
+  animating while nobody touches the browser, and it costs one loop spin per
+  tick even when nothing is dirty.
+* **One engine per process.** `ENGINE` is a thread-local `OnceCell`-style slot
+  holding the single `Servo`; the rustls provider is installed once, before it.
+* **`Code::Unidentified`.** GDK keyvals do not carry the W3C `event.code`;
+  deriving it from the keyval would be wrong on non-US layouts, so keyboard
+  events carry `Key::Character`/`Key::Named` only. Sites that read `event.code`
+  (games, mostly) see `Unidentified`.
+* **Software rendering only.** `set_hardware_acceleration` records the setting
+  and changes nothing: the picture bridge is a CPU copy by design.
+* **Load stages.** Servo reports started/complete, not WebKit's
+  redirected/committed, so `LoadState` carries two of its four values.
+* **`Deref<gtk::Widget>`.** `View` derefs to its `gtk::Picture`, which is what
+  lets `ui/window.rs` keep its `add_named`, `add_controller` and
+  `connect_destroy` calls unchanged.
+
+## 9. CI plan
 
 Kept on `main` unchanged: format, build, test, clippy, MSRV, the Xvfb smokes and
 the release build. Added on `windows`:
 
-1. `windows` job: `cargo build`, `cargo test`, `cargo clippy -D warnings`
-   against gvsbuild GTK4. It lands **with** the `servo/` backend: the old
-   experimental `windows.yml` was removed because a crate that depends on
-   `webkit6` cannot build on Windows at all, so that job could only ever be
-   red.
+1. `windows` job: **landed.** `.github/workflows/ci.yml` gained a `windows`
+   job — `windows-2022`, native MSVC, NASM, libclang, gvsbuild GTK4 discovered
+   from its latest release — that runs `cargo fmt --all --check` and
+   `cargo check --locked --target x86_64-pc-windows-msvc`, re-emitting compiler
+   errors as annotations. It is gated to pushes on `windows` and PRs into
+   `windows`, so `main` never waits on it. The crate compiles under the same
+   command on a local Windows machine with that toolchain installed; the job
+   still has to prove it on the runner.
 2. `windows-servo-poc` job: **done**, `.github/workflows/windows-servo.yml`
    builds the POC and runs its headless self-test. It needs libclang for the
    ANGLE bindings, NASM for `aws-lc-sys`, the ANGLE DLLs beside the binary,
@@ -362,7 +467,7 @@ the release build. Added on `windows`:
 
 Nothing here exists yet; it lands with the phase that needs it.
 
-## 9. Versioning and synchronisation
+## 10. Versioning and synchronisation
 
 * Linux 1.3.0 and Windows 1.3.0 are the same functional generation.
 * Minor Linux releases (1.3.1, 1.3.2 …) are cherry-picked into `windows` when
@@ -374,19 +479,19 @@ Nothing here exists yet; it lands with the phase that needs it.
   never receives Servo code.
 * No existing branch or tag is rewritten; `windows` is an ordinary branch.
 
-## 10. Phases and the approval gate
+## 11. Phases and the approval gate
 
 | Phase | Content | State |
 | --- | --- | --- |
 | 0 | audit, branch `windows`, 1.3.0 version bump | done (uncommitted) |
 | 1 | this report, dependency proposal, POC source | done (uncommitted) |
 | 2 | POC compiled and run on Windows CI; GTK4-on-Windows + Servo texture proven; memory baseline measured | **needs your approval** |
-| 3 | `engine` trait, `webkit/` move with no behaviour change, Linux still green | needs approval |
-| 4 | `servo/` adapter: navigation, tabs, permissions, popups, zoom, downloads | needs approval |
+| 3 | engine facade + `webkit` move, no behaviour change, Linux green | **done, uncommitted** (see §5) |
+| 4 | seam types, then the `servo` backend: navigation, tabs, permissions, popups, zoom, downloads | **written, uncommitted, never compiled** — see §8; find/print/MHTML/downloads are reported as unsupported instead of faked |
 | 5 | the five gaps (find, print, MHTML, DevTools, tracker blocking) | needs a decision each |
 | 6 | Windows CI: smokes, memory, packaging | needs approval |
 
-## 11. Open questions
+## 12. Open questions
 
 1. **1.3.0 definition** — is `2e5a63c` + version bump the intended 1.3.0?
 2. **Print** — defer on Windows, or accept a bitmap-based print?

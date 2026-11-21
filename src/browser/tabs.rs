@@ -1,6 +1,6 @@
+use crate::browser::engine::View;
 use gtk::Stack;
 use std::rc::Rc;
-use webkit6::WebView;
 
 /// Opens a tab; `None` = blank new tab, `Some(uri)` = starting page.
 /// Returns the new tab id.
@@ -11,7 +11,7 @@ pub struct Tab {
     pub title: String,
     pub uri: String,
     pub content: Stack,
-    pub web_view: WebView,
+    pub web_view: View,
     pub history: Vec<String>,
     pub history_index: usize,
     /// Incremented on every web navigation started from the UI; lets the
@@ -26,7 +26,7 @@ pub struct Tab {
 }
 
 impl Tab {
-    pub fn new(id: usize, content: Stack, web_view: WebView) -> Self {
+    pub fn new(id: usize, content: Stack, web_view: View) -> Self {
         Self {
             id,
             title: rust_i18n::t!("app.new_tab").to_string(),

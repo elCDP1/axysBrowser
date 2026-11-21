@@ -7,11 +7,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use webkit6::{ContextMenuItem, LoadEvent, NetworkSession, WebView, prelude::WebViewExt};
 
 use crate::app_state::AppState;
 use crate::browser::address::SearchConfig;
-use crate::browser::engine::BrowserEngine;
+use crate::browser::engine::{
+    BrowserEngine, LoadState, MenuItem, Session, View, ViewConfig, WeakView,
+};
 use crate::browser::tabs::{NewTabCallback, Tab};
 use crate::internal::pages::resources::TabRow;
 use crate::internal::pages::tools::ToolAction;
@@ -172,7 +173,7 @@ pub fn build_window(app: &Application, state: Rc<AppState>) {
 /// Used for URLs handed by the system (default-browser launches,
 /// `xdg-open`), which plain activation would otherwise drop.
 pub fn build_window_with_url(app: &Application, state: Rc<AppState>, url: Option<String>) {
-    let session = state.network_session.clone();
+    let session = state.session.clone();
     let search = state.search.clone();
 
     build_browser_window(
@@ -187,7 +188,7 @@ pub fn build_window_with_url(app: &Application, state: Rc<AppState>, url: Option
 }
 
 pub fn build_private_window(app: &Application, state: Rc<AppState>) {
-    let session = BrowserEngine::create_ephemeral_session();
+    let session = Session::ephemeral(state.settings.borrow().tracking_prevention);
 
     // Private downloads get their own manager: they never appear in normal
     // windows and die with this window. Desktop toasts are muted so
@@ -207,7 +208,7 @@ pub fn build_private_window(app: &Application, state: Rc<AppState>) {
 fn build_browser_window(
     app: &Application,
     state: Rc<AppState>,
-    session: NetworkSession,
+    session: Session,
     search: Rc<RefCell<SearchConfig>>,
     private_mode: bool,
     downloads: crate::browser::downloads::DownloadManager,
@@ -308,7 +309,12 @@ fn build_browser_window(
     // windows used to hardcode "no third-party" and silently ignored a profile
     // set to "block all cookies": a privacy setting must not stop applying
     // just because the window is private.
-    crate::browser::engine::apply_cookie_policy(&session, &state.settings.borrow().cookie_policy);
+    session.apply_cookie_policy(&state.settings.borrow().cookie_policy);
+
+    // One seam session per window: it is what creates pages, so "which engine
+    // and which cookie jar" is decided once, not per tab. Cloning it shares
+    // the same engine session, so every tab of a window sees one cookie jar.
+    let engine_session = session.clone();
 
     // One permission manager per window: private windows share a single
     // ephemeral one across all their tabs (never persisted), normal
@@ -358,14 +364,13 @@ fn build_browser_window(
     top_stack.set_valign(gtk::Align::Fill);
     top_stack.set_transition_type(StackTransitionType::None);
 
-    let current_web_view = Rc::new(RefCell::new(None::<WebView>));
+    let current_web_view = Rc::new(RefCell::new(None::<View>));
 
     // Last web (non-internal) view that committed a load anywhere in this
     // window, held weakly so a closed tab's WebView can still be freed.
     // The page-scoped tools fall back to it when the active tab is showing
     // an internal page (e.g. the Tools page itself).
-    let last_web_view: Rc<RefCell<Option<gtk::glib::WeakRef<WebView>>>> =
-        Rc::new(RefCell::new(None));
+    let last_web_view: Rc<RefCell<Option<WeakView>>> = Rc::new(RefCell::new(None));
 
     let tabbar_slot: Rc<RefCell<Option<TabBar>>> = Rc::new(RefCell::new(None));
 
@@ -578,13 +583,12 @@ fn build_browser_window(
 
             top_stack.remove(&removed.content);
 
-            removed.web_view.stop_loading();
-
             // Each tab owns its web process (views are never "related"), so
-            // end it explicitly: otherwise WebKit may keep the closed page's
-            // process, and the page's memory with it, alive in its process
-            // cache. TerminatedByApi is ignored by the crash handler.
-            removed.web_view.terminate_web_process();
+            // ending the page also ends it: otherwise WebKit may keep the
+            // closed page's process, and the page's memory with it, alive in
+            // its process cache. TerminatedByApi is ignored by the crash
+            // handler.
+            removed.web_view.close();
 
             // Drop find hooks so the closed tab's controller (and view)
             // can be freed; they re-hook lazily on the next search.
@@ -624,7 +628,7 @@ fn build_browser_window(
     // Page-scoped tools (view source, zoom) work on the active tab when it
     // holds a real page, and otherwise on the last web page that loaded in
     // this window. The inspector is WebKit's own right-click entry.
-    let target_view: Rc<dyn Fn() -> Option<WebView>> = {
+    let target_view: Rc<dyn Fn() -> Option<View>> = {
         let current_web_view = current_web_view.clone();
         let last_web_view = last_web_view.clone();
 
@@ -645,7 +649,7 @@ fn build_browser_window(
     // Strictly the visible tab. Print and Save must never fall back to
     // `last_web_view`: on an internal page that would print or save a hidden
     // page from another tab.
-    let current_page_view: Rc<dyn Fn() -> Option<WebView>> = {
+    let current_page_view: Rc<dyn Fn() -> Option<View>> = {
         let current_web_view = current_web_view.clone();
 
         Rc::new(move || {
@@ -1241,7 +1245,7 @@ fn build_browser_window(
         let open_in_new_tab = open_in_new_tab.clone();
         let show_notification = show_notification.clone();
         let state = state.clone();
-        let session = session.clone();
+        let engine_session = engine_session.clone();
         let downloads = downloads.clone();
         let close_tab = Rc::downgrade(&close_tab);
         let window_history = window_history.clone();
@@ -1267,18 +1271,27 @@ fn build_browser_window(
             content.set_valign(gtk::Align::Fill);
             content.set_transition_type(StackTransitionType::None);
 
-            let web_view = WebView::builder().network_session(&session).build();
+            let (developer_tools, hardware_acceleration) = {
+                let settings = state.settings.borrow();
+
+                (
+                    settings.developer_tools && !private_mode,
+                    settings.hardware_acceleration,
+                )
+            };
+
+            // The page is built by the session, not by the window: this is the
+            // seam's creation point, and the only place the interface used to
+            // assemble an engine view itself.
+            let web_view = engine_session.view(&ViewConfig {
+                developer_tools,
+                hardware_acceleration,
+            });
 
             web_view.set_hexpand(true);
             web_view.set_vexpand(true);
             web_view.set_halign(gtk::Align::Fill);
             web_view.set_valign(gtk::Align::Fill);
-
-            BrowserEngine::configure(
-                &web_view,
-                state.settings.borrow().developer_tools && !private_mode,
-                state.settings.borrow().hardware_acceleration,
-            );
 
             // Ctrl+wheel is the zoom gesture users expect from Chromium.
             // Capture it before WebKit scrolls the page, but leave an
@@ -1352,44 +1365,22 @@ fn build_browser_window(
             // developer extras are enabled). Append the Chromium-style
             // "View page source" entry instead of replacing that menu.
             {
-                let web_view_weak = web_view.downgrade();
-
-                web_view.connect_context_menu(move |_, menu, _hit_test| {
-                    let Some(web_view) = web_view_weak.upgrade() else {
-                        return false;
-                    };
-
-                    let action = gio::SimpleAction::new("view-source", None);
-
-                    {
-                        let web_view = web_view.downgrade();
-
-                        action.connect_activate(move |_, _| {
-                            if let Some(web_view) = web_view.upgrade() {
-                                let _ = web_view.activate_action("win.view-source", None);
-                            }
-                        });
-                    }
-
-                    menu.append(&ContextMenuItem::new_separator());
-                    menu.append(&ContextMenuItem::from_gaction(
-                        &action,
-                        &rust_i18n::t!("tools.view_source"),
-                        None,
-                    ));
-
-                    // false: let WebKit show its default menu with our item.
-                    false
+                web_view.on_context_menu(|| {
+                    vec![
+                        MenuItem::Separator,
+                        MenuItem::Action {
+                            label: rust_i18n::t!("tools.view_source").to_string(),
+                            action: "win.view-source".to_string(),
+                        },
+                    ]
                 });
             }
 
-            if private_mode
-                && let Some(settings) = webkit6::prelude::WebViewExt::settings(&web_view)
-            {
-                settings.set_enable_developer_extras(false);
+            if private_mode {
+                web_view.set_developer_extras(false);
             }
 
-            content.add_named(&web_view, Some("web"));
+            content.add_named(web_view.widget(), Some("web"));
 
             // Wrapped once: pages store these, so they must not hold
             // `navigate_tab` (-> `top_stack`) or `close_tab` strongly.
@@ -1564,8 +1555,8 @@ fn build_browser_window(
                 let active_id = active_id.clone();
                 let toolbar_slot = toolbar_slot.clone();
 
-                web_view.connect_uri_notify(move |view| {
-                    let Some(uri) = view.uri().map(|uri| uri.to_string()) else {
+                web_view.on_uri_changed(move |uri| {
+                    let Some(uri) = uri.map(str::to_string) else {
                         return;
                     };
 
@@ -1609,18 +1600,21 @@ fn build_browser_window(
                 let active_id = active_id.clone();
                 let tabbar_slot = tabbar_slot.clone();
 
-                web_view.connect_title_notify(move |view| {
+                let self_view = web_view.downgrade();
+
+                web_view.on_title_changed(move |page_title| {
                     // Collapse whitespace: page titles can contain newlines
                     // or control runs that would blow up the tab button.
-                    let title = view
-                        .title()
+                    let title = page_title
                         .map(|title| title.split_whitespace().collect::<Vec<_>>().join(" "))
                         .filter(|title| !title.trim().is_empty())
                         .unwrap_or_else(|| {
                             if private_mode {
                                 rust_i18n::t!("privacy.title").to_string()
                             } else {
-                                view.uri()
+                                self_view
+                                    .upgrade()
+                                    .and_then(|view| view.uri())
                                     .and_then(|uri| crate::browser::address::title_from_uri(&uri))
                                     .unwrap_or_else(|| rust_i18n::t!("app.new_tab").to_string())
                             }
@@ -1653,12 +1647,14 @@ fn build_browser_window(
                 let toolbar_slot = toolbar_slot.clone();
                 let current_web_view = current_web_view.clone();
 
-                web_view.connect_is_loading_notify(move |view| {
+                let self_view = web_view.downgrade();
+
+                web_view.on_loading_changed(move |loading| {
                     if active_id.get() != id
                         || current_web_view
                             .borrow()
                             .as_ref()
-                            .is_none_or(|current| current != view)
+                            .is_some_and(|current| Some(current) != self_view.upgrade().as_ref())
                     {
                         return;
                     }
@@ -1666,7 +1662,7 @@ fn build_browser_window(
                     if let Some(slot) = toolbar_slot.upgrade()
                         && let Some(toolbar) = slot.borrow().as_ref()
                     {
-                        toolbar.set_loading(view.is_loading());
+                        toolbar.set_loading(loading);
                     }
                 });
             }
@@ -1675,8 +1671,14 @@ fn build_browser_window(
                 let tabs = tabs.clone();
                 let last_web_view = last_web_view.clone();
 
-                web_view.connect_load_changed(move |view, event| {
-                    if event == LoadEvent::Started
+                let self_view = web_view.downgrade();
+
+                web_view.on_load(move |state| {
+                    let Some(view) = self_view.upgrade() else {
+                        return;
+                    };
+
+                    if state == LoadState::Started
                         && let Ok(mut tabs) = tabs.try_borrow_mut()
                         && let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id)
                         && tab.return_to_internal
@@ -1687,15 +1689,15 @@ fn build_browser_window(
                         tab.return_to_internal = false;
                     }
 
-                    if event == LoadEvent::Committed {
+                    if state == LoadState::Committed {
                         if let Ok(mut tabs) = tabs.try_borrow_mut()
                             && let Some(tab) = tabs.iter_mut().find(|tab| tab.id == id)
                         {
                             tab.committed = true;
                         }
 
-                        if view.uri().map(|uri| is_web_uri(&uri)).unwrap_or(false) {
-                            *last_web_view.borrow_mut() = Some(view.downgrade());
+                        if view.uri().is_some_and(|uri| is_web_uri(&uri)) {
+                            *last_web_view.borrow_mut() = Some(self_view.clone());
                         }
                     }
                 });
@@ -1707,17 +1709,23 @@ fn build_browser_window(
                 // real title in as soon as it arrives.
                 let window_history = window_history.clone();
 
-                web_view.connect_title_notify(move |view| {
-                    let Some(uri) = view.uri().map(|uri| uri.to_string()) else {
+                let self_view = web_view.downgrade();
+
+                web_view.on_title_changed(move |title| {
+                    let Some(view) = self_view.upgrade() else {
                         return;
                     };
 
-                    let Some(title) = view.title().map(|title| title.to_string()) else {
+                    let Some(uri) = view.uri() else {
+                        return;
+                    };
+
+                    let Some(title) = title else {
                         return;
                     };
 
                     if uri.starts_with("http://") || uri.starts_with("https://") {
-                        window_history.retitle(&uri, &title);
+                        window_history.retitle(&uri, title);
                     }
                 });
             }
@@ -1730,11 +1738,17 @@ fn build_browser_window(
                 let tabs = tabs.clone();
                 let tabbar_slot = tabbar_slot.clone();
 
-                web_view.connect_load_changed(move |view, event| {
+                let self_view = web_view.downgrade();
+
+                web_view.on_load(move |state| {
+                    let Some(view) = self_view.upgrade() else {
+                        return;
+                    };
+
                     // A page without a `<title>` never fires a title change,
                     // so the tab kept its "New tab" placeholder: name it
                     // after the address once the load is over.
-                    if event == LoadEvent::Finished
+                    if state == LoadState::Finished
                         && !private_mode
                         && view.title().is_none_or(|title| title.trim().is_empty())
                         && let Some(title) = view
@@ -1762,11 +1776,11 @@ fn build_browser_window(
                     // finishing in the background must still be recorded.
                     // Private windows use an ephemeral manager, so this
                     // stays in memory only.
-                    if event == LoadEvent::Finished
-                        && let Some(uri) = view.uri().map(|uri| uri.to_string())
+                    if state == LoadState::Finished
+                        && let Some(uri) = view.uri()
                         && (uri.starts_with("http://") || uri.starts_with("https://"))
-                        && !BrowserEngine::take_error_page(view, &uri)
-                        && !BrowserEngine::take_source_view(view)
+                        && !BrowserEngine::take_error_page(&view, &uri)
+                        && !BrowserEngine::take_source_view(&view)
                     {
                         let title = view
                             .title()
@@ -1781,7 +1795,7 @@ fn build_browser_window(
                         || current_web_view
                             .borrow()
                             .as_ref()
-                            .is_none_or(|current| current != view)
+                            .is_some_and(|current| Some(current) != self_view.upgrade().as_ref())
                     {
                         return;
                     }
@@ -1791,15 +1805,15 @@ fn build_browser_window(
                     {
                         toolbar.set_loading(view.is_loading());
 
-                        match event {
-                            LoadEvent::Started | LoadEvent::Committed | LoadEvent::Redirected => {
+                        match state {
+                            LoadState::Started | LoadState::Committed | LoadState::Redirected => {
                                 toolbar.set_navigation_state(
                                     view.can_go_back(),
                                     view.can_go_forward(),
                                 );
                             }
 
-                            LoadEvent::Finished => {
+                            LoadState::Finished => {
                                 toolbar.set_navigation_state(
                                     view.can_go_back(),
                                     view.can_go_forward(),
@@ -1807,8 +1821,6 @@ fn build_browser_window(
 
                                 toolbar.refresh_bookmark();
                             }
-
-                            _ => {}
                         }
                     }
                 });
@@ -1899,39 +1911,10 @@ fn build_browser_window(
                 }
             });
 
-            let from_dom: Rc<dyn Fn()> = {
-                let view = view.clone();
+            {
                 let show = show.clone();
 
-                Rc::new(move || {
-                    let show = show.clone();
-
-                    view.evaluate_javascript(
-                        "document.documentElement ? document.documentElement.outerHTML : ''",
-                        None,
-                        None,
-                        gio::Cancellable::NONE,
-                        move |result| match result {
-                            Ok(value) => show(value.to_str().to_string()),
-                            Err(error) => eprintln!("Failed to read page source: {error}"),
-                        },
-                    );
-                })
-            };
-
-            match view.main_resource() {
-                Some(resource) => {
-                    let show = show.clone();
-                    let from_dom = from_dom.clone();
-
-                    resource.data(gio::Cancellable::NONE, move |result| match result {
-                        Ok(bytes) if !bytes.is_empty() => {
-                            show(String::from_utf8_lossy(&bytes).into_owned());
-                        }
-                        _ => from_dom(),
-                    });
-                }
-                None => from_dom(),
+                view.source(move |text| show(text));
             }
         })
     };
@@ -2060,7 +2043,7 @@ fn build_browser_window(
                     }
                     TabAction::ToggleMute => {
                         if let Some(tab) = tabs.borrow().iter().find(|tab| tab.id == id) {
-                            tab.web_view.set_is_muted(!tab.web_view.is_muted());
+                            tab.web_view.set_muted(!tab.web_view.is_muted());
                         }
                     }
                     TabAction::Close => close_tab(id),
@@ -2580,20 +2563,16 @@ fn build_browser_window(
             // Cookie policy changes must reach this window's session too: a
             // private window owns an ephemeral one that `set_cookie_policy`
             // (which only knows the profile session) cannot reach.
-            crate::browser::engine::apply_cookie_policy(
-                &session,
-                &state.settings.borrow().cookie_policy,
-            );
+            session.apply_cookie_policy(&state.settings.borrow().cookie_policy);
 
             // A private window's ephemeral session is not the profile session
             // updated by `set_tracking_prevention`, so re-apply ITP here too.
-            session.set_itp_enabled(state.settings.borrow().tracking_prevention);
+            session.set_itp(state.settings.borrow().tracking_prevention);
 
             for tab in tabs.borrow().iter() {
-                if let Some(settings) = webkit6::prelude::WebViewExt::settings(&tab.web_view) {
-                    settings.set_enable_developer_extras(developer_tools);
-                    BrowserEngine::apply_hardware_acceleration(&settings, hardware_acceleration);
-                }
+                tab.web_view.set_developer_extras(developer_tools);
+                tab.web_view
+                    .set_hardware_acceleration(hardware_acceleration);
             }
         })
     };
@@ -2652,8 +2631,7 @@ fn build_browser_window(
                 top_stack.remove(&tab.content);
 
                 tab.web_view.stop_loading();
-                tab.web_view.try_close();
-                tab.web_view.terminate_web_process();
+                tab.web_view.close();
             }
 
             Propagation::Proceed
@@ -2689,9 +2667,7 @@ fn build_browser_window(
 
         Rc::new(move || {
             if let Some(view) = current_page_view() {
-                let operation = webkit6::PrintOperation::new(&view);
-
-                let _ = operation.run_dialog(window_weak.upgrade().as_ref());
+                let _ = view.print(window_weak.upgrade().as_ref());
             }
         })
     };
@@ -2761,16 +2737,11 @@ fn build_browser_window(
                     return;
                 }
 
-                view.save_to_file(
-                    &file,
-                    webkit6::SaveMode::Mhtml,
-                    gio::Cancellable::NONE,
-                    |result| {
-                        if let Err(error) = result {
-                            eprintln!("Could not save the page: {error}");
-                        }
-                    },
-                );
+                let _ = view.save_mhtml(&file, |result| {
+                    if let Err(error) = result {
+                        eprintln!("Could not save the page: {error}");
+                    }
+                });
             });
         })
     };

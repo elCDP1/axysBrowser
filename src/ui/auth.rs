@@ -1,31 +1,27 @@
 //! HTTP/proxy authentication prompt.
 //!
-//! WebKit cancels an authentication request unless the `authenticate` signal
-//! is handled and a credential is delivered later, so the dialog keeps a
-//! cloned `AuthenticationRequest` and either authenticates or cancels it.
+//! The engine cancels an authentication request unless the embedder claims
+//! it and answers later, so the dialog keeps a cloned [`AuthPrompt`] and
+//! either sends credentials or cancels it. The prompt answers exactly once,
+//! which is what makes "sign in, then close the dialog" safe.
 
 use gtk::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use webkit6::{AuthenticationRequest, Credential, CredentialPersistence};
 
-pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
+use crate::browser::engine::{AuthPrompt, Credentials, View};
+
+pub fn prompt(view: &View, prompt: AuthPrompt) {
     let Some(parent) = view
         .root()
         .and_then(|root| root.downcast::<gtk::Window>().ok())
     else {
-        request.cancel();
+        prompt.answer(None);
         return;
     };
 
-    let host = request
-        .host()
-        .map(|host| host.to_string())
-        .unwrap_or_default();
-    let realm = request
-        .realm()
-        .map(|realm| realm.to_string())
-        .unwrap_or_default();
+    let host = prompt.host().to_string();
+    let realm = prompt.realm().to_string();
 
     let dialog = gtk::Window::builder()
         .title(rust_i18n::t!("auth.title").as_ref())
@@ -62,10 +58,8 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
         .placeholder_text(rust_i18n::t!("auth.username"))
         .build();
 
-    if let Some(mut credential) = request.proposed_credential()
-        && let Some(proposed) = credential.username()
-    {
-        username.set_text(&proposed);
+    if let Some(proposed) = prompt.proposed_username() {
+        username.set_text(proposed);
     }
 
     let password = gtk::Entry::builder()
@@ -76,7 +70,7 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
     content.append(&username);
     content.append(&password);
 
-    if request.is_retry() {
+    if prompt.is_retry() {
         let retry = gtk::Label::new(Some(&rust_i18n::t!("auth.retry")));
 
         retry.set_wrap(true);
@@ -107,20 +101,18 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
 
     {
         let dialog = dialog.downgrade();
-        let request = request.clone();
+        let prompt = prompt.clone();
         let decided = decided.clone();
         let username = username.clone();
         let password = password.clone();
 
         sign_in.connect_clicked(move |_| {
-            let credential = Credential::new(
-                &username.text(),
-                &password.text(),
-                CredentialPersistence::ForSession,
-            );
-
             decided.set(true);
-            request.authenticate(Some(&credential));
+
+            prompt.answer(Some(Credentials {
+                username: username.text().to_string(),
+                password: password.text().to_string(),
+            }));
 
             if let Some(dialog) = dialog.upgrade() {
                 dialog.close();
@@ -130,12 +122,12 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
 
     {
         let dialog = dialog.downgrade();
-        let request = request.clone();
+        let prompt = prompt.clone();
         let decided = decided.clone();
 
         cancel.connect_clicked(move |_| {
             decided.set(true);
-            request.cancel();
+            prompt.answer(None);
 
             if let Some(dialog) = dialog.upgrade() {
                 dialog.close();
@@ -162,14 +154,14 @@ pub fn prompt(view: &webkit6::WebView, request: &AuthenticationRequest) {
     }
 
     {
-        let request = request.clone();
+        let prompt = prompt.clone();
         let decided = decided.clone();
         let view = view.clone();
         let destroy_handler = destroy_handler.clone();
 
         dialog.connect_close_request(move |_| {
             if !decided.get() {
-                request.cancel();
+                prompt.answer(None);
             }
 
             if let Some(id) = destroy_handler.borrow_mut().take() {

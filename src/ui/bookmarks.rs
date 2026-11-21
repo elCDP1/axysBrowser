@@ -3,7 +3,7 @@ use gtk::{Align, Box, Button, Image, Label, Orientation};
 use std::cell::Cell;
 use std::rc::Rc;
 
-use webkit6::gdk;
+use gtk::gdk;
 
 use crate::app_state::AppState;
 use crate::browser::bookmarks::Bookmark;

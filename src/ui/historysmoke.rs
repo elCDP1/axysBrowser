@@ -12,10 +12,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use crate::browser::engine::View;
 use gtk::glib;
 use gtk::prelude::*;
-use webkit6::WebView;
-use webkit6::prelude::*;
 
 use crate::browser::tabs::Tab;
 
@@ -51,7 +50,7 @@ async fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> b
     }
 }
 
-fn ready_view(tabs: &Rc<RefCell<Vec<Tab>>>) -> Option<WebView> {
+fn ready_view(tabs: &Rc<RefCell<Vec<Tab>>>) -> Option<View> {
     tabs.borrow()
         .iter()
         .map(|tab| tab.web_view.clone())

@@ -27,6 +27,7 @@ mod browser;
 mod i18n;
 mod internal;
 mod paths;
+mod platform;
 mod theme;
 mod ui;
 

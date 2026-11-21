@@ -14,12 +14,29 @@ categories = ["gui"]
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
-webkit6 = { version = "0.6.1", features = ["v2_52"] }
-webkit6-sys = "0.6.0"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 url = "2"
 rust-i18n = "4.2"
+
+# The engine is per platform: WebKitGTK on Linux, Servo on Windows. Only one
+# table is built, so a Windows machine never needs WebKitGTK and a Linux machine
+# never builds Servo. GTK4 stays common: it is the interface on both.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit6 = { version = "0.6.1", features = ["v2_52"] }
+webkit6-sys = "0.6.0"
+
+[target.'cfg(windows)'.dependencies]
+# `no-wgl` routes Servo through ANGLE (EGL over D3D11, WARP when there is no
+# GPU) instead of WGL, which a Windows machine without a vendor OpenGL driver
+# cannot create at all.
+servo = { version = "0.7", features = ["no-wgl"] }
+# Must match the rustls major/minor Servo links, so the crypto provider this
+# crate installs at startup is the one Servo's network stack uses.
+rustls = "0.23"
+# Servo's rendering contexts take `dpi::PhysicalSize`; a different version of
+# the crate would be a different type.
+dpi = "0.1"
 
 [profile.release]
 strip = true

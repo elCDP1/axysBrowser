@@ -3,6 +3,7 @@
 use std::env;
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -40,28 +41,107 @@ fn xdg_dir_from(
     PathBuf::from(last_resort)
 }
 
-fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str) -> PathBuf {
-    xdg_dir_from(
-        env::var_os(xdg_var).as_deref(),
-        env::var_os("HOME").as_deref(),
-        home_fallback,
-        last_resort,
-    )
+fn xdg_dir(xdg_var: &str, home_fallback: &[&str], last_resort: &str, roaming: bool) -> PathBuf {
+    let xdg = env::var_os(xdg_var);
+    let home = env::var_os("HOME");
+
+    // Windows sets neither: without this branch the profile would be created
+    // in whatever directory the browser was launched from.
+    if xdg.is_none()
+        && home.is_none()
+        && let Some(base) = platform_home(roaming)
+    {
+        return base.join("axysbrowser");
+    }
+
+    xdg_dir_from(xdg.as_deref(), home.as_deref(), home_fallback, last_resort)
+}
+
+/// Where Windows keeps a user's files: `%APPDATA%` roams with the profile and
+/// `%LOCALAPPDATA%` does not — the same split `XDG_CONFIG_HOME` and
+/// `XDG_CACHE_HOME` draw. Elsewhere the answer is `None` and the XDG chain
+/// decides on its own.
+#[cfg(windows)]
+fn platform_home(roaming: bool) -> Option<PathBuf> {
+    let variable = if roaming { "APPDATA" } else { "LOCALAPPDATA" };
+
+    env::var_os(variable)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(not(windows))]
+fn platform_home(_roaming: bool) -> Option<PathBuf> {
+    None
 }
 
 /// Settings, bookmarks, history, cookies.
 pub fn config_dir() -> PathBuf {
-    xdg_dir("XDG_CONFIG_HOME", &[".config"], "axysbrowser")
+    xdg_dir("XDG_CONFIG_HOME", &[".config"], "axysbrowser", true)
 }
 
 /// Website data (IndexedDB, local storage, …).
 pub fn data_dir() -> PathBuf {
-    xdg_dir("XDG_DATA_HOME", &[".local", "share"], "axysbrowser-data")
+    xdg_dir(
+        "XDG_DATA_HOME",
+        &[".local", "share"],
+        "axysbrowser-data",
+        false,
+    )
 }
 
 /// Disposable caches.
 pub fn cache_dir() -> PathBuf {
-    xdg_dir("XDG_CACHE_HOME", &[".cache"], "axysbrowser-cache")
+    xdg_dir("XDG_CACHE_HOME", &[".cache"], "axysbrowser-cache", false)
+}
+
+// Owner-only files ------------------------------------------------------
+//
+// POSIX expresses "only the owner may read this" with mode bits; Windows
+// expresses it with an ACL that a file under the user's profile already
+// carries. These three helpers are where that difference lives, so every
+// caller above reads the same on both platforms.
+
+/// Sets owner-only permissions on `path`. Windows has no mode bits to set:
+/// the profile's ACL is already owner-only, so there is nothing to do.
+#[cfg(unix)]
+fn restrict(path: &Path, mode: u32) -> io::Result<()> {
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+#[cfg(not(unix))]
+fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
+    Ok(())
+}
+
+/// Creates `dir` and its parents, owner-only (0700).
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+
+    builder.recursive(true);
+
+    #[cfg(unix)]
+    {
+        builder.mode(0o700);
+    }
+
+    builder.create(dir)?;
+
+    restrict(dir, 0o700)
+}
+
+/// Opens `path` for writing, creating it owner-only (0600).
+fn create_private_file(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+
+    options.write(true).create(true).truncate(true);
+
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+
+    options.open(path)
 }
 
 /// Creates the browser's config, data and cache directories owner-only
@@ -70,12 +150,7 @@ pub fn cache_dir() -> PathBuf {
 /// directories private protects every file inside.
 pub fn secure_dirs() {
     for dir in [config_dir(), data_dir(), cache_dir()] {
-        if let Err(error) = fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)
-            .and_then(|()| fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)))
-        {
+        if let Err(error) = create_private_dir(&dir) {
             eprintln!("Failed to secure {}: {error}", dir.display());
         }
     }
@@ -91,10 +166,7 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
         ));
     };
 
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(parent)?;
+    create_private_dir(parent)?;
 
     // Unique per filename (not just per extension) and per process, so
     // `foo.toml` and `foo.json` never share a temp file.
@@ -104,12 +176,7 @@ pub fn atomic_write(path: &Path, contents: &str) -> io::Result<()> {
     };
 
     let result: io::Result<()> = (|| {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&temporary)?;
+        let mut file = create_private_file(&temporary)?;
 
         file.write_all(contents.as_bytes())?;
 
@@ -159,7 +226,7 @@ pub fn quarantine_corrupt(path: &Path) {
 
     // Tighten the original before the rename: the backup may outlive the
     // process, and profile files are private.
-    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    let _ = restrict(path, 0o600);
 
     match fs::rename(path, &backup) {
         Ok(()) => eprintln!(
@@ -229,15 +296,20 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
 
-        let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(file_mode, 0o600, "data files must not be world-readable");
+        // Mode bits exist on Unix only; on Windows the profile's ACL is the
+        // equivalent guarantee and there is nothing to assert.
+        #[cfg(unix)]
+        {
+            let file_mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(file_mode, 0o600, "data files must not be world-readable");
 
-        let dir_mode = fs::metadata(path.parent().unwrap())
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777;
-        assert_eq!(dir_mode, 0o700);
+            let dir_mode = fs::metadata(path.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(dir_mode, 0o700);
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -311,14 +383,22 @@ mod tests {
     fn an_absolute_xdg_directory_wins_over_home() {
         use std::ffi::OsStr;
 
+        // What counts as absolute is platform-specific: `/tmp/custom-config`
+        // carries no drive letter and is a relative path on Windows.
+        let absolute = if cfg!(windows) {
+            r"C:\custom-config"
+        } else {
+            "/tmp/custom-config"
+        };
+
         let dir = xdg_dir_from(
-            Some(OsStr::new("/tmp/custom-config")),
+            Some(OsStr::new(absolute)),
             Some(OsStr::new("/home/user")),
             &[".config"],
             "fallback",
         );
 
-        assert_eq!(dir, PathBuf::from("/tmp/custom-config/axysbrowser"));
+        assert_eq!(dir, PathBuf::from(absolute).join("axysbrowser"));
     }
 
     #[test]
@@ -337,6 +417,20 @@ mod tests {
                 dir,
                 PathBuf::from("/home/user/.config/axysbrowser"),
                 "XDG dir {xdg:?} must fall back to HOME"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_windows_profile_is_absolute_not_relative_to_the_launch_directory() {
+        // Windows defines neither XDG_* nor HOME, so the platform fallback is
+        // what keeps the profile out of the working directory.
+        for dir in [config_dir(), data_dir(), cache_dir()] {
+            assert!(
+                dir.is_absolute(),
+                "{} must not depend on the working directory",
+                dir.display()
             );
         }
     }
@@ -377,6 +471,7 @@ mod tests {
             fs::read_to_string(backup.path()).unwrap(),
             "bookmarks = [oops"
         );
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(backup.path()).unwrap().permissions().mode() & 0o777,
             0o600

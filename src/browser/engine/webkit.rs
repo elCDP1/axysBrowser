@@ -1,3 +1,11 @@
+//! The Linux backend: WebKitGTK.
+//!
+//! This is the engine the browser shipped with; it moved here unchanged when
+//! the [`super`] facade was introduced, so nothing about its behaviour is new.
+//! The `/proc` and cgroup memory policy lives here too: it sizes WebKit's web
+//! process, so it is a fact about this engine on this platform, not about the
+//! seam.
+
 use gtk::glib;
 use gtk::glib::object::Cast;
 use gtk::glib::translate::{FromGlibPtrFull as _, IntoGlib, ToGlibPtr as _};
@@ -7,31 +15,26 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use webkit6::{
-    AuthenticationRequest, HardwareAccelerationPolicy, LoadEvent, MemoryPressureSettings,
-    NavigationPolicyDecision, NetworkSession, PermissionRequest, PermissionState,
-    PolicyDecisionType, ResponsePolicyDecision, ScriptDialogType, WebProcessTerminationReason,
-    WebView, prelude::*,
+    Credential, CredentialPersistence, HardwareAccelerationPolicy, LoadEvent,
+    MemoryPressureSettings, NavigationPolicyDecision, NetworkSession, PermissionRequest,
+    PermissionState, PolicyDecisionType, ResponsePolicyDecision, ScriptDialogType,
+    WebProcessTerminationReason, WebView, prelude::*,
 };
 
-use super::permissions::{PermissionKind, PermissionManager, clipboard_read_without_prompt};
+use crate::browser::engine::types::{AuthPrompt, ViewConfig};
+use crate::browser::permissions::{
+    PermissionKind, PermissionManager, clipboard_read_without_prompt,
+};
+use crate::browser::util::log_safe_uri;
+use crate::platform::running_under_wsl;
 
-/// Whether this process runs inside WSL/WSLg. Kept here so the rendering
-/// setup in `app` and the WebKit settings below share one probe.
-pub(crate) fn running_under_wsl() -> bool {
-    if std::env::var("WSL_DISTRO_NAME").is_ok() || std::env::var("WSL_INTEROP").is_ok() {
-        return true;
-    }
+mod download;
+mod session;
+mod view;
 
-    if let Ok(version) = std::fs::read_to_string("/proc/version") {
-        let lower = version.to_ascii_lowercase();
-
-        if lower.contains("microsoft") || lower.contains("wsl") {
-            return true;
-        }
-    }
-
-    false
-}
+pub use download::Download;
+pub use session::Session;
+pub use view::{View, WeakView};
 
 pub struct BrowserEngine;
 
@@ -53,7 +56,7 @@ const SOURCE_VIEW_KEY: &str = "axys-source-view";
 
 /// Handles WebKit's `authenticate` signal; the handler owns the request and
 /// must eventually authenticate or cancel it.
-pub type AuthenticateHandler = Rc<dyn Fn(&WebView, &AuthenticationRequest)>;
+pub type AuthenticateHandler = Rc<dyn Fn(&View, AuthPrompt)>;
 
 /// Which WebKit signal reported a popup request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,55 +80,12 @@ fn new_popup_guard() -> PopupGuard {
 /// links and phone numbers are everywhere and low-risk. Every other
 /// external scheme (`ssh:`, `smb:`, `vnc:`, custom handlers …) asks first.
 fn external_needs_confirmation(uri: &str) -> bool {
-    let scheme = uri
-        .split(':')
-        .next()
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-
-    !matches!(scheme.as_str(), "mailto" | "tel" | "sms")
+    super::shared::external_needs_confirmation(uri)
 }
 
 /// Trims a long URI for a dialog, on a character boundary.
 fn shorten_for_dialog(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-
-    let mut shortened: String = text.chars().take(max_chars).collect();
-
-    shortened.push('…');
-
-    shortened
-}
-
-/// URI form that is safe to write to stderr: scheme, host and port only.
-/// Credentials, path, query and fragment are dropped, because popup URLs and
-/// external links can carry session tokens and end up in the journal.
-pub(crate) fn log_safe_uri(uri: &str) -> String {
-    let Some(colon) = uri.find(':') else {
-        return "(url)".to_string();
-    };
-
-    let scheme = &uri[..colon];
-
-    let Some(rest) = uri[colon + 1..].strip_prefix("//") else {
-        // `mailto:`, `tel:`, …: the scheme alone is enough for a log line.
-        return format!("{scheme}:…");
-    };
-
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-
-    // A `user:password@host` authority would leak credentials: keep the host.
-    let authority = &rest[..authority_end];
-
-    let host = authority.rsplit('@').next().unwrap_or(authority);
-
-    if host.is_empty() {
-        format!("{scheme}://…")
-    } else {
-        format!("{scheme}://{host}")
-    }
+    super::shared::shorten_for_dialog(text, max_chars)
 }
 
 /// A hostile page can call `window.open()`, `alert()` or navigate to an
@@ -1144,12 +1104,12 @@ impl BrowserEngine {
         });
     }
 
-    pub fn configure(view: &WebView, developer_tools: bool, hardware_acceleration: bool) {
+    pub fn configure(view: &WebView, config: &ViewConfig) {
         let Some(settings) = webkit6::prelude::WebViewExt::settings(view) else {
             return;
         };
 
-        settings.set_enable_developer_extras(developer_tools);
+        settings.set_enable_developer_extras(config.developer_tools);
         settings.set_enable_javascript(true);
         settings.set_enable_html5_local_storage(true);
         settings.set_enable_html5_database(true);
@@ -1195,7 +1155,7 @@ impl BrowserEngine {
 
         // Configurable (Settings → Appearance): forced acceleration breaks
         // systems without a working GPU (notably some WSLg setups).
-        Self::apply_hardware_acceleration(&settings, hardware_acceleration);
+        Self::apply_hardware_acceleration(&settings, config.hardware_acceleration);
 
         settings.set_user_agent(Some(chrome_user_agent()).as_deref());
     }
@@ -1211,7 +1171,7 @@ impl BrowserEngine {
     /// `on_authenticate` gets HTTP/proxy authentication requests; it must
     /// eventually call `authenticate()` or `cancel()` on the request.
     pub fn wire_view(
-        view: &WebView,
+        view: &View,
         open_in_new_tab: Rc<dyn Fn(String)>,
         show_notification: Rc<dyn Fn(String, String)>,
         on_authenticate: AuthenticateHandler,
@@ -1224,6 +1184,7 @@ impl BrowserEngine {
         let popup_guard = new_popup_guard();
         let popup_burst = new_popup_burst();
         let log_budget = new_view_log_budget();
+        let view = view.webkit();
 
         Self::wire_policy(
             view,
@@ -1249,27 +1210,11 @@ impl BrowserEngine {
     /// Schemes the engine never loads itself: handed to the desktop
     /// instead (mail clients, dialers, …). Everything else WebKit owns:
     /// http(s), files, internal pages and script/data URLs.
+    ///
+    /// The decision itself is shared with the Servo backend: a link must not
+    /// be treated differently depending on which engine is drawing the page.
     pub fn is_external_scheme(uri: &str) -> bool {
-        let lower = uri.to_ascii_lowercase();
-
-        let Some(colon) = lower.find(':') else {
-            return false;
-        };
-
-        // `://foo` or `:foo`: no scheme at all — not something to hand to
-        // the desktop.
-        if colon == 0 {
-            return false;
-        }
-
-        if lower[..colon].contains('/') {
-            return false;
-        }
-
-        !matches!(
-            &lower[..colon],
-            "http" | "https" | "file" | "axys" | "about" | "blank" | "data" | "blob" | "javascript"
-        )
+        super::shared::is_external_scheme(uri)
     }
 
     /// The single decision for both popup signals. Order matters: the
@@ -1477,7 +1422,9 @@ impl BrowserEngine {
     /// Hands a URI the user typed in the address bar to the desktop. Typing
     /// is the gesture, so `mailto:`/`tel:`/`sms:` open straight away and
     /// every other scheme still asks first, exactly like in-page links.
-    pub fn open_external(view: &WebView, uri: &str) {
+    pub fn open_external(view: &View, uri: &str) {
+        let view = view.webkit();
+
         if external_needs_confirmation(uri) {
             Self::confirm_external_open(view, uri.to_string(), Rc::new(Cell::new(false)));
         } else {
@@ -1574,7 +1521,7 @@ impl BrowserEngine {
     /// by an iframe is attributed to the top page — treat unexpected
     /// prompts on unfamiliar pages as a reason to deny.
     fn permission_origin(view: &WebView) -> String {
-        super::permissions::origin_for_uri(view.uri().as_deref())
+        crate::browser::permissions::origin_for_uri(view.uri().as_deref())
     }
 
     /// Whether a verdict still applies: the view must be on the same origin
@@ -2014,37 +1961,14 @@ impl BrowserEngine {
     }
 
     fn error_page(title: &str, detail: &str, uri: &str) -> String {
-        let esc = |s: &str| {
-            s.replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-        };
-
-        let hint = rust_i18n::t!("error.hint").to_string();
-
-        format!(
-            "<!doctype html><html><head><meta charset=\"utf-8\">\
-             <meta name=\"color-scheme\" content=\"light dark\">\
-             <style>:root{{color-scheme:light dark}}\
-             body{{font-family:system-ui,sans-serif;background:Canvas;color:CanvasText;\
-             display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}}\
-             .card{{max-width:560px;padding:32px;background:rgba(127,127,127,0.12);\
-             border-radius:12px}}\
-             h1{{font-size:20px}}code{{font-weight:600;word-break:break-all}}\
-             p{{line-height:1.5}}</style></head><body><div class=\"card\">\
-             <h1>{}</h1><p>{}</p><p><code>{}</code></p>\
-             <p>{}</p>\
-             </div></body></html>",
-            esc(title),
-            esc(detail),
-            esc(uri),
-            esc(&hint)
-        )
+        super::shared::error_page(title, detail, uri)
     }
 
     /// Shows the generic load-failure page for a locally detected timeout
     /// (used by the navigation watchdog; WebKit itself has no load timeout).
-    pub fn show_timeout_page(view: &WebView, uri: &str) {
+    pub fn show_timeout_page(view: &View, uri: &str) {
+        let view = view.webkit();
+
         let title = rust_i18n::t!("error.load_title").to_string();
         let detail = rust_i18n::t!("error.timeout_detail").to_string();
 
@@ -2066,7 +1990,9 @@ impl BrowserEngine {
     /// Returns true (and clears the mark) when `uri` is the URI of an error
     /// page currently shown in `view`. Successful loads of the same URI later
     /// are recorded normally because the mark is consumed here.
-    pub fn take_error_page(view: &WebView, uri: &str) -> bool {
+    pub fn take_error_page(view: &View, uri: &str) -> bool {
+        let view = view.webkit();
+
         const ERROR_PAGE_URI_KEY: &str = "axys-error-page-uri";
 
         let marked = unsafe {
@@ -2088,7 +2014,9 @@ impl BrowserEngine {
     /// document. That document is loaded with the viewed page's URL as its
     /// base, so without the mark its load looked like a fresh visit to that
     /// page and every "view source" added a history entry.
-    pub fn mark_source_view(view: &WebView) {
+    pub fn mark_source_view(view: &View) {
+        let view = view.webkit();
+
         unsafe {
             view.set_data(SOURCE_VIEW_KEY, true);
         }
@@ -2096,7 +2024,9 @@ impl BrowserEngine {
 
     /// Returns true (and clears the mark) for the load of a generated source
     /// document, so history recording skips exactly that load.
-    pub fn take_source_view(view: &WebView) -> bool {
+    pub fn take_source_view(view: &View) -> bool {
+        let view = view.webkit();
+
         unsafe { view.steal_data::<bool>(SOURCE_VIEW_KEY).is_some() }
     }
 
@@ -2269,19 +2199,60 @@ impl BrowserEngine {
 
     fn wire_authentication(view: &WebView, on_authenticate: AuthenticateHandler) {
         view.connect_authenticate(move |view, request| {
-            // The dialog is asynchronous, so claim the signal to stop WebKit
-            // from cancelling the request while the user types.
-            on_authenticate(view, request);
+            let host = request
+                .host()
+                .map(|host| host.to_string())
+                .unwrap_or_default();
+
+            let realm = request
+                .realm()
+                .map(|realm| realm.to_string())
+                .unwrap_or_default();
+
+            let proposed_username = request
+                .proposed_credential()
+                .and_then(|mut credential| credential.username())
+                .map(|username| username.to_string());
+
+            // The dialog answers later, from a GTK callback; WebKit cancels
+            // the request if the signal is not claimed, so claim it with a
+            // prompt that holds the engine's request.
+            let request = request.clone();
+
+            let prompt = AuthPrompt::new(
+                host,
+                realm,
+                request.is_retry(),
+                proposed_username,
+                Box::new(move |credentials| match credentials {
+                    Some(credentials) => {
+                        let credential = Credential::new(
+                            &credentials.username,
+                            &credentials.password,
+                            CredentialPersistence::ForSession,
+                        );
+
+                        request.authenticate(Some(&credential));
+                    }
+                    None => request.cancel(),
+                }),
+            );
+
+            on_authenticate(&View::from_webkit(view.clone()), prompt);
 
             true
         });
     }
 
-    pub fn load(view: &WebView, uri: &str) {
+    pub fn load(view: &View, uri: &str) {
+        let view = view.webkit();
+
         view.load_uri(uri);
     }
 
-    pub fn reload(view: &WebView) {
+    pub fn reload(view: &View) {
+        let view = view.webkit();
+
         // If the web process is gone, reload() respawns it; bypass-cache
         // would do the same but slower, so plain reload is the right default.
         view.reload();
@@ -2629,23 +2600,6 @@ mod tests {
         let accents = "ñ".repeat(50);
 
         assert_eq!(shorten_for_dialog(&accents, 5).chars().count(), 6);
-    }
-
-    #[test]
-    fn logged_urls_drop_path_query_and_credentials() {
-        assert_eq!(
-            log_safe_uri("https://example.com/path?token=secret#fragment"),
-            "https://example.com"
-        );
-        assert_eq!(
-            log_safe_uri("https://user:password@example.com:8443/x"),
-            "https://example.com:8443"
-        );
-        assert_eq!(log_safe_uri("ssh://user@host/etc/passwd"), "ssh://host");
-        assert_eq!(log_safe_uri("https://[::1]:8080/x"), "https://[::1]:8080");
-        assert_eq!(log_safe_uri("mailto:someone@example.com"), "mailto:…");
-        assert_eq!(log_safe_uri("https://"), "https://…");
-        assert_eq!(log_safe_uri("not a url"), "(url)");
     }
 
     #[test]

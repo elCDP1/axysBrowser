@@ -2,11 +2,10 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
+use crate::browser::engine::{Download, Session};
 use gtk::Application;
 use gtk::gio;
 use gtk::prelude::*;
-use webkit6::Download;
-use webkit6::NetworkSession;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DownloadStatus {
@@ -44,13 +43,13 @@ impl DownloadEntry {
             return 0.0;
         }
 
-        let elapsed = self.download.elapsed_time();
+        let elapsed = self.download.elapsed_seconds();
 
         if elapsed <= 0.0 {
             return 0.0;
         }
 
-        self.download.received_data_length() as f64 / elapsed
+        self.download.received_bytes() as f64 / elapsed
     }
 }
 
@@ -194,13 +193,13 @@ impl DownloadManager {
         });
     }
 
-    /// Wires up a `NetworkSession` so downloads started in it (triggered by
-    /// web content, e.g. clicking a download link or "Save Image As") are
-    /// tracked here and prompt the user for a destination.
-    pub fn watch(&self, session: &NetworkSession) {
+    /// Wires up a session so downloads started in it (triggered by web
+    /// content, e.g. clicking a download link or "Save Image As") are tracked
+    /// here and prompt the user for a destination.
+    pub fn watch(&self, session: &Session) {
         let manager = self.clone();
 
-        session.connect_download_started(move |_session, download| {
+        session.on_download_started(move |download| {
             let id = {
                 let mut next = manager.next_id.borrow_mut();
                 let id = *next;
@@ -223,14 +222,14 @@ impl DownloadManager {
                 let entries = Rc::downgrade(&manager.entries);
                 let listeners = Rc::downgrade(&manager.listeners);
 
-                download.connect_decide_destination(move |download, suggested_filename| {
+                download.on_decide_destination(move |download, suggested_filename| {
                     let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
                     else {
                         // The window/session that owned this download is gone;
-                        // don't leave WebKit waiting for a destination.
+                        // don't leave the engine waiting for a destination.
                         download.cancel();
 
-                        return true;
+                        return;
                     };
 
                     let sanitized = sanitize_download_name(suggested_filename);
@@ -254,10 +253,7 @@ impl DownloadManager {
                     // Resolve the parent from the WebView that initiated the
                     // download. The active window may have changed while
                     // WebKit was deciding the destination.
-                    let parent = download
-                        .web_view()
-                        .and_then(|view| view.root())
-                        .and_then(|root| root.downcast::<gtk::Window>().ok());
+                    let parent = download.parent_window();
 
                     dialog.save(
                         parent.as_ref(),
@@ -300,8 +296,6 @@ impl DownloadManager {
                             }
                         },
                     );
-
-                    true
                 });
             }
 
@@ -309,13 +303,13 @@ impl DownloadManager {
                 let entries = Rc::downgrade(&manager.entries);
                 let listeners = Rc::downgrade(&manager.listeners);
 
-                download.connect_estimated_progress_notify(move |download| {
+                download.on_progress(move |download| {
                     let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
                     else {
                         return;
                     };
 
-                    let progress = download.estimated_progress();
+                    let progress = download.progress();
 
                     // Progress fires very frequently; rebuilding the toolbar
                     // popover and downloads page on every tick wastes main
@@ -345,7 +339,7 @@ impl DownloadManager {
                 let announce = Rc::downgrade(&manager.announce);
                 let application = manager.application.clone();
 
-                download.connect_finished(move |_download| {
+                download.on_finished(move || {
                     let (Some(entries), Some(listeners), Some(announce)) =
                         (entries.upgrade(), listeners.upgrade(), announce.upgrade())
                     else {
@@ -405,7 +399,7 @@ impl DownloadManager {
                 let entries = Rc::downgrade(&manager.entries);
                 let listeners = Rc::downgrade(&manager.listeners);
 
-                download.connect_failed(move |_download, error| {
+                download.on_failed(move |error, cancelled| {
                     let (Some(entries), Some(listeners)) = (entries.upgrade(), listeners.upgrade())
                     else {
                         return;
@@ -414,7 +408,7 @@ impl DownloadManager {
                     if let Some(entry) = entries.borrow_mut().iter_mut().find(|e| e.id == id)
                         && entry.status != DownloadStatus::Cancelled
                     {
-                        entry.status = if error.matches(webkit6::DownloadError::CancelledByUser) {
+                        entry.status = if cancelled {
                             DownloadStatus::Cancelled
                         } else {
                             DownloadStatus::Failed(error.to_string())

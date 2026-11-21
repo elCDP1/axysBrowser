@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
-use webkit6::prelude::*;
-use webkit6::{SaveMode, WebView};
+
+use crate::browser::engine::View;
 
 use crate::browser::tabs::Tab;
 
@@ -48,7 +48,7 @@ async fn wait_until(timeout: Duration, mut condition: impl FnMut() -> bool) -> b
     }
 }
 
-fn loaded_view(tabs: &Rc<RefCell<Vec<Tab>>>) -> Option<WebView> {
+fn loaded_view(tabs: &Rc<RefCell<Vec<Tab>>>) -> Option<View> {
     tabs.borrow()
         .iter()
         .map(|tab| tab.web_view.clone())
@@ -74,14 +74,9 @@ async fn run(ctx: SmokeContext, path: String) {
     let sink = outcome.clone();
     let file = gio::File::for_path(&path);
 
-    view.save_to_file(
-        &file,
-        SaveMode::Mhtml,
-        gio::Cancellable::NONE,
-        move |result| {
-            *sink.borrow_mut() = Some(result.map_err(|error| error.to_string()));
-        },
-    );
+    let _ = view.save_mhtml(&file, move |result| {
+        *sink.borrow_mut() = Some(result.map_err(|error| error.to_string()));
+    });
 
     wait_until(SAVE_TIMEOUT, || outcome.borrow().is_some()).await;
 

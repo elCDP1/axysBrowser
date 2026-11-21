@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use gtk::glib;
 use gtk::prelude::*;
-use webkit6::WebView;
-use webkit6::prelude::WebViewExt;
+
+use crate::browser::engine::{View, WeakView};
 
 use super::memprobe;
 use crate::browser::tabs::{NewTabCallback, Tab};
@@ -72,14 +72,14 @@ fn loaded_count(tabs: &Rc<RefCell<Vec<Tab>>>, ids: &[usize]) -> usize {
         .count()
 }
 
-fn view_of(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize) -> Option<WebView> {
+fn view_of(tabs: &Rc<RefCell<Vec<Tab>>>, id: usize) -> Option<View> {
     tabs.borrow()
         .iter()
         .find(|tab| tab.id == id)
         .map(|tab| tab.web_view.clone())
 }
 
-fn freed_count(weaks: &[glib::WeakRef<WebView>]) -> usize {
+fn freed_count(weaks: &[WeakView]) -> usize {
     weaks.iter().filter(|weak| weak.upgrade().is_none()).count()
 }
 
@@ -111,7 +111,7 @@ async fn run(ctx: SmokeContext, url: String) {
         let (peak_kb, peak_pids) = memprobe::tree_snapshot();
         let peak_web = peak_pids.len();
 
-        let weaks: Vec<glib::WeakRef<WebView>> = ids
+        let weaks: Vec<WeakView> = ids
             .iter()
             .filter_map(|id| view_of(&ctx.tabs, *id))
             .map(|view| view.downgrade())
@@ -155,7 +155,7 @@ async fn run(ctx: SmokeContext, url: String) {
 
     let (before_kb, before_pids) = memprobe::tree_snapshot();
 
-    let last_weak: Vec<glib::WeakRef<WebView>> = view_of(&ctx.tabs, first_tab)
+    let last_weak: Vec<WeakView> = view_of(&ctx.tabs, first_tab)
         .map(|view| vec![view.downgrade()])
         .unwrap_or_default();
 
@@ -195,7 +195,7 @@ async fn run(ctx: SmokeContext, url: String) {
 
     let window_loaded = loaded_count(&ctx.tabs, &window_ids);
 
-    let window_weaks: Vec<glib::WeakRef<WebView>> = window_ids
+    let window_weaks: Vec<WeakView> = window_ids
         .iter()
         .filter_map(|id| view_of(&ctx.tabs, *id))
         .map(|view| view.downgrade())

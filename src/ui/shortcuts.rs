@@ -4,12 +4,11 @@
 //! receives everything it needs through [`ShortcutContext`], so the main
 //! window file stays focused on wiring.
 
+use crate::browser::engine::View;
 use gtk::prelude::*;
 use gtk::{Application, ApplicationWindow, EventControllerKey, gdk, gio, glib::Propagation};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use webkit6::WebView;
-use webkit6::prelude::WebViewExt;
 
 use crate::app_state::AppState;
 use crate::browser::engine::BrowserEngine;
@@ -29,7 +28,7 @@ pub struct ShortcutContext {
     pub tabs: Rc<RefCell<Vec<Tab>>>,
     pub active_id: Rc<Cell<usize>>,
     pub toolbar_slot: Rc<RefCell<Option<Toolbar>>>,
-    pub current_web_view: Rc<RefCell<Option<WebView>>>,
+    pub current_web_view: Rc<RefCell<Option<View>>>,
     pub go_back: Rc<dyn Fn()>,
     pub go_forward: Rc<dyn Fn()>,
     pub navigate_tab: Rc<dyn Fn(usize, String)>,
@@ -210,7 +209,7 @@ pub fn install_keyboard_shortcuts(window: &ApplicationWindow, ctx: ShortcutConte
                         'r' => {
                             if let Some(view) = current_web_view.borrow().as_ref() {
                                 if shift {
-                                    view.reload_bypass_cache();
+                                    view.reload_ignoring_cache();
                                 } else {
                                     BrowserEngine::reload(view);
                                 }

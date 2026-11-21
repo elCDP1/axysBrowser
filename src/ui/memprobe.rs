@@ -245,6 +245,9 @@ mod tests {
         assert!(!is_web_process("axysbrowser"));
     }
 
+    // `/proc` is the probe's only source, so the assertions that read a live
+    // process hold on Linux only. The parsing tests above run everywhere.
+    #[cfg(target_os = "linux")]
     #[test]
     fn own_process_is_measurable_and_alive() {
         let me = std::process::id();
@@ -254,6 +257,7 @@ mod tests {
         assert!(current_tree().iter().any(|process| process.pid == me));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn snapshot_combines_memory_and_web_pids() {
         let (memory_kb, web_pids) = tree_snapshot();

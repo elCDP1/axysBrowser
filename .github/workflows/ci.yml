@@ -186,3 +186,130 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+
+  windows:
+    # The Windows line: the only job that compiles the Servo backend with MSVC,
+    # so a change that only breaks `cfg(windows)` code cannot reach the branch
+    # unnoticed. Scoped to `windows` on purpose — `main` is the Linux line and
+    # must not wait on a backend that is still being ported.
+    #
+    # The crate compiles for this target (`cargo check`, also with
+    # `--all-targets` so `#[cfg(test)]` code is typed too). What is still open
+    # is the runtime side of the port, which docs/porting/windows-servo.md
+    # tracks; this job is what keeps the compile side from regressing.
+    if: >-
+      (github.event_name == 'push' && github.ref == 'refs/heads/windows') ||
+      (github.event_name == 'pull_request' && github.base_ref == 'windows')
+    runs-on: windows-2022
+    # Servo compiles SpiderMonkey, ANGLE and several hundred crates on a cold
+    # cache (~15 min on this image); GTK4 for MSVC is another download.
+    timeout-minutes: 240
+
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_RETRY: '5'
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install native Windows Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Bump to force a fresh engine build after a Servo upgrade.
+          key: axys-windows-servo-0.7
+          cache-on-failure: true
+
+      - name: Install NASM
+        # aws-lc-sys (TLS) assembles with NASM; CMake is already on the image.
+        run: |
+          choco install nasm --no-progress -y
+          if (Test-Path 'C:\ProgramData\chocolatey\bin\nasm.exe') {
+            'C:\ProgramData\chocolatey\bin' | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
+
+      - name: Point bindgen at libclang
+        # mozangle generates the ANGLE bindings with bindgen, which loads
+        # libclang at build time.
+        shell: pwsh
+        run: |
+          $candidates = @('C:\Program Files\LLVM\bin', 'C:\Program Files (x86)\LLVM\bin')
+          foreach ($dir in $candidates) {
+            if (Test-Path (Join-Path $dir 'libclang.dll')) {
+              "LIBCLANG_PATH=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              Write-Output "LIBCLANG_PATH=$dir"
+              break
+            }
+          }
+
+      - name: Install GTK4 for MSVC
+        # The interface, not the engine, needs GTK4, and gtk4-rs finds it
+        # through pkg-config. gvsbuild publishes a prebuilt MSVC stack; the
+        # asset name carries its version, so it is discovered instead of
+        # pinned to a version this file would have to track.
+        shell: pwsh
+        run: |
+          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/wingtk/gvsbuild/releases/latest'
+          $asset = $release.assets |
+            Where-Object { $_.name -like 'GTK4_Gvsbuild_*_x64.zip' } |
+            Select-Object -First 1
+          if (-not $asset) {
+            throw 'the latest gvsbuild release has no GTK4_Gvsbuild_*_x64.zip asset'
+          }
+          Write-Output "GTK4 asset: $($asset.name)"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile 'C:\gtk4.zip'
+          Expand-Archive -Path 'C:\gtk4.zip' -DestinationPath 'C:\gtk' -Force
+          "PKG_CONFIG_PATH=C:\gtk\lib\pkgconfig" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "C:\gtk\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # Compiler errors are re-emitted as annotations on purpose: check-run
+      # annotations stay readable for a public repository without a token, so
+      # a red run can be diagnosed from the outside instead of only in the UI.
+      - name: Compile every target (Servo backend, MSVC)
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'check.log'
+          # `--all-targets` matters here: without it the `#[cfg(test)]` modules
+          # are never type-checked on this target, so a test that only compiles
+          # on Linux would pass this gate and fail the moment someone runs the
+          # suite on Windows.
+          cargo check --locked --all-targets --target x86_64-pc-windows-msvc --message-format=short 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $log |
+              Select-String -Pattern 'error(\[|:)' |
+              Select-Object -First 40 |
+              ForEach-Object {
+                $line = $_.Line -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+                Write-Output "::error::$line"
+              }
+            exit 1
+          }
+
+      # Compiling is not passing: a test can type-check on this target and fail
+      # the moment it runs (a `/proc` read, a POSIX path, an absolute path
+      # without a drive). The Linux jobs have always run the suite; this line
+      # makes the Windows job do the same, with the same annotation rule.
+      - name: Test (Servo backend, MSVC)
+        shell: pwsh
+        timeout-minutes: 60
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'test.log'
+          cargo test --locked --target x86_64-pc-windows-msvc 2>&1 | Tee-Object -FilePath $log
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content $log |
+              Select-String -Pattern 'FAILED|panicked at|test result: FAILED' |
+              Select-Object -First 40 |
+              ForEach-Object {
+                $line = $_.Line -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
+                Write-Output "::error::$line"
+              }
+            exit 1
+          }

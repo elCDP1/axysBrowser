@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::app_state::AppState;
-use crate::browser::engine::running_under_wsl;
+use crate::platform::running_under_wsl;
 use crate::ui::window::{build_window, build_window_with_url};
 
 /// Whether the unprivileged user and network namespaces WebKit's bubblewrap

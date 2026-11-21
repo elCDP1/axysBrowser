@@ -1,7 +1,6 @@
 use crate::browser::address::{SearchConfig, load_config};
 use crate::browser::bookmarks::BookmarkManager;
 use crate::browser::downloads::DownloadManager;
-use crate::browser::engine::BrowserEngine;
 use crate::browser::history::HistoryManager;
 use crate::browser::permissions::PermissionManager;
 use crate::i18n;
@@ -19,7 +18,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
-use webkit6::{CookiePersistentStorage, NetworkSession};
+use crate::browser::engine::Session;
 
 /// Removes a directory's contents (the directory itself is recreated).
 /// A missing directory counts as already clean.
@@ -251,7 +250,7 @@ impl Default for UserSettings {
 pub struct AppState {
     pub settings: Rc<RefCell<UserSettings>>,
     pub search: Rc<RefCell<SearchConfig>>,
-    pub network_session: NetworkSession,
+    pub session: Session,
     pub css_provider: CssProvider,
     pub css_installed: Rc<Cell<bool>>,
     pub downloads: DownloadManager,
@@ -301,32 +300,24 @@ impl AppState {
 
         search.default_engine = settings.search_engine.clone();
 
-        let network_session = BrowserEngine::create_network_session(settings.tracking_prevention);
+        let session = Session::persistent(settings.tracking_prevention);
 
-        /*
-         * WebKit does not persist cookies automatically.
-         * Use an explicit SQLite cookie store for the
-         * normal persistent browser session.
-         */
-        if let Some(cookie_manager) = network_session.cookie_manager() {
-            let cookie_path = Self::cookie_path();
+        // The engine does not persist cookies by itself: point it at a SQLite
+        // store inside the profile.
+        let cookie_path = Self::cookie_path();
 
-            if let Some(parent) = cookie_path.parent()
-                && let Err(error) = fs::create_dir_all(parent)
-            {
-                eprintln!("Failed to create cookie directory: {error}");
-            }
-
-            let cookie_path = cookie_path.to_string_lossy().into_owned();
-
-            cookie_manager.set_persistent_storage(&cookie_path, CookiePersistentStorage::Sqlite);
+        if let Some(parent) = cookie_path.parent()
+            && let Err(error) = fs::create_dir_all(parent)
+        {
+            eprintln!("Failed to create cookie directory: {error}");
         }
 
-        crate::browser::engine::apply_cookie_policy(&network_session, &settings.cookie_policy);
+        session.persist_cookies(&cookie_path);
+        session.apply_cookie_policy(&settings.cookie_policy);
 
         let downloads = DownloadManager::new(application.clone());
 
-        downloads.watch(&network_session);
+        downloads.watch(&session);
 
         let history = HistoryManager::load();
 
@@ -337,7 +328,7 @@ impl AppState {
         let state = Rc::new(Self {
             settings: Rc::new(RefCell::new(settings)),
             search: Rc::new(RefCell::new(search)),
-            network_session,
+            session,
             css_provider: CssProvider::new(),
             css_installed: Rc::new(Cell::new(false)),
             downloads,
@@ -493,7 +484,7 @@ impl AppState {
             return false;
         }
 
-        self.network_session.set_itp_enabled(enabled);
+        self.session.set_itp(enabled);
 
         // Already-open private windows own ephemeral sessions that the line
         // above cannot reach; their `settings_refresh` re-applies ITP.
@@ -522,7 +513,7 @@ impl AppState {
             return false;
         }
 
-        crate::browser::engine::apply_cookie_policy(&self.network_session, &normalized);
+        self.session.apply_cookie_policy(&normalized);
 
         // Every window's `settings_refresh` listener re-applies the policy to
         // its own session, which is the only way an already-open private
@@ -545,7 +536,7 @@ impl AppState {
     /// Normal windows pass the profile session/history and `true`.
     pub fn clear_browsing_data(
         &self,
-        session: &NetworkSession,
+        session: &Session,
         history: &HistoryManager,
         wipe_disk_cache: bool,
         on_done: Option<Rc<dyn Fn(bool)>>,
@@ -562,73 +553,33 @@ impl AppState {
             completion.fail();
         }
 
-        if let Some(cookie_manager) = session.cookie_manager() {
+        {
             completion.begin();
 
             let completion = completion.clone();
 
-            cookie_manager
-                .clone()
-                .all_cookies(
-                    None::<&webkit6::gio::Cancellable>,
-                    move |result| match result {
-                        Ok(cookies) => {
-                            for cookie in cookies {
-                                completion.begin();
+            session.clear_cookies(move |ok| {
+                if !ok {
+                    eprintln!("Cookies could not all be cleared");
+                }
 
-                                let completion = completion.clone();
-
-                                cookie_manager.delete_cookie(
-                                    &cookie,
-                                    None::<&webkit6::gio::Cancellable>,
-                                    move |result| {
-                                        if let Err(error) = &result {
-                                            eprintln!("Failed to delete cookie: {error}");
-                                        }
-
-                                        completion.finish(result.is_ok());
-                                    },
-                                );
-                            }
-
-                            completion.finish(true);
-                        }
-                        Err(error) => {
-                            eprintln!("Failed to list cookies: {error}");
-                            completion.finish(false);
-                        }
-                    },
-                );
-        } else {
-            eprintln!("No cookie manager: cookies could not be cleared");
-            completion.fail();
+                completion.finish(ok);
+            });
         }
 
-        if let Some(data_manager) = session.website_data_manager() {
-            if let Some(favicons) = data_manager.favicon_database() {
-                favicons.clear();
-            }
-
+        {
             // Everything else the sites persisted: IndexedDB, local storage,
             // DOM/ServiceWorker caches, … The HTTP disk cache directory is
-            // wiped only after WebKit finished, so the two never race.
+            // wiped only after the engine finished, so the two never race.
             completion.begin();
 
             let completion = completion.clone();
 
-            crate::browser::engine::BrowserEngine::clear_website_data(
-                &data_manager,
-                webkit6::WebsiteDataTypes::ALL,
-                Some(Rc::new(move |ok| {
-                    let wiped =
-                        !wipe_disk_cache || wipe_dir(&crate::browser::engine::web_cache_dir());
+            session.clear_site_data(move |ok| {
+                let wiped = !wipe_disk_cache || wipe_dir(&crate::browser::engine::web_cache_dir());
 
-                    completion.finish(ok && wiped);
-                })),
-            );
-        } else {
-            eprintln!("No website data manager: website data could not be cleared");
-            completion.fail();
+                completion.finish(ok && wiped);
+            });
         }
 
         // Release the setup token; reports now if everything already ended.
@@ -922,8 +873,6 @@ mod tests {
 
     #[test]
     fn malformed_settings_are_backed_up_before_defaults_are_used() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir =
             std::env::temp_dir().join(format!("axys-settings-corrupt-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -952,14 +901,21 @@ mod tests {
             std::fs::read_to_string(backup.path()).unwrap(),
             "dark_mode = [oops"
         );
-        assert_eq!(
-            std::fs::metadata(backup.path())
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
+        // Mode bits exist on Unix only; on Windows the profile's ACL is the
+        // equivalent guarantee and there is nothing to assert.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                std::fs::metadata(backup.path())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }
