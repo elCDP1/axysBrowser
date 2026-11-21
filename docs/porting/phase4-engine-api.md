@@ -27,7 +27,7 @@ implement:
 | `on_*` | Servo's `WebViewDelegate` callbacks, stored on the page like the WebKit backend does |
 | `find` | Servo has no find API: report `Unsupported` |
 | `print`, `save_mhtml`, `source` | source via `evaluate_javascript`; print and MHTML `Unsupported` |
-| `Download` | Servo has no download manager: `on_download_started` never fires |
+| `Download` | Servo has no download manager: no download hook is built on that backend |
 | `AuthPrompt` | Servo has no auth signal: nothing to prompt |
 
 ## 0. Rules
@@ -156,6 +156,8 @@ pub struct ViewConfig {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadState {
     Started,
+    // WebKit only: Servo reports started and finished, so this variant is not
+    // compiled on that backend.
     Redirected,
     Committed,
     Finished,
@@ -456,10 +458,12 @@ Four places where the plan and the real API disagreed, and what was done:
   (`Err(Unsupported)` for print/MHTML, an empty `FindOutcome` for find), so no
   file has to consult a capability table before offering an action. Adding one
   belongs with the UI work that would ask it.
-* **`wire_view` kept five parameters.** Permissions and clipboard reads are
-  accepted and unused on Servo: the shared permission dialog is built on
-  WebKit's request kinds, and Servo 0.7 reports its own `PermissionFeature`
-  set with no common shape. The backend denies every request and says which.
+* **`wire_view` takes five parameters on WebKit and four on Servo.** Clipboard
+  reads are accepted and unused on Servo. Permissions are not accepted at all:
+  the shared permission dialog is built on WebKit's request kinds, Servo 0.7
+  reports its own `PermissionFeature` set with no common shape, and a store no
+  code can consult would be dead code, so it is not compiled there. The backend
+  denies every request and says which.
 * **`Deref` flipped to `gtk::Widget` as planned**, over a `gtk::Picture`, so the
   interface's `add_named`, `add_controller` and `connect_destroy` calls work
   unchanged.

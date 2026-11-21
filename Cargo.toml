@@ -37,6 +37,14 @@ rustls = "0.23"
 # Servo's rendering contexts take `dpi::PhysicalSize`; a different version of
 # the crate would be a different type.
 dpi = "0.1"
+# `ui::memprobe` asks the kernel for the process table and each working set.
+# Same 0.52 Servo already links, so nothing new is compiled.
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [profile.release]
 strip = true

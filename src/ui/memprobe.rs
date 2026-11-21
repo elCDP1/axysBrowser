@@ -1,15 +1,15 @@
-//! Test-only memory accounting over this process and its WebKit
-//! descendants.
+//! Memory accounting for this process and its renderer descendants.
 //!
-//! Used by the `AXYS_MEM_SMOKE` self-test (see `ui::memsmoke`) and CI. It
-//! walks `/proc`, collects the main process plus every descendant (sandbox
-//! helpers included) and sums their memory. PSS (proportional set size,
-//! from `smaps_rollup`) is preferred because WebKit's processes share a lot
-//! of memory and RSS would count it once per process; when `smaps_rollup`
-//! is unreadable the resident size from `status` is used instead.
+//! Used by the `AXYS_MEM_SMOKE` self-test (see `ui::memsmoke`), the resources
+//! page and CI. Each platform answers the same questions with its own
+//! facility, and the process tree is assembled the same way on both: Linux
+//! walks `/proc` (PSS from `smaps_rollup` is preferred because WebKit's
+//! processes share a lot of memory and RSS would count it once per process;
+//! when `smaps_rollup` is unreadable the resident size from `status` stands
+//! in), Windows asks the kernel for each process's working set. Both sum the
+//! main process plus every descendant, sandbox helpers included.
 
 use std::collections::HashMap;
-use std::fs;
 
 /// One row of the process table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,57 +17,6 @@ pub struct Proc {
     pub pid: u32,
     pub ppid: u32,
     pub comm: String,
-}
-
-/// Parses `/proc/<pid>/stat` into (comm, ppid). The command name may
-/// contain spaces and parentheses, so fields start after the LAST ')'.
-pub fn parse_stat(stat: &str) -> Option<(String, u32)> {
-    let open = stat.find('(')?;
-    let close = stat.rfind(')')?;
-
-    if close < open {
-        return None;
-    }
-
-    let comm = stat[open + 1..close].to_string();
-    let ppid = stat[close + 1..].split_whitespace().nth(1)?.parse().ok()?;
-
-    Some((comm, ppid))
-}
-
-/// Reads a `Key:   1234 kB` line out of `/proc` style text.
-fn kb_field(text: &str, key: &str) -> Option<u64> {
-    text.lines()
-        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|value| value.parse().ok())
-}
-
-/// PSS in KiB from `smaps_rollup` text.
-pub fn parse_pss_kb(smaps_rollup: &str) -> Option<u64> {
-    kb_field(smaps_rollup, "Pss")
-}
-
-/// Resident size in KiB from `status` text.
-pub fn parse_rss_kb(status: &str) -> Option<u64> {
-    kb_field(status, "VmRSS")
-}
-
-fn process_table() -> Vec<Proc> {
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-
-    entries
-        .flatten()
-        .filter_map(|entry| {
-            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
-            let stat = fs::read_to_string(entry.path().join("stat")).ok()?;
-            let (comm, ppid) = parse_stat(&stat)?;
-
-            Some(Proc { pid, ppid, comm })
-        })
-        .collect()
 }
 
 /// `root` plus every descendant of it found in `table`.
@@ -108,19 +57,6 @@ pub fn current_tree() -> Vec<Proc> {
     tree_of(&process_table(), std::process::id())
 }
 
-/// Memory of one process in KiB: PSS when available, else RSS, else 0.
-pub fn process_memory_kb(pid: u32) -> u64 {
-    fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
-        .ok()
-        .and_then(|text| parse_pss_kb(&text))
-        .or_else(|| {
-            fs::read_to_string(format!("/proc/{pid}/status"))
-                .ok()
-                .and_then(|text| parse_rss_kb(&text))
-        })
-        .unwrap_or(0)
-}
-
 /// Memory of the whole browser (main process included), in KiB.
 pub fn tree_memory_kb() -> u64 {
     current_tree()
@@ -130,10 +66,9 @@ pub fn tree_memory_kb() -> u64 {
 }
 
 /// Memory in KiB and the PIDs of the running web (renderer) processes,
-/// both from a single `/proc` scan. The resources page and the memory
+/// both from a single process-table scan. The resources page and the memory
 /// self-test need the two together; calling [`tree_memory_kb`] and
-/// [`web_process_pids`] back to back walked (and `stat`-read) the whole
-/// process table twice.
+/// [`web_process_pids`] back to back walked the whole table twice.
 pub fn tree_snapshot() -> (u64, Vec<u32>) {
     let tree = current_tree();
 
@@ -151,12 +86,6 @@ pub fn tree_snapshot() -> (u64, Vec<u32>) {
     (memory_kb, web_pids)
 }
 
-/// Whether a process is a WebKit web (renderer) process. `comm` is
-/// truncated to 15 characters by the kernel, hence the prefix match.
-pub fn is_web_process(comm: &str) -> bool {
-    comm.starts_with("WebKitWebProc")
-}
-
 /// PIDs of the web processes currently running under this browser.
 pub fn web_process_pids() -> Vec<u32> {
     current_tree()
@@ -166,9 +95,89 @@ pub fn web_process_pids() -> Vec<u32> {
         .collect()
 }
 
+// Linux: `/proc` is the process table and `smaps_rollup`/`status` the sizes.
+
+/// Parses `/proc/<pid>/stat` into (comm, ppid). The command name may
+/// contain spaces and parentheses, so fields start after the LAST ')'.
+#[cfg(target_os = "linux")]
+pub fn parse_stat(stat: &str) -> Option<(String, u32)> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+
+    if close < open {
+        return None;
+    }
+
+    let comm = stat[open + 1..close].to_string();
+    let ppid = stat[close + 1..].split_whitespace().nth(1)?.parse().ok()?;
+
+    Some((comm, ppid))
+}
+
+/// Reads a `Key:   1234 kB` line out of `/proc` style text.
+#[cfg(target_os = "linux")]
+fn kb_field(text: &str, key: &str) -> Option<u64> {
+    text.lines()
+        .find_map(|line| line.strip_prefix(key)?.strip_prefix(':'))
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|value| value.parse().ok())
+}
+
+/// PSS in KiB from `smaps_rollup` text.
+#[cfg(target_os = "linux")]
+pub fn parse_pss_kb(smaps_rollup: &str) -> Option<u64> {
+    kb_field(smaps_rollup, "Pss")
+}
+
+/// Resident size in KiB from `status` text.
+#[cfg(target_os = "linux")]
+pub fn parse_rss_kb(status: &str) -> Option<u64> {
+    kb_field(status, "VmRSS")
+}
+
+#[cfg(target_os = "linux")]
+fn process_table() -> Vec<Proc> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            let (comm, ppid) = parse_stat(&stat)?;
+
+            Some(Proc { pid, ppid, comm })
+        })
+        .collect()
+}
+
+/// Memory of one process in KiB: PSS when available, else RSS, else 0.
+#[cfg(target_os = "linux")]
+pub fn process_memory_kb(pid: u32) -> u64 {
+    std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+        .ok()
+        .and_then(|text| parse_pss_kb(&text))
+        .or_else(|| {
+            std::fs::read_to_string(format!("/proc/{pid}/status"))
+                .ok()
+                .and_then(|text| parse_rss_kb(&text))
+        })
+        .unwrap_or(0)
+}
+
+/// Whether a process is a WebKit web (renderer) process. `comm` is
+/// truncated to 15 characters by the kernel, hence the prefix match.
+#[cfg(target_os = "linux")]
+pub fn is_web_process(comm: &str) -> bool {
+    comm.starts_with("WebKitWebProc")
+}
+
 /// Whether `pid` still exists and is not a zombie.
+#[cfg(target_os = "linux")]
 pub fn is_alive(pid: u32) -> bool {
-    fs::read_to_string(format!("/proc/{pid}/stat"))
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .ok()
         .and_then(|stat| {
             let close = stat.rfind(')')?;
@@ -181,10 +190,142 @@ pub fn is_alive(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+// Windows: Toolhelp for the process table, the kernel for each working set.
+
+#[cfg(windows)]
+mod win {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::ProcessStatus::{
+        GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    };
+
+    /// An open process handle, closed on drop.
+    pub struct Process(HANDLE);
+
+    impl Process {
+        /// Opens `pid` for a query. Reading the working set needs `VM_READ`,
+        /// which a process we only parent may refuse, so that bit is optional.
+        pub fn open(pid: u32) -> Option<Self> {
+            // SAFETY: no pointers, and the handle is either valid or zero.
+            let wide =
+                unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, 0, pid) };
+
+            if wide != 0 {
+                return Some(Self(wide));
+            }
+
+            // SAFETY: as above.
+            let narrow = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+
+            (narrow != 0).then_some(Self(narrow))
+        }
+
+        /// Working set in KiB, or 0 when the query is refused.
+        pub fn working_set_kb(&self) -> u64 {
+            // SAFETY: the counters struct is plain data, its `cb` is set to
+            // its own size as the API requires, and the handle is live.
+            let mut counters: PROCESS_MEMORY_COUNTERS = unsafe { std::mem::zeroed() };
+
+            counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+
+            // SAFETY: the handle is live and `counters` outlives the call.
+            let ok = unsafe { GetProcessMemoryInfo(self.0, &mut counters, counters.cb) } != 0;
+
+            if ok {
+                (counters.WorkingSetSize / 1024) as u64
+            } else {
+                0
+            }
+        }
+    }
+
+    impl Drop for Process {
+        fn drop(&mut self) {
+            // SAFETY: this struct owns the handle and drops once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    /// Every process on the machine, as `(pid, parent pid, image name)`.
+    pub fn table() -> Vec<(u32, u32, String)> {
+        let mut rows = Vec::new();
+
+        // SAFETY: the snapshot handle is checked and closed on every path;
+        // `entry` is a plain struct the API fills in, sized beforehand.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+
+            if snapshot == 0 || snapshot == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
+                return rows;
+            }
+
+            let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+
+            entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+
+            let mut more = Process32FirstW(snapshot, &mut entry) != 0;
+
+            while more {
+                let name = &entry.szExeFile;
+                let len = name
+                    .iter()
+                    .position(|unit| *unit == 0)
+                    .unwrap_or(name.len());
+
+                rows.push((
+                    entry.th32ProcessID,
+                    entry.th32ParentProcessID,
+                    String::from_utf16_lossy(&name[..len]),
+                ));
+
+                more = Process32NextW(snapshot, &mut entry) != 0;
+            }
+
+            CloseHandle(snapshot);
+        }
+
+        rows
+    }
+}
+
+#[cfg(windows)]
+fn process_table() -> Vec<Proc> {
+    win::table()
+        .into_iter()
+        .map(|(pid, ppid, comm)| Proc { pid, ppid, comm })
+        .collect()
+}
+
+#[cfg(windows)]
+pub fn process_memory_kb(pid: u32) -> u64 {
+    win::Process::open(pid).map_or(0, |process| process.working_set_kb())
+}
+
+#[cfg(windows)]
+pub fn is_alive(pid: u32) -> bool {
+    // Windows has no zombies: a process that can be opened still exists.
+    win::Process::open(pid).is_some()
+}
+
+/// Whether a process is a WebKit web (renderer) process. Servo renders in
+/// this process, so on Windows nothing in the tree is one.
+#[cfg(windows)]
+pub fn is_web_process(_comm: &str) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn stat_parsing_survives_odd_command_names() {
         let line = "42 (Web (Content) x) S 7 42 42 0 -1 4194560 100 0 0 0";
@@ -193,6 +334,7 @@ mod tests {
         assert_eq!(parse_stat("garbage"), None);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn pss_and_rss_are_read_in_kib() {
         let smaps = "Rss:  900 kB\nPss:                1234 kB\nPss_Anon: 5 kB\n";
@@ -238,6 +380,7 @@ mod tests {
         assert_eq!(pids, vec![10, 11, 12], "main process must be included");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn web_process_detection_handles_truncated_comm() {
         assert!(is_web_process("WebKitWebProces"));
@@ -245,9 +388,6 @@ mod tests {
         assert!(!is_web_process("axysbrowser"));
     }
 
-    // `/proc` is the probe's only source, so the assertions that read a live
-    // process hold on Linux only. The parsing tests above run everywhere.
-    #[cfg(target_os = "linux")]
     #[test]
     fn own_process_is_measurable_and_alive() {
         let me = std::process::id();
@@ -257,7 +397,6 @@ mod tests {
         assert!(current_tree().iter().any(|process| process.pid == me));
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn snapshot_combines_memory_and_web_pids() {
         let (memory_kb, web_pids) = tree_snapshot();
