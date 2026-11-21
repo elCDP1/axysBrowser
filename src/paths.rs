@@ -115,7 +115,16 @@ fn restrict(_path: &Path, _mode: u32) -> io::Result<()> {
 }
 
 /// Creates `dir` and its parents, owner-only (0700).
+///
+/// Only a directory this call created is re-moded. A caller can hand this a
+/// parent it does not own — [`atomic_write`] writes next to whatever path it
+/// was given, and the system temp directory is one of those — so tightening
+/// unconditionally fails with `EPERM` on somebody else's directory (or, worse,
+/// silently narrows a shared one). [`secure_dirs`] is where an existing, too
+/// open profile directory gets tightened.
 fn create_private_dir(dir: &Path) -> io::Result<()> {
+    let existed = dir.is_dir();
+
     let mut builder = fs::DirBuilder::new();
 
     builder.recursive(true);
@@ -126,6 +135,10 @@ fn create_private_dir(dir: &Path) -> io::Result<()> {
     }
 
     builder.create(dir)?;
+
+    if existed {
+        return Ok(());
+    }
 
     restrict(dir, 0o700)
 }
@@ -150,7 +163,11 @@ fn create_private_file(path: &Path) -> io::Result<fs::File> {
 /// directories private protects every file inside.
 pub fn secure_dirs() {
     for dir in [config_dir(), data_dir(), cache_dir()] {
-        if let Err(error) = create_private_dir(&dir) {
+        // `create_private_dir` only tightens what it created, so an old
+        // profile that already exists is tightened here, by name.
+        let secured = create_private_dir(&dir).and_then(|()| restrict(&dir, 0o700));
+
+        if let Err(error) = secured {
             eprintln!("Failed to secure {}: {error}", dir.display());
         }
     }
@@ -309,6 +326,34 @@ mod tests {
                 .mode()
                 & 0o777;
             assert_eq!(dir_mode, 0o700);
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_leaves_an_existing_directory_mode_alone() {
+        let dir = unique_dir("existing-parent");
+        let _ = fs::remove_dir_all(&dir);
+
+        fs::create_dir_all(&dir).unwrap();
+
+        // A parent `atomic_write` did not create belongs to somebody else:
+        // re-moding it fails with `EPERM` where it is not ours and narrows a
+        // shared directory where it is. The profile is `secure_dirs`' job.
+        #[cfg(unix)]
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let path = dir.join("data.toml");
+
+        atomic_write(&path, "x").unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "x");
+
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o755, "an existing directory keeps its mode");
         }
 
         let _ = fs::remove_dir_all(&dir);
