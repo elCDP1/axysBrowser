@@ -65,13 +65,35 @@ if [ ! -d "$gtk/bin" ] || [ ! -d "$gtk/share/icons" ]; then
 fi
 
 # Servo's surfman renderer loads ANGLE itself; these two are build output, not
-# part of the GTK runtime, and their absence panics on the first page.
-angle=$(ls -d "$target"/build/mozangle-*/out 2>/dev/null | head -1 || true)
+# part of the GTK runtime, and their absence panics on the first page. Cargo
+# owns the package hash in `build/mozangle-<hash>/out`, and that tree does not
+# lay itself out identically everywhere (a CI runner's release profile is not a
+# developer's incremental one), so look for the pair instead of one path.
+angle=
+dll_dirs=$(mktemp --suffix=.txt)
+
+trap 'rm -f "$dll_dirs"' EXIT
+
+if [ -d "$target/build" ]; then
+    find "$target/build" -type f -name libEGL.dll -exec dirname {} \; >"$dll_dirs" 2>/dev/null || true
+fi
+
+while IFS= read -r dir; do
+    if [ -f "$dir/libGLESv2.dll" ]; then
+        angle=$dir
+        break
+    fi
+done <"$dll_dirs"
 
 if [ -z "$angle" ]; then
-    echo "no mozangle build output under $target/build; build for the Windows target first" >&2
+    echo "no ANGLE output (libEGL.dll and libGLESv2.dll) under $target/build; build for the Windows target first" >&2
+    # Name what the tree does hold: a runner that lays the build output out
+    # differently has to be diagnosable from the failure alone.
+    ls "$target/build" 2>/dev/null | grep -i 'mozangle' | head -5 >&2 || true
     exit 1
 fi
+
+echo "ANGLE from $angle"
 
 stage=$out/axysbrowser-$version-x86_64-windows
 zip=$out/axysbrowser-$version-x86_64-windows.zip
@@ -107,7 +129,7 @@ for required in \
 done
 
 ps1=$(mktemp --suffix=.ps1)
-trap 'rm -f "$ps1"' EXIT
+trap 'rm -f "$dll_dirs" "$ps1"' EXIT
 
 cat >"$ps1" <<'POWERSHELL'
 param([Parameter(Mandatory = $true)][string]$Dir, [int]$TimeoutSeconds = 90)
