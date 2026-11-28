@@ -8,8 +8,9 @@
 //! gvsbuild builds GTK with DirectComposition patched out, so GSK's GL
 //! renderer cannot realize a `GdkWin32Toplevel` on this platform and fails
 //! with "OpenGL requires Direct Composition" for every surface. Measured with
-//! `GTK_DEBUG=renderer`, GTK then settles on `GskCairoRenderer`, which is what
-//! this port has always drawn with. Asking for it up front keeps that
+//! `GSK_DEBUG=renderer` — GTK 4 rejects `GTK_DEBUG=renderer` as an unknown
+//! value — GTK then settles on `GskCairoRenderer`, which is what this port has
+//! always drawn with. Asking for it up front keeps that
 //! renderer and skips a failed GL realization per surface. An explicit
 //! `GSK_RENDERER` in the environment still wins.
 pub(super) fn prepare() {
