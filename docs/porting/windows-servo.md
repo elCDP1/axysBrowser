@@ -23,8 +23,9 @@ Two blockers remain:
   and do nothing on Windows, where the profile's ACL already restricts them.
   `config_dir`/`data_dir`/`cache_dir` fall back to `%APPDATA%`/`%LOCALAPPDATA%`
   when neither `XDG_*` nor `HOME` exist, so the profile never lands in the
-  working directory. `app.rs` takes `running_under_wsl` from
-  `platform::windows`, where it is always false. `ui/memprobe.rs` compiles on
+  working directory. `app::linux` takes `running_under_wsl` from
+  `platform::linux`; the Windows half of `platform` went away with the Linux
+  startup probes that asked it. `ui/memprobe.rs` compiles on
   Windows because it only *reads* `/proc` at runtime. The Windows check
   (`cargo check --locked --target x86_64-pc-windows-msvc`, also with
   `--all-targets`) now compiles the crate with no errors.
@@ -222,6 +223,24 @@ host it on Windows.
   `cairo` when GL is software — but it must be measured, not assumed.
 * Distribution becomes "binary + ~40 GTK DLLs". That is how GTK apps ship on
   Windows, but it is a packaging decision for you.
+
+### Packaging
+
+`.github/package-windows.sh` builds the release zip from the GTK 4 runtime
+the binary links against (DLLs, gdk-pixbuf loaders, compiled GLib schemas and
+the Adwaita icon theme), the release executable and Servo's ANGLE libraries,
+then starts the staged `axysbrowser.exe` and requires a responsive window
+before it keeps the artifact:
+
+```bash
+cargo build --release --locked
+.github/package-windows.sh --gtk /c/gtk
+```
+
+Both omissions that broke the hand-built zips are caught here: the ANGLE DLLs
+(without them the first page panicked in surfman's EGL bindings) and
+`share/icons` (without it a bookmark with no favicon resolved
+`web-browser-symbolic` to nothing and drew a missing-image icon).
 
 **How Servo's surface gets inside that window.** GTK4 has no child-window
 embedding (no `GtkSocket`), and `GtkGLArea` only exposes GTK's own GL context,

@@ -7,13 +7,13 @@
 //!
 //! Keeping them out of the engine is what lets `app` and `ui` stay the same
 //! file on both platforms while each backend answers only for the engine.
+//!
+//! Every question left here belongs to Linux. A native Windows process is
+//! never inside WSL, and the startup probes that need to know are gated to
+//! Linux (`app::linux`), so this module has no Windows half.
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(windows)]
-mod windows;
 
 #[cfg(target_os = "linux")]
 pub(crate) use linux::running_under_wsl;
-#[cfg(windows)]
-pub(crate) use windows::running_under_wsl;
