@@ -89,7 +89,11 @@ if [ -z "$angle" ]; then
     echo "no ANGLE output (libEGL.dll and libGLESv2.dll) under $target/build; build for the Windows target first" >&2
     # Name what the tree does hold: a runner that lays the build output out
     # differently has to be diagnosable from the failure alone.
-    ls "$target/build" 2>/dev/null | grep -i 'mozangle' | head -5 >&2 || true
+    for candidate in "$target"/build/*mozangle*; do
+        if [ -e "$candidate" ]; then
+            printf '  %s\n' "$candidate" >&2
+        fi
+    done
     exit 1
 fi
 
