@@ -319,3 +319,18 @@ jobs:
               }
             exit 1
           }
+
+      # Compiling and testing still run against the loose build tree. The zip is
+      # a different layout: the gdk-pixbuf loaders, the compiled GLib schemas,
+      # the Adwaita icon theme and Servo's ANGLE libraries have to sit next to
+      # the executable, and two hand-built zips shipped without them. The script
+      # stages that payload and fails unless the packaged exe opens a responsive
+      # window, so this step is what keeps the zip from coming out broken again.
+      - name: Build (release, Servo backend)
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Package and verify the Windows zip
+        # The script targets Git Bash, which is what `bash` is on this runner.
+        shell: bash
+        timeout-minutes: 30
+        run: bash .github/package-windows.sh --gtk /c/gtk
